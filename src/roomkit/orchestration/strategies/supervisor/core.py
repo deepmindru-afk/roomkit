@@ -224,7 +224,7 @@ class Supervisor(
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Wire supervisor routing and delegation tools."""
-        kit.claim_room_strategy(room_id, self)
+        await kit.claim_room_strategy(room_id, self)
         supervisor, *workers = (held(kit, a) for a in self._named)
         self._supervisor, self._workers = supervisor, workers
         # Router only needed when the supervisor agent is in the room.

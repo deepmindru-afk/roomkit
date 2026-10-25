@@ -463,7 +463,7 @@ async def test_a_committed_event_goes_where_the_room_s_turns_would() -> None:
     kit.register_channel(ChannelDeclaration(channel_id="bob"))
     await kit.create_room(room_id="r", orchestration=Discussion(agents=["ana", "bob"]))
     await kit.attach_channel("r", "sms")
-    kit.enable_room_hook("r", "audit")
+    await kit.enable_room_hook("r", "audit")
 
     await _say(kit, "@bob hello")
     await _until(lambda: memories["b"].ingest_calls)

@@ -306,7 +306,7 @@ async def test_an_executor_without_the_room_s_hook_is_not_given_its_turns(
     await hooked_backend.serve(hooked)
     kit = await _owner(prefix, "worker", store=store)
     try:
-        kit.enable_room_hook("r", "audit")
+        await kit.enable_room_hook("r", "audit")
         for i in range(3):
             await kit.process_inbound(_said(f"Hi {i}."), room_id="r")
 
@@ -661,7 +661,7 @@ async def test_a_room_hook_defined_after_serving_is_declared(
     async def audit(event: Any, context: Any) -> None: ...
 
     kit = await _owner(prefix, "worker", store=store)
-    kit.enable_room_hook("r", "audit")
+    await kit.enable_room_hook("r", "audit")
     try:
         await asyncio.sleep(3 * TIMEOUTS.heartbeat_interval)
         result = await kit.process_inbound(_said("Hi."), room_id="r")

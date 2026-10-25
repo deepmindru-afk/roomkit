@@ -14,7 +14,15 @@ from typing import Any
 
 import pytest
 
-from roomkit import Access, AgentResponsePolicy, RoomKit, RoomTimers
+from roomkit import (
+    Access,
+    AgentResponsePolicy,
+    HookExecution,
+    HookTrigger,
+    RoomKit,
+    RoomTimers,
+    Swarm,
+)
 from roomkit.channels import SMSChannel
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
@@ -675,6 +683,110 @@ class TestScopedHostDoors:
         assert count == reached
         injected = any("Mind the budget." in str(m.content) for m in provider.calls[1].messages)
         assert injected is bool(reached)
+        await kit.close()
+
+
+class _RoomHooks:
+    """Globex's room with a room hook reading its messages and an executor
+    room hook enabled for it; what acme's host tries on it."""
+
+    def __init__(self, kit: RoomKit) -> None:
+        self.kit = kit
+        self.globex_read: list[str] = []
+        self.acme_read: list[str] = []
+
+    async def globex_hook(self, event: Any, context: Any) -> None:
+        self.globex_read.append(event.content.body)
+
+    async def acme_hook(self, event: Any, context: Any) -> None:
+        self.acme_read.append(event.content.body)
+
+
+async def _globex_room_hooks() -> _RoomHooks:
+    kit = await _two_tenants()
+    await kit.attach_channel("globex-room", "sms1")
+    hooks = _RoomHooks(kit)
+    for name in ("audit", "acme-audit"):
+        kit.turn_executor.room_hook(name, HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)(
+            hooks.acme_hook
+        )
+    await kit.add_room_hook(
+        "globex-room",
+        HookTrigger.AFTER_BROADCAST,
+        HookExecution.ASYNC,
+        hooks.globex_hook,
+        name="globex-hook",
+    )
+    await kit.enable_room_hook("globex-room", "audit")
+    return hooks
+
+
+_ROOM_HOOK_VERBS: dict[str, Callable[[_RoomHooks, str | None], Awaitable[Any]]] = {
+    "add_room_hook": lambda hooks, org: hooks.kit.add_room_hook(
+        "globex-room",
+        HookTrigger.AFTER_BROADCAST,
+        HookExecution.ASYNC,
+        hooks.acme_hook,
+        name="acme-hook",
+        organization_id=org,
+    ),
+    "remove_room_hook": lambda hooks, org: hooks.kit.remove_room_hook(
+        "globex-room", "globex-hook", organization_id=org
+    ),
+    "enable_room_hook": lambda hooks, org: hooks.kit.enable_room_hook(
+        "globex-room", "acme-audit", organization_id=org
+    ),
+    "disable_room_hook": lambda hooks, org: hooks.kit.disable_room_hook(
+        "globex-room", "audit", organization_id=org
+    ),
+    "claim_room_strategy": lambda hooks, org: hooks.kit.claim_room_strategy(
+        "globex-room", Swarm(agents=["a", "b"], entry="a"), organization_id=org
+    ),
+}
+
+
+class TestScopedRoomHooks:
+    """Another organization's room is given no hook, loses none, enables or
+    disables none, and is claimed for no strategy (RFC §17.2, RMK-487)."""
+
+    @pytest.mark.parametrize("verb", sorted(_ROOM_HOOK_VERBS))
+    async def test_another_organizations_room_is_not_found_and_its_hooks_stand(
+        self, verb: str
+    ) -> None:
+        hooks = await _globex_room_hooks()
+
+        with pytest.raises(RoomNotFoundError):
+            await _ROOM_HOOK_VERBS[verb](hooks, "acme")
+
+        await hooks.kit.process_inbound(
+            InboundMessage(
+                channel_id="sms1", sender_id="+15550001", content=TextContent(body="secret")
+            ),
+            room_id="globex-room",
+        )
+        await hooks.kit.close()  # its ASYNC hooks have run
+        # acme reads nothing, globex's hook still does, and the enabled set
+        # is the one globex made.
+        assert (hooks.acme_read, hooks.globex_read) == ([], ["secret"])
+        assert hooks.kit.hook_engine.room_hook_names("globex-room") == ["globex-hook"]
+        assert not await hooks.kit.disable_room_hook("globex-room", "acme-audit")
+        assert await hooks.kit.disable_room_hook("globex-room", "audit")
+
+    @pytest.mark.parametrize("organization_id", ["globex", None], ids=["own", "unscoped"])
+    async def test_the_rooms_own_organization_or_none_runs_each_verb(
+        self, organization_id: str | None
+    ) -> None:
+        hooks = await _globex_room_hooks()
+        kit = hooks.kit
+
+        added = await _ROOM_HOOK_VERBS["add_room_hook"](hooks, organization_id)
+        assert added.name == "acme-hook"
+        assert await _ROOM_HOOK_VERBS["remove_room_hook"](hooks, organization_id) is True
+        await _ROOM_HOOK_VERBS["enable_room_hook"](hooks, organization_id)
+        assert await _ROOM_HOOK_VERBS["disable_room_hook"](hooks, organization_id) is True
+        await _ROOM_HOOK_VERBS["claim_room_strategy"](hooks, organization_id)
+        assert kit.hook_engine.room_hook_names("globex-room") == ["acme-hook"]
+        assert await kit.disable_room_hook("globex-room", "acme-audit") is True
         await kit.close()
 
 

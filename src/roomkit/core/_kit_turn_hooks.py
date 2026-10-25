@@ -25,6 +25,11 @@ if TYPE_CHECKING:
 class KitTurnHooks:
     """The kit's turn hooks, given to its own executor's engine.
 
+    The engine's side, synchronous and trusted: it holds no store and reads
+    no room. The kit's :meth:`RoomKit.add_room_hook` and
+    :meth:`RoomKit.remove_room_hook` read the room with the caller's
+    organization (RFC §17.2) before they reach it.
+
     Args:
         engine: The kit's own executor's hook engine.
         channels: The channels the kit registers, by id.

@@ -76,7 +76,7 @@ class Swarm(Orchestration):
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Wire swarm routing and bidirectional handoff into the room."""
-        kit.claim_room_strategy(room_id, self)
+        await kit.claim_room_strategy(room_id, self)
         agents = [held(kit, a) for a in self._agents]
         router = ConversationRouter(
             default_agent_id=self._entry,

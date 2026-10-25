@@ -142,7 +142,7 @@ class Discussion(Orchestration):
                 or realtime channel, an agent thinks while it listens, or a
                 router or another strategy is installed.
         """
-        kit.claim_room_strategy(room_id, self)
+        await kit.claim_room_strategy(room_id, self)
         if self._handles is None:
             self._handles = _handles(self._agents, self._given_handles, _names(self._agents, kit))
         await kit._install_discussion(room_id, DiscussionRoom.installed(kit, room_id, self))

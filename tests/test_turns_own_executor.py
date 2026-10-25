@@ -61,7 +61,7 @@ async def _answers(
     await kit.attach_channel("r", "ws")
     await kit.attach_channel("r", "ai", category=ChannelCategory.INTELLIGENCE)
     if room_hook is not None:
-        kit.enable_room_hook("r", room_hook)
+        await kit.enable_room_hook("r", room_hook)
     await kit.process_inbound(
         InboundMessage(channel_id="ws", sender_id="u", content=TextContent(body="hi"))
     )

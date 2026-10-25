@@ -133,7 +133,7 @@ class TestInbound:
         kit.register_channel(SimpleChannel("sms1"))
         await kit.create_room(room_id="r1")
         await kit.attach_channel("r1", "sms1")
-        kit.add_room_hook(
+        await kit.add_room_hook(
             "r1",
             HookTrigger.BEFORE_BROADCAST,
             HookExecution.SYNC,

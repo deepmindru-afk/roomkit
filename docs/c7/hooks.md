@@ -68,7 +68,7 @@ executor = TurnExecutor(build_agent, store=store)  # its hooks read the shared s
 register_turn_hooks(executor)
 ```
 
-`kit.add_room_hook(room_id, trigger, ...)` on one of these triggers is the
+`await kit.add_room_hook(room_id, trigger, ...)` on one of these triggers is the
 kit's own executor's hook for that room. For agents other executors run, a
 room hook is defined by name on the executors and enabled per room on the
 kit, which names a room's hooks in each turn's request; only an executor that
@@ -82,8 +82,8 @@ async def audit(event, ctx) -> None: ...
 for executor in (kit.turn_executor, host_executor):
     executor.room_hook("audit", HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)(audit)
 
-kit.enable_room_hook("vip-room", "audit")
-kit.disable_room_hook("vip-room", "audit")
+await kit.enable_room_hook("vip-room", "audit")
+await kit.disable_room_hook("vip-room", "audit")
 ```
 
 On an executor a name carries one hook per trigger: `room_hook()` called again
@@ -437,9 +437,16 @@ await kit.add_room_hook(
 await kit.remove_room_hook("vip-room", "vip_filter")
 ```
 
+`add_room_hook()`, `remove_room_hook()`, `enable_room_hook()` and
+`disable_room_hook()` take `organization_id=` (RFC §17.2): the room is read
+with it first, and another organization's room raises `RoomNotFoundError`
+with nothing registered, removed, enabled or disabled. `kit.hook_engine`'s
+own `add_room_hook()` / `remove_room_hook()` are the synchronous engine
+calls: they read no room.
+
 A trigger a turn fires takes no room hook by callable: define it by name on
 the executors (`executor.room_hook(name, trigger)(fn)`) and enable the name
-for the room (`kit.enable_room_hook(room_id, name)`), as above.
+for the room (`await kit.enable_room_hook(room_id, name)`), as above.
 
 ## Complete Hook Trigger Reference
 

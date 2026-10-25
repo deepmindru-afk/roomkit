@@ -239,7 +239,10 @@ class TurnClient(RoomOwner):
     def enable_room_hook(self, room_id: str, name: str) -> None:
         """Name *name* among *room_id*'s hooks on executor triggers: its
         turns' requests carry it, and only an executor that defines it takes
-        them (RFC §10.6.6, §10.6.7)."""
+        them (RFC §10.6.6, §10.6.7). Synchronous and trusted, reading no
+        room: :meth:`RoomKit.enable_room_hook` reads the room with the
+        caller's organization first (RFC §17.2), as
+        :meth:`RoomKit.disable_room_hook` does before :meth:`disable_room_hook`."""
         names = self._room_hooks.setdefault(room_id, [])
         if name not in names:
             names.append(name)

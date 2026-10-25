@@ -513,15 +513,15 @@ class TestRoomHooks:
             called = True
             return HookResult.allow()
 
-        kit.add_room_hook(
+        await kit.add_room_hook(
             "r1",
             HookTrigger.BEFORE_BROADCAST,
             HookExecution.SYNC,
             my_hook,
             name="test_room_hook",
         )
-        assert kit.remove_room_hook("r1", "test_room_hook") is True
-        assert kit.remove_room_hook("r1", "missing") is False
+        assert await kit.remove_room_hook("r1", "test_room_hook") is True
+        assert await kit.remove_room_hook("r1", "missing") is False
 
 
 class TestIdempotencyRace:

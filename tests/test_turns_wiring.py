@@ -272,7 +272,7 @@ async def test_a_room_hook_runs_for_the_rooms_that_enable_it() -> None:
     async def audit(event: Any, context: Any) -> None:
         seen.append(context.room.id)
 
-    kit.enable_room_hook("r1", "audit")
+    await kit.enable_room_hook("r1", "audit")
     await _say(kit)
     await kit.process_inbound(
         InboundMessage(channel_id="ops", sender_id="ops", content=TextContent(body="go")),
@@ -281,8 +281,8 @@ async def test_a_room_hook_runs_for_the_rooms_that_enable_it() -> None:
     await _settle()
     assert seen == ["r1"]
 
-    assert kit.disable_room_hook("r1", "audit") is True
-    assert kit.disable_room_hook("r1", "audit") is False
+    assert await kit.disable_room_hook("r1", "audit") is True
+    assert await kit.disable_room_hook("r1", "audit") is False
     await _say(kit)
     await _settle()
     assert seen == ["r1"]  # disabled: the next turn of r1 runs without it
@@ -314,7 +314,7 @@ async def test_a_room_s_turn_goes_to_an_executor_defining_its_hooks() -> None:
         take(link)
 
     elsewhere.take = record  # ty: ignore[invalid-assignment]
-    kit.enable_room_hook("r1", "audit")
+    await kit.enable_room_hook("r1", "audit")
     await _say(kit)
     await _settle()
 
@@ -329,7 +329,7 @@ async def test_a_room_s_turn_goes_to_an_executor_defining_its_hooks() -> None:
 @pytest.mark.in_process("reads the in-memory backend's placement")
 async def test_a_room_hook_no_executor_defines_leaves_the_room_unanswered() -> None:
     kit = await _kit()
-    kit.enable_room_hook("r1", "missing")
+    await kit.enable_room_hook("r1", "missing")
 
     await _say(kit)
 
@@ -354,13 +354,13 @@ def test_a_room_hook_on_an_executor_trigger_is_refused_by_callable() -> None:
         executor.hooks.add_room_hook("r1", registration)
 
 
-def _hold_audit(kit: RoomKit, room_id: str, how: str, trigger: HookTrigger) -> None:
+async def _hold_audit(kit: RoomKit, room_id: str, how: str, trigger: HookTrigger) -> None:
     """Give *room_id* a hook named ``audit``: the kit's room hook on
     *trigger*, or the executors' room hook of that name enabled."""
     if how == "kit":
-        kit.add_room_hook(room_id, trigger, HookExecution.ASYNC, _noop_hook, name="audit")
+        await kit.add_room_hook(room_id, trigger, HookExecution.ASYNC, _noop_hook, name="audit")
     else:
-        kit.enable_room_hook(room_id, "audit")
+        await kit.enable_room_hook(room_id, "audit")
 
 
 @pytest.mark.parametrize(
@@ -369,7 +369,7 @@ def _hold_audit(kit: RoomKit, room_id: str, how: str, trigger: HookTrigger) -> N
     ids=["owner trigger", "kit executor trigger"],
 )
 @pytest.mark.parametrize(("first", "then"), [("kit", "enabled"), ("enabled", "kit")])
-def test_a_room_never_holds_two_hooks_of_one_name(
+async def test_a_room_never_holds_two_hooks_of_one_name(
     trigger: HookTrigger, first: str, then: str
 ) -> None:
     """RFC §9.1, §10.6.6: a name the room enables joins the room's scope, so
@@ -377,20 +377,20 @@ def test_a_room_never_holds_two_hooks_of_one_name(
     an enabled name, is refused."""
     kit = RoomKit()
     kit.turn_executor.room_hook("audit", HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)(_noop_hook)
-    _hold_audit(kit, "r1", first, trigger)
+    await _hold_audit(kit, "r1", first, trigger)
 
     with pytest.raises(ValueError, match="audit"):
-        _hold_audit(kit, "r1", then, trigger)
+        await _hold_audit(kit, "r1", then, trigger)
 
     assert kit._turns.room_hook_names("r1") == (["audit"] if first == "enabled" else [])
 
 
-def test_a_name_another_room_holds_is_enabled() -> None:
+async def test_a_name_another_room_holds_is_enabled() -> None:
     kit = RoomKit()
     kit.turn_executor.room_hook("audit", HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)(_noop_hook)
-    _hold_audit(kit, "r1", "kit", HookTrigger.AFTER_BROADCAST)
+    await _hold_audit(kit, "r1", "kit", HookTrigger.AFTER_BROADCAST)
 
-    _hold_audit(kit, "r2", "enabled", HookTrigger.AFTER_BROADCAST)
+    await _hold_audit(kit, "r2", "enabled", HookTrigger.AFTER_BROADCAST)
 
     assert kit._turns.room_hook_names("r2") == ["audit"]
 
@@ -502,10 +502,10 @@ async def test_a_room_hook_gates_a_call_outside_a_turn_as_soon_as_it_is_enabled(
         arguments={},
         room_id="r1",
     )
-    kit.enable_room_hook("r1", "approval")
+    await kit.enable_room_hook("r1", "approval")
     # What the realtime voice tool gate calls, with no turn of the room yet.
     denied, _ = await kit._decide_before_tool_use(event, "voice")
-    kit.disable_room_hook("r1", "approval")
+    await kit.disable_room_hook("r1", "approval")
     allowed, _ = await kit._decide_before_tool_use(event, "voice")
 
     assert (denied.allowed, allowed.allowed) == (False, True)
@@ -534,7 +534,7 @@ async def test_a_room_hook_enabled_before_it_is_defined_gates_a_call_outside_a_t
     kit = RoomKit()
     await kit.create_room(room_id="r1")
     # A room's configuration restored before the host's hooks are loaded.
-    kit.enable_room_hook("r1", "approval")
+    await kit.enable_room_hook("r1", "approval")
     kit.turn_executor.room_hook("approval", HookTrigger.BEFORE_TOOL_USE)(_gate_denies)
 
     allowed = await _voice_call_allowed(kit)
@@ -547,7 +547,7 @@ async def test_a_room_hook_defined_again_after_its_removal_gates_a_call_outside_
     kit = RoomKit()
     await kit.create_room(room_id="r1")
     kit.turn_executor.room_hook("approval", HookTrigger.BEFORE_TOOL_USE)(_gate_denies)
-    kit.enable_room_hook("r1", "approval")
+    await kit.enable_room_hook("r1", "approval")
     kit.turn_executor.remove_room_hook("approval")
     removed = await _voice_call_allowed(kit)
     kit.turn_executor.room_hook("approval", HookTrigger.BEFORE_TOOL_USE)(_gate_denies)
@@ -693,13 +693,15 @@ async def test_a_turn_runs_the_room_hooks_its_request_named_and_a_disable_holds(
     async def audit(event: Any, context: Any) -> None:
         seen.append("audit")
 
-    kit.enable_room_hook("r1", "audit")
+    await kit.enable_room_hook("r1", "audit")
     executor = kit.turn_executor
     take = executor.take
 
     def disable_once_taken(link: Any) -> None:
         take(link)
-        kit.disable_room_hook("r1", "audit")
+        # The kit's trusted, synchronous level: no await between the take
+        # and the disable.
+        kit._turns.disable_room_hook("r1", "audit")
 
     executor.take = disable_once_taken  # ty: ignore[invalid-assignment]
     await _say(kit)

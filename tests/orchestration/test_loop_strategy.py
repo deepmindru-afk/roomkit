@@ -55,6 +55,7 @@ def _make_agent(
 
 def _make_mock_kit(room: Room) -> MagicMock:
     kit = MagicMock()
+    kit.claim_room_strategy = AsyncMock(return_value=None)
     kit.get_room = AsyncMock(return_value=room)
     kit.store.update_room = AsyncMock()
     kit.store.patch_room_metadata = AsyncMock(return_value=room)

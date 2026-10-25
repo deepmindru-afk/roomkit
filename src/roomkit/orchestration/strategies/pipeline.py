@@ -111,7 +111,7 @@ class Pipeline(Orchestration):
         voices and handoff greetings on its voice channel when one is named
         (RFC §19.7.1)."""
         self._refuse_realtime(kit)
-        kit.claim_room_strategy(room_id, self)
+        await kit.claim_room_strategy(room_id, self)
         agents = [held(kit, a) for a in self._agents]
         cp = ConversationPipeline(stages=_build_stages(agents), supervisor_id=self._supervisor_id)
         router = cp.to_router()

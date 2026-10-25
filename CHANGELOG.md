@@ -147,6 +147,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — the kit's room hook verbs and `claim_room_strategy()` are
+  async and take the organization the caller acts for** (RFC §17.2,
+  RMK-487). They were synchronous and read no room: a tenant's host that
+  knew another tenant's room id could add a room hook there and read every
+  message it broadcast, remove or disable that room's hooks (its
+  moderation among them), enable a hook name for its turns, or probe
+  whether it held a strategy. `add_room_hook()`, `remove_room_hook()`,
+  `enable_room_hook()`, `disable_room_hook()` and `claim_room_strategy()`
+  are now coroutines with `organization_id=None` (keyword-only): with one,
+  the room is read first, and another organization's room raises
+  `RoomNotFoundError` with nothing registered, removed, enabled, disabled
+  or claimed. Unset, no room is read, as before. `kit.hook_engine`'s
+  `add_room_hook()` / `remove_room_hook()` and the turn client's
+  `enable_room_hook()` / `disable_room_hook()` stay synchronous: they hold
+  no store and are the trusted level below the kit's calls.
+  Migrate: `await` the five calls,
+  `await kit.add_room_hook(room_id, trigger, execution, fn, ...)`,
+  `await kit.remove_room_hook(room_id, name)`,
+  `await kit.enable_room_hook(room_id, name)`,
+  `await kit.disable_room_hook(room_id, name)`, and in a strategy's own
+  `install()`, `await kit.claim_room_strategy(room_id, self)`; a host
+  serving several organizations passes `organization_id=`.
+
 - **A package's `__all__` decides what a star import binds** (RMK-948).
   `from roomkit.channels import *` no longer binds `ChannelType`,
   `ChannelCapabilities`, `ChannelMediaType` or the `*_CAPABILITIES`

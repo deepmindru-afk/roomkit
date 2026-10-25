@@ -60,12 +60,12 @@ def test_the_turn_triggers_are_the_rfcs() -> None:
 
 
 @pytest.mark.parametrize("trigger", sorted(TURN_TRIGGERS, key=str))
-def test_a_turn_trigger_on_the_kit_is_its_own_executors_on_every_door(
+async def test_a_turn_trigger_on_the_kit_is_its_own_executors_on_every_door(
     trigger: HookTrigger,
 ) -> None:
     kit = RoomKit()
     kit.hook(trigger, execution=HookExecution.ASYNC, name="global")(_noop)
-    kit.add_room_hook("room", trigger, HookExecution.ASYNC, _noop, name="room")
+    await kit.add_room_hook("room", trigger, HookExecution.ASYNC, _noop, name="room")
     kit.hook_engine.register(
         HookRegistration(trigger=trigger, execution=HookExecution.ASYNC, fn=_noop, name="raw")
     )
@@ -78,7 +78,7 @@ def test_a_turn_trigger_on_the_kit_is_its_own_executors_on_every_door(
     ]
     assert not kit.hook_engine._get_hooks("room", trigger, None)
     assert kit.hook_engine.room_hook_names("room") == ["room"]
-    assert kit.remove_room_hook("room", "room")
+    assert await kit.remove_room_hook("room", "room")
     assert kit.hook_engine.remove_global_hook("global")
     assert [h.name for h in executor._get_hooks("room", trigger, None)] == ["raw"]
 
@@ -88,7 +88,7 @@ def _declared(kit: RoomKit, channel_id: str = "meteo") -> None:
 
 
 @pytest.mark.parametrize("trigger", sorted(TURN_TRIGGERS, key=str))
-def test_a_kit_turn_hook_a_declared_channel_could_fire_is_refused_in_either_order(
+async def test_a_kit_turn_hook_a_declared_channel_could_fire_is_refused_in_either_order(
     trigger: HookTrigger,
 ) -> None:
     """Its turns run on another executor, where the hook would never fire."""
@@ -97,7 +97,7 @@ def test_a_kit_turn_hook_a_declared_channel_could_fire_is_refused_in_either_orde
     with pytest.raises(ValueError, match=r"'meteo'.*executor\.hook\(\.\.\.\)"):
         declared_first.hook(trigger, execution=HookExecution.ASYNC)(_noop)
     with pytest.raises(ValueError, match=r"'meteo'"):
-        declared_first.add_room_hook("room", trigger, HookExecution.ASYNC, _noop)
+        await declared_first.add_room_hook("room", trigger, HookExecution.ASYNC, _noop)
 
     hooked_first = RoomKit()
     hooked_first.hook(trigger, execution=HookExecution.ASYNC, name="audit")(_noop)
@@ -122,10 +122,12 @@ def test_a_kit_turn_hook_whose_filter_leaves_the_declared_channel_out_is_kept() 
     assert [h.name for h in kit.turn_executor.hooks._global_hooks] == ["audit"]
 
 
-def test_a_kit_room_turn_hook_is_refused_while_any_channel_is_declared() -> None:
+async def test_a_kit_room_turn_hook_is_refused_while_any_channel_is_declared() -> None:
     """The room's channels are known only later (RFC §10.6.6)."""
     kit = RoomKit()
-    kit.add_room_hook("room", HookTrigger.BEFORE_TOOL_USE, HookExecution.SYNC, _noop, name="gate")
+    await kit.add_room_hook(
+        "room", HookTrigger.BEFORE_TOOL_USE, HookExecution.SYNC, _noop, name="gate"
+    )
     with pytest.raises(ValueError, match=r"'gate'.*for a room"):
         _declared(kit)
 
@@ -208,7 +210,7 @@ async def test_a_room_turn_hook_on_the_kit_fires_in_its_room_only() -> None:
     async def on_response(event: Any, ctx: Any) -> None:
         seen.append(ctx.room.id)
 
-    kit.add_room_hook("one", HookTrigger.ON_AI_RESPONSE, HookExecution.ASYNC, on_response)
+    await kit.add_room_hook("one", HookTrigger.ON_AI_RESPONSE, HookExecution.ASYNC, on_response)
     await _ask(kit, "one")
     await _ask(kit, "two")
     await kit.close()
@@ -222,7 +224,7 @@ class _KitAuditStrategy(Orchestration):
         return []
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
-        kit.add_room_hook(
+        await kit.add_room_hook(
             room_id, HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC, _noop, name="audit"
         )
 
@@ -268,7 +270,7 @@ async def test_a_room_hook_on_the_executor_fires_in_its_room_only() -> None:
     kit.turn_executor.room_hook("audit", HookTrigger.ON_AI_RESPONSE, HookExecution.ASYNC)(
         on_response
     )
-    kit.enable_room_hook("one", "audit")
+    await kit.enable_room_hook("one", "audit")
     await _ask(kit, "one")
     await _ask(kit, "two")
     await kit.close()
@@ -283,7 +285,7 @@ class _AuditStrategy(Orchestration):
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
         kit.turn_executor.room_hook("audit", HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)(_noop)
-        kit.enable_room_hook(room_id, "audit")
+        await kit.enable_room_hook(room_id, "audit")
 
 
 async def test_uninstalling_a_strategy_takes_back_its_room_hook_on_the_executor() -> None:
@@ -456,7 +458,7 @@ async def test_a_hook_filtered_to_another_agent_neither_denies_nor_withholds_a_c
     await kit.close()
 
 
-def test_a_removal_takes_the_registration_of_its_own_scope() -> None:
+async def test_a_removal_takes_the_registration_of_its_own_scope() -> None:
     kit = RoomKit()
     shared = HookRegistration(
         trigger=HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, fn=_noop, name="dup"
@@ -464,7 +466,7 @@ def test_a_removal_takes_the_registration_of_its_own_scope() -> None:
     kit.hook_engine.register(shared)
     kit.hook_engine.add_room_hook("room", shared)
 
-    assert kit.remove_room_hook("room", "dup")
+    assert await kit.remove_room_hook("room", "dup")
 
     assert [h.name for h in kit.turn_executor.hooks._global_hooks] == ["dup"]
     assert kit.hook_engine.room_hook_names("room") == []

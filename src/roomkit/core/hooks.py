@@ -662,6 +662,11 @@ class HookEngine:
     def add_room_hook(self, room_id: str, hook: HookRegistration) -> HookRegistration:
         """Register a hook for a specific room.
 
+        The engine holds no store and reads no room: this call is the
+        synchronous, trusted level below the kit's
+        :meth:`RoomKit.add_room_hook`, which reads the room with the
+        caller's organization first (RFC §17.2).
+
         A turn executor's room hooks are defined by name instead
         (:meth:`define_room_hook`), the room owner naming a room's in its
         turns' requests (RFC §10.6.6): a hook held for a room on one executor
@@ -802,7 +807,9 @@ class HookEngine:
 
     def remove_room_hook(self, room_id: str, name: str) -> bool:
         """Remove a room hook by name, one a kit's engine gave its own
-        executor included."""
+        executor included. The engine reads no room: the synchronous, trusted
+        level below :meth:`RoomKit.remove_room_hook`, which reads the room
+        with the caller's organization first (RFC §17.2)."""
         for hooks in (self._room_hooks.get(room_id, []), self._owner_room_hooks.get(room_id, [])):
             if self._removed(hooks, name):
                 return True

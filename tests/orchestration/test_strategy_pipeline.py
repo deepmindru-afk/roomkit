@@ -54,6 +54,7 @@ def _ai_binding(channel_id: str, room_id: str = "r1") -> ChannelBinding:
 
 def _make_mock_kit(room: Room, bindings: list[ChannelBinding]) -> MagicMock:
     kit = MagicMock()
+    kit.claim_room_strategy = AsyncMock(return_value=None)
     kit.get_room = AsyncMock(return_value=room)
     kit.store.list_bindings = AsyncMock(return_value=bindings)
     kit.store.update_room = AsyncMock()

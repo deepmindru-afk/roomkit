@@ -364,9 +364,9 @@ kit = RoomKit(
 | `on(event_type)` | Decorator for framework events |
 | `identity_hook(trigger, ...)` | Decorator for identity hooks |
 | `on_delivery_status(fn)` | Decorator for delivery status |
-| `add_room_hook(room_id, trigger, execution, fn, ...)` | Add room-scoped hook on an owner trigger |
-| `enable_room_hook(room_id, name)` / `disable_room_hook(room_id, name)` | Run (or stop running) for the room's turns the room hook *name* the executors define on a trigger a turn fires; only an executor defining every enabled name takes the room's turns (RFC §10.6.6) |
-| `remove_room_hook(room_id, name)` | Remove room-scoped hook |
+| `await add_room_hook(room_id, trigger, execution, fn, ..., organization_id=None)` | Add room-scoped hook on an owner trigger |
+| `await enable_room_hook(room_id, name, *, organization_id=None)` / `await disable_room_hook(room_id, name, *, organization_id=None)` | Run (or stop running) for the room's turns the room hook *name* the executors define on a trigger a turn fires; only an executor defining every enabled name takes the room's turns (RFC §10.6.6) |
+| `await remove_room_hook(room_id, name, *, organization_id=None)` | Remove room-scoped hook |
 
 ### Realtime
 

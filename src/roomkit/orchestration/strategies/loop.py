@@ -160,7 +160,7 @@ class Loop(Orchestration):
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Wire the framework-driven loop."""
-        kit.claim_room_strategy(room_id, self)
+        await kit.claim_room_strategy(room_id, self)
         self._agent, *self._reviewers = (held(kit, a) for a in self._named)
         producer = self._agent
         reviewers = self._reviewers

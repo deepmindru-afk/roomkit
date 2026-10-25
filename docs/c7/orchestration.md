@@ -315,7 +315,9 @@ A second strategy is refused while one is installed, but for a Discussion
 installed over a discussion, which takes its place and keeps its queue. A
 host's own strategy gets the same treatment through `install_strategy`. If it is installed by
 calling its `install()` directly, it should call
-`kit.claim_room_strategy(room_id, self)` first, as the built-in ones do.
+`await kit.claim_room_strategy(room_id, self)` first, as the built-in ones
+do; with `organization_id=` (RFC §17.2), another organization's room is not
+found.
 Example: `examples/strategy_on_the_fly.py`.
 
 ## Using Orchestration

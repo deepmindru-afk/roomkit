@@ -402,7 +402,7 @@ class HooksApiMixin(HelpersMixin):
             return None
         return candidates[0]
 
-    def add_room_hook(
+    async def add_room_hook(
         self,
         room_id: str,
         trigger: HookTrigger,
@@ -413,6 +413,7 @@ class HooksApiMixin(HelpersMixin):
         *,
         fail_closed: bool = False,
         needs_lock: bool = True,
+        organization_id: str | None = None,
     ) -> HookRegistration:
         """Add a hook for a specific room; the registration held.
 
@@ -428,7 +429,16 @@ class HooksApiMixin(HelpersMixin):
         (:meth:`enable_room_hook`) included, or a value the framework writes
         in ``blocked_by``, raises ``ValueError``. Left empty, the hook is named after *fn*, made
         unique; the registration returned holds that name.
+
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): the room is read with it first, and another organization's
+        room raises :class:`RoomNotFoundError` with no hook registered.
+        Unset, no room is read, and a room id the store does not hold takes
+        the hook as before. :meth:`HookEngine.add_room_hook` is the
+        synchronous engine call, which reads no room.
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         return self._hook_engine.add_room_hook(
             room_id,
             HookRegistration(
@@ -442,13 +452,24 @@ class HooksApiMixin(HelpersMixin):
             ),
         )
 
-    def remove_room_hook(self, room_id: str, name: str) -> bool:
+    async def remove_room_hook(
+        self, room_id: str, name: str, *, organization_id: str | None = None
+    ) -> bool:
         """Remove a room hook the kit registered, by name; one defined by
         name on the executors is disabled for the room with
-        :meth:`disable_room_hook`."""
+        :meth:`disable_room_hook`.
+
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): another organization's room raises :class:`RoomNotFoundError`
+        with no hook removed.
+        """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         return self._hook_engine.remove_room_hook(room_id, name)
 
-    def enable_room_hook(self, room_id: str, name: str) -> None:
+    async def enable_room_hook(
+        self, room_id: str, name: str, *, organization_id: str | None = None
+    ) -> None:
         """Run the room hook *name* the executors define on a trigger a turn
         fires (``executor.room_hook(name, trigger)(fn)``) for *room_id*'s
         turns (RFC §10.6.6): the turns' requests name it, and only an
@@ -458,7 +479,13 @@ class HooksApiMixin(HelpersMixin):
         a room hook the kit registered for *room_id* under *name* raises
         ``ValueError``, and so does registering one under a name the room
         enables. Enabling a name the room enables already changes nothing.
+
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): another organization's room raises :class:`RoomNotFoundError`
+        with nothing enabled.
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         if name in self._hook_engine.room_hook_names(room_id):
             raise ValueError(
                 f"Room {room_id} already holds a hook named {name!r}: a name the room "
@@ -475,7 +502,13 @@ class HooksApiMixin(HelpersMixin):
             )
         self._turns.enable_room_hook(room_id, name)
 
-    def disable_room_hook(self, room_id: str, name: str) -> bool:
+    async def disable_room_hook(
+        self, room_id: str, name: str, *, organization_id: str | None = None
+    ) -> bool:
         """Stop running the room hook *name* for *room_id*'s turns; whether
-        it ran."""
+        it ran. *organization_id* is the organization the caller acts for
+        (RFC §17.2): another organization's room raises
+        :class:`RoomNotFoundError` with nothing disabled."""
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         return self._turns.disable_room_hook(room_id, name)

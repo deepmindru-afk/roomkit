@@ -186,7 +186,9 @@ class StrategyMixin(HelpersMixin):
         del self._room_strategies[room_id]
         return True
 
-    def claim_room_strategy(self, room_id: str, strategy: Orchestration) -> None:
+    async def claim_room_strategy(
+        self, room_id: str, strategy: Orchestration, *, organization_id: str | None = None
+    ) -> None:
         """Claim *room_id* for *strategy*, or refuse: a room holds one strategy
         (RFC §19.7). :meth:`install_strategy` claims for the strategy it
         installs; a strategy installed by calling its ``install`` directly
@@ -195,9 +197,23 @@ class StrategyMixin(HelpersMixin):
         A Discussion may claim a room holding a discussion no install of this
         kit recorded, to take its place (RFC §19.7.5 rule 1).
 
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): the room is read with it first, and another organization's
+        room is not found, whatever strategy it holds.
+
         Raises:
+            RoomNotFoundError: *organization_id* is set and the room is
+                missing or another organization's.
             ValueError: the room holds another strategy or a discussion.
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
+        self._check_claim(room_id, strategy)
+
+    def _check_claim(self, room_id: str, strategy: Orchestration) -> None:
+        """Refuse *strategy* a room holding another strategy or a discussion
+        it does not replace, with no await: an install claims and records in
+        one step (RFC §19.7)."""
         installed = self._room_strategies.get(room_id)
         if installed is not None and installed.strategy is not strategy:
             raise ValueError(
@@ -275,7 +291,7 @@ class StrategyMixin(HelpersMixin):
         held = self._room_strategies.get(room_id)
         replacing = self._replaces_discussion(room_id, strategy)
         if not replacing:
-            self.claim_room_strategy(room_id, strategy)
+            self._check_claim(room_id, strategy)
             if held is not None:
                 raise ValueError(f"Room {room_id} holds this strategy already")
         elif held is not None and held.installing:

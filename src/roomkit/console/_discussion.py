@@ -157,12 +157,12 @@ class DiscussionConsole:
         live = None
         try:
             for hook in hooks:
-                self._add_hook(hook)
+                await self._add_hook(hook)
             live = self._follow_streams()
             await self._screen.run()
         finally:
             for hook in hooks:
-                self._remove_hook(hook)
+                await self._remove_hook(hook)
             if live is not None:
                 live()
             restore_logs()
@@ -320,18 +320,18 @@ class DiscussionConsole:
 
     # -- Following the room --
 
-    def _add_hook(self, hook: HookRegistration) -> None:
+    async def _add_hook(self, hook: HookRegistration) -> None:
         """Follow the room through *hook*: a trigger a turn fires is a room
         hook defined by name on the kit's executor (RFC §10.6.6)."""
         if hook.trigger in TURN_TRIGGERS:
             self._kit.turn_executor.hooks.define_room_hook(hook)
-            self._kit.enable_room_hook(self._room_id, hook.name)
+            await self._kit.enable_room_hook(self._room_id, hook.name)
         else:
             self._kit.hook_engine.add_room_hook(self._room_id, hook)
 
-    def _remove_hook(self, hook: HookRegistration) -> None:
+    async def _remove_hook(self, hook: HookRegistration) -> None:
         if hook.trigger in TURN_TRIGGERS:
-            self._kit.disable_room_hook(self._room_id, hook.name)
+            await self._kit.disable_room_hook(self._room_id, hook.name)
             self._kit.turn_executor.hooks.undefine_room_hook(hook.name)
         else:
             self._kit.hook_engine.remove_room_hook(self._room_id, hook.name)
