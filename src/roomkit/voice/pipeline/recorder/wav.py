@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from roomkit.recorder.base import validate_storage_path
 from roomkit.voice.pipeline.recorder._wav_writer import (
     WavWriterThread,
     _OpOpen,
@@ -78,6 +79,13 @@ class WavFileRecorder(AudioRecorder):
                 "WavFileRecorder requires RecordingConfig.encryption or "
                 "storage_encrypted_at_rest=True"
             )
+        # A storage with '..' is refused, never swapped for another place: the
+        # encryption decision above is about the storage the caller named.
+        output_dir = (
+            Path(validate_storage_path(config.storage))
+            if config.storage
+            else Path(tempfile.gettempdir())
+        )
 
         if config.trigger == RecordingTrigger.SPEECH_ONLY:
             logger.warning(
@@ -90,21 +98,6 @@ class WavFileRecorder(AudioRecorder):
         timestamp = now.strftime("%Y%m%dT%H%M%S")
         safe_session_id = _sanitize_filename_component(session.id)
         base_name = f"{safe_session_id}_{timestamp}"
-
-        fallback_dir = Path(tempfile.gettempdir())
-        if config.storage:
-            # Reject paths with traversal components
-            if ".." in Path(config.storage).parts:
-                logger.warning(
-                    "Suspicious storage path %r contains '..'; falling back to temp directory",
-                    config.storage,
-                )
-                output_dir = fallback_dir
-            else:
-                output_dir = Path(config.storage).resolve()
-        else:
-            output_dir = fallback_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
 
         if config.channels in (RecordingChannelMode.SEPARATE, RecordingChannelMode.ALL):
             path = str(output_dir / base_name)

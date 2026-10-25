@@ -544,6 +544,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   completions do, where it raised httpx's. A 200 whose body is not JSON
   still raises `json.JSONDecodeError`.
 
+- **BREAKING — `WavFileRecorder` refuses a `storage` containing `..`**
+  (RFC §12.3.7, §17.6, RMK-569): `start()` raises `ValueError`, as
+  `PyAVMediaRecorder` and the video recorders already did. It used to log a
+  warning and write the recording to the temp directory instead: outside the
+  storage declared encrypted by `storage_encrypted_at_rest=True`, in the
+  clear, while the result reported `"encryption": "storage"`. The voice
+  pipeline logs the refusal and the call goes on unrecorded, as for any
+  refused start. An empty `storage` still records into the temp directory.
+  Migration: pass a path without `..`, e.g. `str(Path(storage).resolve())`.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added
