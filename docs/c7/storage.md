@@ -237,7 +237,9 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   `find_room_id_by_binding(channel_id, participant_id, identity_id,
   room_filter, *, recipient_key=None)` finds a binding naming the address or
   the identity, or naming no one and not `group` with the address as its
-  recipient under `recipient_key`; `find_room_id_by_participant(channel_id,
+  recipient under `recipient_key` (SQLite reads an integer recipient beyond
+  64 bits as a real number and does not find it; the other stores do);
+  `find_room_id_by_participant(channel_id,
   participant_id, identity_id, room_filter)` a participant reached through the
   channel whose id or identity is one of the names;
   `find_room_ids_by_channel(channel_id, room_filter, limit, *, group=None)`
