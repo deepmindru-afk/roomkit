@@ -1784,7 +1784,7 @@
     "attach_source": ["async def", "channel_id", "source", "*", "auto_restart=True", "restart_delay=5.0", "max_restart_delay=300.0", "max_restart_attempts=None", "max_concurrent_emits=10"],
     "bind_voice_session": ["async def", "session", "room_id", "channel_id"],
     "cancel_delivery": ["async def", "key", "*", "reason='caller_cancelled'", "organization_id=None"],
-    "cancel_task": ["async def", "task_id"],
+    "cancel_task": ["async def", "task_id", "*", "organization_id=None"],
     "channel_call": ["async def", "channel_id", "room_id", "verb", "*", "organization_id=None", "**arguments"],
     "channels": ["property"],
     "check_all_timers": ["async def", "*", "organization_id=None"],
@@ -2745,7 +2745,7 @@
     "channel_call": ["async def", "channel_id", "room_id", "verb", "*", "organization_id=None", "**arguments"]
   },
   "roomkit.core.mixins.DelegationMixin": {
-    "cancel_task": ["async def", "task_id"],
+    "cancel_task": ["async def", "task_id", "*", "organization_id=None"],
     "delegate": ["async def", "room_id", "agent_id", "task", "*", "wait=False", "context=None", "share_channels=None", "notify=None", "on_complete=None", "require_structured_result=False", "max_result_retries=3", "result_tool=None", "post_status=True", "brief=None", "conversation=0", "hand_back='relay'", "organization_id=None"],
     "submit_feedback": ["async def", "room_id", "rating", "*", "event_id=None", "channel_id=None", "comment=''", "dimension='overall'", "metadata=None", "organization_id=None"]
   },
