@@ -411,21 +411,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or was being committed by its post turn. The discussion now keeps every
   result it took and has not committed in the room's private state
   (`_speak_queue_results`: its id, agent, depth, text, metadata and the
-  agent's channel type), never in the room's metadata, which any reader of
-  the room gets, whether or not the posted message's visibility, or a hook
-  that blocks it, would show it to them. The process
+  agent's channel type), apart from the room's metadata (RFC §14.1), which
+  any reader of the room gets, whether or not the posted message's
+  visibility, or a hook that blocks it, would show it to them. The process
   that uninstalls posts them all before the agents leave, under the room
-  lock when the host holds it; a post that fails is logged and never blocks
-  the uninstall. A posted result carries the id it was taken under as its
-  `idempotency_key`, so whichever post comes second, the holder's own or a
-  post turn's commit under way, is a replay: a host that uninstalls under
-  the room lock while a post turn commits gets the result once, with no
-  record stored `BLOCKED`. Still lost: a result a process of an earlier
-  version holds when another process uninstalls (it keeps it in memory
-  only), and one the discussion takes after another process uninstalled it,
-  whose agent is gone (logged `task result <id> for <agent> in <room> not
-  posted: agent detached`). A result a closing kit did not post stays kept,
-  and the next uninstall posts it.
+  lock when the host holds it, through its own hooks: every process serving
+  a room registers the same hooks. A post that fails is logged and never
+  blocks the uninstall; an uninstall cut while it posts leaves the rest, the
+  one it was committing included, to the kit. A posted result carries the
+  id it was taken under as its `idempotency_key`, so whichever post comes
+  second, the holder's own or a post turn's commit under way, is a replay: a
+  host that uninstalls under the room lock while a post turn commits gets
+  the result once, with no record stored `BLOCKED`.
+
+  Limits. A result a closing kit did not post, or whose post failed, stays
+  kept, and nothing posts it before the next uninstall: not the process
+  that gives the next turn, nor a restarted process that installs the
+  discussion again. It then comes after the room's later messages, and a
+  discussion never uninstalled never posts it. A result committed but still
+  kept (a closing kit cut its removal) is a replay at that uninstall, unless
+  its message was hard-deleted meanwhile (RFC §10.3): its key gone with it,
+  it is posted again.
+  Still lost: a result a process of an earlier version holds when another
+  process uninstalls (it keeps it in memory only), and one the discussion
+  takes after another process uninstalled it, whose agent is gone (logged
+  `task result <id> for <agent> in <room> not posted: agent detached`).
 
 - An agent's answer is narrowed only by the transports that send (RFC §6.7,
   §10.5, RMK-947). The media types and capabilities a turn is given

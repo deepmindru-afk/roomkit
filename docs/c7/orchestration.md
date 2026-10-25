@@ -229,9 +229,11 @@ await kit.cancel_task(task.id)
   is over or gone is posted at once (relayed: refused once over).
   A posted result the discussion took and has not committed (queued,
   waiting for the floor, or being committed) is kept in the room's private
-  state, never in its metadata: `uninstall_strategy`, in any process, posts
-  it before it detaches the agents the installs attached, keyed by the
-  result's id, so the process that held it posts nothing more.
+  state, apart from its metadata: `uninstall_strategy`, in any process,
+  posts it through that process's hooks before it detaches the agents the
+  installs attached, keyed by the result's id, so the process that held it
+  posts nothing more. One a closing kit did not post, or whose post failed,
+  waits for the next uninstall.
   Example: `examples/discussion_background.py`.
 
 **External agents.** An `ACPChannel` (Claude Code, Codex) is an agent like

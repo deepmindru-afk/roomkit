@@ -3,12 +3,14 @@
 A result handed back with ``hand_back="post"`` takes a turn of its own, or
 waits for the floor, and its turn posts it without a generation. From when
 the discussion takes it until it is committed, the result is listed with the
-room's private state in the store, out of the room's metadata: its text is
-read nowhere the posted message would not be. Whichever process
-uninstalls the discussion posts every listed result before it detaches the
-agents, the ones another process holds or is committing included. A post is
-keyed by the result's id, the id it was listed under, so whichever post
-comes second is a replay (RFC §13.4).
+room's private state, apart from the room's metadata (RFC §14.1): its text
+is read nowhere the posted message would not be. Whichever process
+uninstalls the discussion posts every listed result, through its own hooks,
+before it detaches the agents, the ones another process holds or is
+committing included. A post is keyed by the result's id, the id it was
+listed under, so whichever post comes second is a replay (RFC §13.4). A
+result a closing kit did not post, or whose post failed, stays listed until
+that uninstall.
 """
 
 from __future__ import annotations
@@ -171,13 +173,16 @@ class ResultPosts:
         self._unposted = {}
         try:
             while held:
-                posted = held.pop(next(iter(held)))
+                event_id = next(iter(held))
                 try:
-                    await self._commit(posted)
+                    await self._commit(held[event_id])
                 except Exception:
                     logger.exception(
-                        "Task result %s in room %s was not posted", posted.id, self._room_id
+                        "Task result %s in room %s was not posted", event_id, self._room_id
                     )
+                # Off only once its commit ended: one cut mid-commit is posted
+                # again below, a replay if it was committed.
+                del held[event_id]
         finally:
             # Cut on the way: the kit posts the rest, as it would have.
             for posted in held.values():

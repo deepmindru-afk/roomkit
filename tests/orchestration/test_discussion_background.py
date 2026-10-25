@@ -278,6 +278,14 @@ async def _until_cut() -> None:
         await loop.cancel_event.wait()
 
 
+async def _settled(kit: RoomKit) -> None:
+    """Until the work *kit* holds in the background has ended: a result's
+    posts among it."""
+    async with asyncio.timeout(5):
+        while runs := {r for r in kit._background_runs if not r.done()}:
+            await asyncio.wait(runs)
+
+
 async def _bindings(kit: RoomKit) -> set[str]:
     return {b.channel_id for b in await kit.store.list_bindings("r1")}
 
@@ -383,9 +391,10 @@ async def test_a_result_being_posted_when_the_strategy_is_uninstalled_is_posted_
 
     assert _posted(await _timeline(kit)) == [("comms", EventStatus.DELIVERED)]
     assert await _bindings(kit) == {"ops"}
-    await kit.close()  # the commit under way has ended: a replay
+    await _settled(kit)  # the commit under way has ended: a replay
     assert _posted(await _timeline(kit)) == [("comms", EventStatus.DELIVERED)]
     assert _troubles(caplog) == []
+    await kit.close()
 
 
 async def _hold_in_a(a: RoomKit, held: str, monkeypatch: pytest.MonkeyPatch) -> Callable[[], None]:
@@ -445,10 +454,11 @@ async def test_a_result_another_process_holds_is_posted_once_by_the_one_that_uni
     async with asyncio.timeout(5):
         while "r1" in a._discussions:  # a reads the uninstall and leaves
             await asyncio.sleep(0.01)
-    await a.close()  # a's own post of the result has ended by then: a replay
-    await b.close()
+    await _settled(a)  # a's own post of the result has ended: a replay
     assert _posted(await _timeline(a)) == [("comms", EventStatus.DELIVERED)]
     assert _troubles(caplog) == []
+    await a.close()
+    await b.close()
 
 
 async def test_a_result_no_list_holds_is_posted_by_its_holder(
@@ -536,3 +546,61 @@ async def test_a_result_a_closing_kit_did_not_post_is_posted_by_the_next_uninsta
     assert _posted(await _timeline(b)) == [("comms", EventStatus.DELIVERED)]
     assert await _bindings(b) == {"ops"}
     await b.close()
+
+
+async def test_an_uninstall_cut_while_it_posts_a_result_leaves_it_posted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_driver, "POLL_SECONDS", 0.05)
+    store, locks = InMemoryStore(), InMemoryLockManager()
+    a = RoomKit(store=store, lock_manager=locks)
+    await _hold_in_a(a, "queued", monkeypatch)
+    await a.close()  # the result stays kept, no process holds it
+    b = RoomKit(store=store, lock_manager=locks)
+    b.register_channel(SimpleChannel("ops"))
+    send_event, posting = b.send_event, asyncio.Event()
+
+    async def cut_once(*args: Any, **kwargs: Any) -> Any:
+        if (kwargs.get("metadata") or {}).get("task_id") and not posting.is_set():
+            posting.set()
+            await asyncio.Event().wait()  # until the uninstall is cut
+        return await send_event(*args, **kwargs)
+
+    b.send_event = cut_once  # type: ignore[method-assign]
+    uninstall = asyncio.get_running_loop().create_task(b.uninstall_strategy("r1"))
+    await asyncio.wait_for(posting.wait(), 5)
+    uninstall.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await uninstall
+
+    await _settled(b)  # the kit posts what the cut uninstall did not
+    assert _posted(await _timeline(b)) == [("comms", EventStatus.DELIVERED)]
+    await b.close()
+
+
+async def test_a_result_the_list_does_not_hold_is_posted_by_its_uninstall_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def lists_nothing(self: ResultPosts, posted: RoomEvent) -> None:
+        """The discussion was no longer stored when it took the result."""
+
+    monkeypatch.setattr(ResultPosts, "keep", lists_nothing)
+    kit = RoomKit()
+    comms = MockAIProvider(ai_responses=_starts_task("On it."))
+    sre = _Paced([AIResponse(content="sre here")], [_until_cut])
+    helper = _Paced([AIResponse(content="Findings.")], [sre.asked.wait])
+    handed = _handed_back(kit)
+    # sre's turn is the last: the result comes back once the discussion is
+    # over, and waits for the floor in this process only.
+    await _room(kit, comms, sre, helper, hand_back="post", max_turns=2)
+    await _say(kit, "@comms please go through all the support tickets")
+    await _until_said(kit, 1)
+    await _say(kit, "@sre quick one")
+    await asyncio.wait_for(handed.wait(), 5)
+
+    async with kit.lock_manager.locked("r1"):
+        assert await kit.uninstall_strategy("r1") is True
+
+    assert _posted(await _timeline(kit)) == [("comms", EventStatus.DELIVERED)]
+    assert await _bindings(kit) == {"ops"}
+    await kit.close()
