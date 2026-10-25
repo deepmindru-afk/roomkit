@@ -196,6 +196,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _max_empty_retries: int
     _thinking_coalesce_ms: float
     _thinking_coalesce_chars: int
+    _publish_text_deltas: bool
     _text_coalesce_ms: float
     _text_coalesce_chars: int
     _active_loops: dict[str, _ToolLoopContext]
@@ -259,6 +260,20 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             round_idx,
         )
         return len(thinking_chunks)
+
+    def _new_text_coalescer(self, room_id: str | None, round_idx: int) -> _TextCoalescer | None:
+        """The round's ``TEXT_DELTA`` window, or ``None`` when the channel
+        publishes no answer text: the host did not ask for it, and
+        ``BEFORE_BROADCAST`` does not see that stream (RFC §6.4)."""
+        if not self._publish_text_deltas:
+            return None
+        return _TextCoalescer(
+            self._publish_text_event,
+            room_id,
+            round_idx,
+            flush_ms=self._text_coalesce_ms,
+            flush_chars=self._text_coalesce_chars,
+        )
 
     def _new_tool_call_coalescer(
         self, room_id: str | None, round_idx: int
@@ -681,13 +696,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             room_id=turn.room_id,
             cancel_event=turn.loop_ctx.cancel_event,
             thinking_coalescer=self._new_thinking_coalescer(turn.room_id, index),
-            text_coalescer=_TextCoalescer(
-                self._publish_text_event,
-                turn.room_id,
-                index,
-                flush_ms=self._text_coalesce_ms,
-                flush_chars=self._text_coalesce_chars,
-            ),
+            text_coalescer=self._new_text_coalescer(turn.room_id, index),
             new_composition=partial(self._new_tool_call_coalescer, turn.room_id, index),
             publish_thinking=self._publish_thinking_event,
             close_thinking=self._close_thinking_window,

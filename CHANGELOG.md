@@ -37,18 +37,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps each key in the room's metadata, as before, and warns once per
   store that it is readable there.
 
-- **An agent's answer text, published live as `TEXT_DELTA`** (RFC §6.4,
-  RMK-951). The live pipe reaches only a room's streaming transports, and a
-  delegated turn's text, collected for its result, reached no one until the
-  turn ended, while its tool calls were already published live in the child
-  room. `AIChannel` now publishes its answer's text as
-  `EphemeralEventType.TEXT_DELTA` ephemerals (`text`, `round`,
+- **An agent's answer text, published live as `TEXT_DELTA`, when the host
+  turns it on** (RFC §6.4, RMK-951). The live pipe reaches only a room's
+  streaming transports, and a delegated turn's text, collected for its
+  result, reached no one until the turn ended, while its tool calls were
+  already published live in the child room. With the new keyword-only
+  `AIChannel(publish_text_deltas=True)`, `AIChannel` publishes its answer's
+  text as `EphemeralEventType.TEXT_DELTA` ephemerals (`text`, `round`,
   `channel_id`) in the room it speaks in, child rooms included, coalesced
   on the new `AIChannel(text_coalesce_ms=80, text_coalesce_chars=256)`,
-  flushed before a round's tool-call events.
+  flushed before a round's tool-call events. It is off by default: nothing
+  is published, and the coalescing settings have no effect.
+  `BEFORE_BROADCAST` does not cover this stream (see Security).
   Like every turn ephemeral, it reaches no one the answer would not reach
   (RFC §8.4). A 400-token answer takes 13 publishes; the cost is within 0.3 %
   of a turn.
+  Rolling upgrade: a 0.108.0 process cannot parse a `text_delta` event
+  (`EphemeralEvent.from_dict` raises `ValueError`): an owner logs an error
+  for each one a newer executor sends and publishes none, and the Redis
+  realtime backend drops it with a warning. Turn the option on only once
+  every worker runs 0.109.0.
 
 - **A test catches a public signature change that can break a caller.**
   `tests/public_api_signatures.json` holds the signatures of the classes and
@@ -770,6 +778,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another organization's room raises `RoomNotFoundError` before any hook
   runs, anything is queued, a turn starts or a child room is created.
   Unset, no room is read for the scope, as before.
+
+- **`BEFORE_BROADCAST` does not cover the `TEXT_DELTA` stream** (RFC §6.4,
+  §9.5, RMK-951). A hook that blocks or redacts an agent's answer judges the
+  message the room stores, never the text published live while it is
+  written: with `AIChannel(publish_text_deltas=True)`, a room subscriber
+  reads the answer whole, what the hook blocked or redacted included, even
+  in a room with no streaming transport. The stream is therefore off by
+  default (see Added). A host that filters or redacts answers must not turn
+  it on.
 
 - **BREAKING — a turn's live ephemerals reach no one its answer would not
   reach** (RFC §8.4, §10.6.3, RMK-952). A turn's reasoning (`THINKING_*`),
