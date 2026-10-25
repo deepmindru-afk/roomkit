@@ -5224,6 +5224,8 @@ await kit.cancel_task(task.id)
 - Tasks run in parallel; each turn's notes list the room's tasks; a worker's
   call of the tool is refused; a result that comes back once the discussion
   is over or gone is posted at once (relayed: refused once over).
+  `uninstall_strategy` posts the results the process still holds before it
+  detaches the agents the install attached.
   Example: `examples/discussion_background.py`.
 
 **External agents.** An `ACPChannel` (Claude Code, Codex) is an agent like

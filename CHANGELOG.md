@@ -399,6 +399,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   eviction receives only the room it registers for. A host that registered
   an evicted id again and relied on its old rooms subscribes them again.
 
+- **`uninstall_strategy` posts a discussion's task results before it detaches
+  their agents** (RFC §19.7.5 rule 19, RMK-780). A result handed back with
+  `hand_back="post"` and still waiting for its turn, or for the floor, when
+  the strategy was uninstalled was left to a background post, and the
+  uninstall detached the agents its install attached right after: the post
+  found its agent gone, raised `ChannelNotFoundError` into the log, and the
+  result was never stored. The discussion's own uninstall step now posts
+  those results, under the room lock when the host holds it, and waits
+  briefly for a result already being posted, before the agents leave; a post
+  that fails is logged and never blocks the uninstall. An uninstall made by
+  another process still detaches the agents before the process holding a
+  result learns of it.
+
 - An agent's answer is narrowed only by the transports that send (RFC §6.7,
   §10.5, RMK-947). The media types and capabilities a turn is given
   intersected every transport of the room, one never delivered to included:

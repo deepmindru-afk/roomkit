@@ -27,7 +27,6 @@ from roomkit.core.event_router import CHAIN_DEPTH_LIMIT, chain_depth_exceeded, u
 from roomkit.core.locks import _has_room_lock
 from roomkit.core.task_utils import hold_task
 from roomkit.models.enums import ChannelType, EventStatus, RoomStatus
-from roomkit.tasks.posting import send_posted
 
 from ._dispatching import Dispatcher
 from ._notes import AgentLine, TurnKind, turn_notes
@@ -423,7 +422,7 @@ class TurnDriver:
         # Held by the kit, apart from the driver: a stop while it commits does
         # not lose the result (a closing kit cuts it); a failure is logged there.
         posting = (
-            hold_task(room.kit, send_posted(room.kit, turn.posted), context=contextvars.Context())
+            hold_task(room.kit, room.post(turn.posted), context=contextvars.Context())
             if turn.posted is not None
             else None
         )

@@ -72,6 +72,9 @@ _STOP_WAIT = 5.0
 _FLOOR_POLL = 0.05
 """How often a result to post looks whether the floor is free."""
 
+_POST_WAIT = 5.0
+"""How long an uninstall waits for the task results being posted."""
+
 
 class DiscussionRoom:
     """The discussion a room holds, as this process takes part in it."""
@@ -103,6 +106,11 @@ class DiscussionRoom:
         self.driver: TurnDriver | None = TurnDriver(self) if strategy is not None else None
         self._last_fire: asyncio.Task[None] | None = None
         self._announcing: set[asyncio.Task[None]] = set()
+        self._unposted: dict[str, RoomEvent] = {}
+        """Task results to post off their turn, by event id, until a post
+        takes them (rule 19)."""
+        self._sending: set[asyncio.Task[None]] = set()
+        """The posts of task results under way."""
 
     @classmethod
     def installed(cls, kit: Any, room_id: str, strategy: Discussion) -> DiscussionRoom:
@@ -283,7 +291,10 @@ class DiscussionRoom:
         stopped, the running one cut with its end recorded nowhere, then the
         queue (who listens, who asked whom, the turns given, whether it is
         over) and the configuration forgotten. The lease stays this process's
-        until both are gone, so no other process gives a turn meanwhile."""
+        until both are gone, so no other process gives a turn meanwhile. The
+        task results this process holds are posted before it returns, while
+        their agents are still bound: an uninstall detaches them next (rule
+        19)."""
         self.forgotten = self.closed = True
         if self.driver is not None:
             await self.driver.stop()
@@ -292,6 +303,7 @@ class DiscussionRoom:
             mine = [e for e in state.entries if e.holder == self.shared.me]
             await self.shared.forget()
         self.drop_instructions(mine)
+        await self._post_unposted()
         await self._finish_announcing()
 
     def handle(self, agent_id: str) -> str:
@@ -705,17 +717,56 @@ class DiscussionRoom:
 
     def post_later(self, posted: RoomEvent) -> None:
         """Post a task's result its own turn will not post, once no turn runs,
-        in a task the kit holds: a closing kit posts nothing (rule 19)."""
+        in a task the kit holds: a closing kit posts nothing, and an uninstall
+        posts it itself, before the agents leave (rule 19)."""
         if self.kit._closed:
             return
+        self._unposted[posted.id] = posted
         # A context of its own: the room lock may be held here, and is
         # reentrant per context.
-        hold_task(self.kit, self._post_when_free(posted), context=contextvars.Context())
+        hold_task(self.kit, self._post_when_free(posted.id), context=contextvars.Context())
 
-    async def _post_when_free(self, posted: RoomEvent) -> None:
+    async def _post_when_free(self, event_id: str) -> None:
         while self.driver is not None and self.driver.speaking is not None:
             await asyncio.sleep(_FLOOR_POLL)
-        await send_posted(self.kit, posted)
+        posted = self._unposted.pop(event_id, None)
+        if posted is not None:  # else an uninstall posted it
+            await self.post(posted)
+
+    async def post(self, posted: RoomEvent) -> None:
+        """Commit *posted*, a task's result, as its agent's message, in a task
+        the kit holds; an uninstall waits for it before the agents leave."""
+        task = asyncio.current_task()
+        if task is not None:
+            self._sending.add(task)
+        try:
+            await send_posted(self.kit, posted)
+        finally:
+            if task is not None:
+                self._sending.discard(task)
+
+    async def _post_unposted(self) -> None:
+        """Post the task results waiting for the floor, the turns stopped, in
+        the caller's task, which holds the room lock or takes it: committed
+        while their agents are still bound (rule 19). A failed post is logged
+        and never blocks the uninstall. A post already under way is waited
+        for, briefly, unless the caller holds the room lock, which it needs."""
+        held, self._unposted = self._unposted, {}
+        try:
+            while held:
+                posted = held.pop(next(iter(held)))
+                try:
+                    await send_posted(self.kit, posted)
+                except Exception:
+                    logger.exception("A task's result in room %s was not posted", self.room_id)
+        finally:
+            # Cut on the way: the kit posts the rest, as it would have.
+            for posted in held.values():
+                self.post_later(posted)
+        current = asyncio.current_task()
+        sending = [task for task in self._sending if task is not current]
+        if sending and not _has_room_lock(self.room_id):
+            await asyncio.wait(sending, timeout=_POST_WAIT)
 
     def forget_instruction(self, instruction_id: str, state: SpeakQueueState) -> None:
         """Forget an instruction's text once no queued turn takes it (one

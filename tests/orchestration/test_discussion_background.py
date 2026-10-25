@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+import pytest
 
 from roomkit import Agent, RoomKit
 from roomkit.models.enums import EventStatus, EventType, HookExecution, HookTrigger
@@ -26,6 +29,7 @@ from roomkit.orchestration.strategies.discussion import (
 from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.background import BACKGROUND_TOOL
+from roomkit.tools.context import _current_loop_ctx
 from tests.orchestration.test_strategy_discussion import _provider, _say, _timeline
 from tests.test_framework import SimpleChannel
 
@@ -261,7 +265,54 @@ async def test_results_held_when_another_process_uninstalls_are_posted() -> None
     await kit.close()
 
 
-async def test_a_result_being_posted_when_the_discussion_stops_is_still_posted() -> None:
+async def _until_cut() -> None:
+    """Until the turn is cut, as a streaming provider's next chunk would
+    reach the steering check."""
+    loop = _current_loop_ctx.get()
+    if loop is not None:
+        await loop.cancel_event.wait()
+
+
+async def _bindings(kit: RoomKit) -> set[str]:
+    return {b.channel_id for b in await kit.store.list_bindings("r1")}
+
+
+def _posted(events: list[RoomEvent]) -> list[tuple[str, EventStatus]]:
+    return [
+        (e.source.channel_id, e.status)
+        for e in events
+        if e.content.body.startswith("Result of the task")
+    ]
+
+
+@pytest.mark.parametrize("locked", [False, True], ids=["unlocked", "under_the_lock"])
+async def test_a_result_queued_when_the_strategy_is_uninstalled_is_posted_before_its_agent_leaves(
+    locked: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    kit = RoomKit()
+    comms = MockAIProvider(ai_responses=_starts_task("On it."))
+    sre = _Paced([AIResponse(content="sre here")], [_until_cut])
+    # The result comes back while sre speaks, and waits behind its turn.
+    helper = _Paced([AIResponse(content="Findings.")], [sre.asked.wait])
+    handed = _handed_back(kit)
+    await _room(kit, comms, sre, helper, hand_back="post")
+    await _say(kit, "@comms please go through all the support tickets")
+    await _until_said(kit, 1)
+    await _say(kit, "@sre quick one")
+    await asyncio.wait_for(handed.wait(), 5)
+
+    async with kit.lock_manager.locked("r1") if locked else contextlib.nullcontext():
+        assert await kit.uninstall_strategy("r1") is True
+
+    # Posted as comms's message, then comms and sre, which the install
+    # attached, detached (RFC §19.7.5 rule 19, §19.7).
+    assert _posted(await _timeline(kit)) == [("comms", EventStatus.DELIVERED)]
+    assert await _bindings(kit) == {"ops"}
+    await kit.close()
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+
+async def test_a_result_being_posted_when_the_strategy_is_uninstalled_is_posted_first() -> None:
     kit = RoomKit()
     comms = MockAIProvider(ai_responses=_starts_task("On it."))
     helper = MockAIProvider(ai_responses=[AIResponse(content="Findings.")])
@@ -281,9 +332,15 @@ async def test_a_result_being_posted_when_the_discussion_stops_is_still_posted()
     async with asyncio.timeout(5):
         while discussion.driver is None or discussion.driver.posting is None:
             await asyncio.sleep(0.005)
-    await kit._uninstall_discussion("r1")
-    stopped.set()
-    said = await _until_said(kit, 2)
+    stop = discussion.driver.stop
 
-    assert said[-1].content.body.startswith("Result of the task")
+    async def stopping() -> None:
+        await stop()
+        stopped.set()
+
+    discussion.driver.stop = stopping  # type: ignore[method-assign]
+    assert await kit.uninstall_strategy("r1") is True
+
+    assert _posted(await _timeline(kit)) == [("comms", EventStatus.DELIVERED)]
+    assert await _bindings(kit) == {"ops"}
     await kit.close()
