@@ -166,6 +166,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `mcp_tool_provider.py` | MCP | Model Context Protocol tool provider integration |
 | `mcp_stdio_tools.py` | MCP | An MCP server started as a command (stdio), its tools used by a local llama.cpp model |
 | `mcp_read_resource.py` | MCP | Read an MCP server's resource with `discover=False`: no `tools/list` sent |
+| `mcp_server_labels.py` | MCP | Two MCP servers composed, each with `label=`: an alias runs on the server it names, and a policy that names a server holds over a catalogue of aliases |
 | `agent_skills.py` | Skills | Agent skills discovery and registration |
 | `skill_active_manifest.py` | Skills | A host manifest that marks what the room already loaded, via `active_skill_names` (mock provider, no API key) |
 | `streaming_tools.py` | Streaming | Streaming text delivery with interleaved tool calls |

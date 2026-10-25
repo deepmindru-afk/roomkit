@@ -4,15 +4,20 @@ Two MCP servers both serve ``delete_records``. A model that names MCP tools the
 way prompts written for Claude Code do calls ``mcp__<server>__<tool>``. Each
 provider is given ``label=``, the host's name for its server: its tool handler
 serves only the aliases naming that server, so the alias reaches the server it
-names whatever the order of the chain, and a policy that names a server holds.
+names whatever the order of the chain (RFC §21.2).
 
-A policy judges an alias under both its names (RFC §21.1). To keep a server
-out, deny its aliases (``deny=["mcp__archive__*"]``); to admit one server only,
-allow its aliases and its tools' names (``allow=["mcp__crm__*",
-"delete_records"]``). A provider without ``label=`` serves an alias whatever
-server it names: such a policy cannot hold a call to it.
+A policy judges an alias under both its names. To keep a server out, deny its
+aliases (``deny=["mcp__archive__*"]``); to admit one server only, allow its
+aliases and its tools' names (``allow=["mcp__crm__*", "delete_records"]``).
+Such a policy holds only when the session declares the tools under their
+aliases alone, as here: a bare ``delete_records`` names no server, so it is
+refused as undeclared. Declared under their bare names, a bare call runs on
+the first server of the chain that has the tool, the archive here, whatever
+the policy says of servers; a host that declares bare names puts first the
+server its bare names must reach. A provider without ``label=`` serves an alias
+whatever server it names: a policy that names a server cannot hold a call to it.
 
-    RealtimeVoiceChannel (tool_policy=deny mcp__archive__*)
+    RealtimeVoiceChannel (tools=the aliases, tool_policy=deny mcp__archive__*)
         └── compose_tool_handlers
               ├── MCPToolProvider(label="archive") ── stdio ── records_server.py archive
               └── MCPToolProvider(label="crm")     ── stdio ── records_server.py crm
@@ -32,24 +37,49 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import RealtimeVoiceChannel, RoomKit, ToolPolicy
 from roomkit.tools import MCPToolProvider, compose_tool_handlers
-from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.realtime import MockRealtimeProvider, MockRealtimeTransport
 
 logger = setup_logging("mcp_server_labels")
 
 RECORDS_SERVER = str(Path(__file__).resolve().parent / "mcp_servers" / "records_server.py")
 
-CALLS = ["mcp__crm__delete_records", "mcp__archive__delete_records", "mcp__crm__search_records"]
+CALLS = ["mcp__crm__delete_records", "mcp__archive__delete_records", "delete_records"]
+
+RESULT_WAIT_SECONDS = 5.0
 
 
 def records(label: str) -> MCPToolProvider:
     """The records server for *label*, started as a subprocess and named by it."""
     return MCPToolProvider.from_command(sys.executable, [RECORDS_SERVER, label], label=label)
+
+
+def aliases(provider: MCPToolProvider, label: str) -> list[dict[str, Any]]:
+    """The provider's tools, declared under their aliases alone."""
+    return [
+        {
+            "name": f"mcp__{label}__{tool.name}",
+            "description": tool.description,
+            "parameters": tool.parameters,
+        }
+        for tool in provider.get_tools()
+    ]
+
+
+async def result_of(provider: MockRealtimeProvider, call: int) -> str:
+    """What the model reads for its *call*-th tool call (counted from 1)."""
+    deadline = asyncio.get_running_loop().time() + RESULT_WAIT_SECONDS
+    while len(provider.tool_results) < call:
+        if asyncio.get_running_loop().time() > deadline:
+            return f"(no result within {RESULT_WAIT_SECONDS:g} s)"
+        await asyncio.sleep(0.05)
+    return provider.tool_results[call - 1][2]
 
 
 async def main() -> None:
@@ -59,6 +89,7 @@ async def main() -> None:
             "voice",
             provider=provider,
             transport=MockRealtimeTransport(),
+            tools=[*aliases(crm, "crm"), *aliases(archive, "archive")],
             # The archive first: without labels, every alias would reach it.
             tool_handler=compose_tool_handlers(archive.as_tool_handler(), crm.as_tool_handler()),
             tool_policy=ToolPolicy(deny=["mcp__archive__*"]),  # keep the archive out
@@ -69,13 +100,9 @@ async def main() -> None:
         await kit.attach_channel("records", "voice")
         session = await voice.start_session("records", "operator", "ws")
 
-        for index, name in enumerate(CALLS, start=1):
-            await provider.simulate_tool_call(session, f"call-{index}", name, {"query": "2019"})
-            for _ in range(100):
-                if len(provider.tool_results) == index:
-                    break
-                await asyncio.sleep(0.05)
-            logger.info("%s -> %s", name, provider.tool_results[-1][2])
+        for call, name in enumerate(CALLS, start=1):
+            await provider.simulate_tool_call(session, f"call-{call}", name, {"query": "2019"})
+            logger.info("%s -> %s", name, await result_of(provider, call))
         await kit.close()
 
 
