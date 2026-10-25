@@ -69,8 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module `import roomkit` did not load is exported lazily: `import roomkit`
   loads no new module, a missing extra raises its own error on first use
   (`ModuleNotFoundError: No module named 'httpx'`), `dir()` and `help()`
-  list the name, and a type checker reads the real class and reports a name
-  the package does not export. Every module path that imported keeps
+  list the names whose extras are installed (read from the sources, nothing
+  imported), and a type checker reads the real class and reports a name the
+  package does not export. Every module path that imported keeps
   importing; the `roomkit.voice.get_*()` lookups keep working and are
   internal. `tests/test_public_imports.py` fails on an example, a document or a
   docstring under `src/` that imports a roomkit name from anywhere else, and
