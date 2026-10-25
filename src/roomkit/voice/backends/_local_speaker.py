@@ -33,6 +33,18 @@ MAX_BUFFER_SECONDS = 30
 _MAX_UNDERRUN_WARNINGS = 5
 
 
+def _requested_latency(low_latency: bool, latency_ms: float | None) -> str | float:
+    """PortAudio's ``latency=``: seconds when *latency_ms* is given, else a name."""
+    if latency_ms is not None:
+        return latency_ms / 1000
+    return "low" if low_latency and sys.platform != "darwin" else "high"
+
+
+def _latency_name(latency: str | float) -> str:
+    """The requested latency as the log names it: "low", "high" or "100ms"."""
+    return latency if isinstance(latency, str) else f"{latency * 1000:g}ms"
+
+
 @dataclass(frozen=True, slots=True)
 class SpeakerBlock:
     """One block the speaker played.
@@ -75,6 +87,8 @@ class LocalSpeaker:
             reference is fed when a block is handed over, so the less waits
             between that and the speaker, the better). macOS always gets "high":
             CoreAudio's tiny "low" buffers underrun from Python callback jitter.
+        latency_ms: The output latency to ask PortAudio for, in milliseconds,
+            in place of the choice ``low_latency`` makes (None: that choice).
         prebuffer_ms: Audio to accumulate before playing (``0``: the first byte).
         on_block: Called on the audio thread after each block is filled.
         on_finished: Called on the audio thread when the stream stops, with
@@ -94,13 +108,14 @@ class LocalSpeaker:
         prebuffer_ms: int,
         on_block: Callable[[SpeakerBlock], None],
         on_finished: Callable[[bool], None] | None = None,
+        latency_ms: float | None = None,
     ) -> None:
         self._sd = sd
         self._sample_rate = sample_rate
         self._channels = channels
         self._blocksize = int(sample_rate * block_duration_ms / 1000)
         self._device = device
-        self._latency = "low" if low_latency and sys.platform != "darwin" else "high"
+        self._latency = _requested_latency(low_latency, latency_ms)
         self._frame_width = channels * 2  # int16
         self._on_block = on_block
         self._on_finished = on_finished
@@ -173,7 +188,7 @@ class LocalSpeaker:
             "Speaker stream: rate=%dHz blocksize=%d latency=%s device=%s",
             self._sample_rate,
             self._blocksize,
-            self._latency,
+            _latency_name(self._latency),
             self._device if self._device is not None else "default",
         )
 

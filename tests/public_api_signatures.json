@@ -6944,7 +6944,7 @@
     "wait_playback": ["async def", "session"]
   },
   "roomkit.voice.backends.LocalAudioBackend": {
-    "__init__": ["def", "*", "input_sample_rate=None", "output_sample_rate=24000", "channels=None", "block_duration_ms=None", "input_device=None", "output_device=None", "aec=None", "mute_mic_during_playback=None", "rt_prebuffer_ms=120", "source=None"],
+    "__init__": ["def", "*", "input_sample_rate=None", "output_sample_rate=24000", "channels=None", "block_duration_ms=None", "input_device=None", "output_device=None", "aec=None", "mute_mic_during_playback=None", "rt_prebuffer_ms=120", "output_latency_ms=None", "source=None"],
     "accept": ["async def", "session", "connection"],
     "audio_received_callback": ["property"],
     "auto_connect": ["property"],

@@ -71,9 +71,12 @@ class TestLocalAudioBackendProperties:
             ("channels", 0),
             ("block_duration_ms", 0),
             ("rt_prebuffer_ms", -1),
+            ("output_latency_ms", 0),
+            ("output_latency_ms", -20.0),
+            ("output_latency_ms", float("nan")),
         ],
     )
-    def test_invalid_audio_geometry_fails_fast(self, name: str, value: int) -> None:
+    def test_invalid_audio_geometry_fails_fast(self, name: str, value: float) -> None:
         with pytest.raises(ValueError):
             _make_backend(**{name: value})
 
@@ -368,6 +371,30 @@ class TestLocalAudioSpeakerPlayback:
         streams[0].stop.assert_not_called()
         streams[0].abort.assert_not_called()
         assert streams[0].kwargs["blocksize"] == 480  # fixed 20 ms blocks
+
+    @pytest.mark.parametrize(
+        ("platform", "kwargs", "latency"),
+        [
+            ("linux", {}, "high"),
+            ("linux", {"aec": MagicMock()}, "low"),
+            ("darwin", {"aec": MagicMock()}, "high"),
+            ("linux", {"aec": MagicMock(), "output_latency_ms": 100}, 0.1),
+            ("linux", {"output_latency_ms": 100}, 0.1),
+            ("darwin", {"aec": MagicMock(), "output_latency_ms": 100}, 0.1),
+        ],
+    )
+    async def test_the_output_stream_asks_portaudio_for_its_latency(
+        self, monkeypatch, platform: str, kwargs: dict, latency: str | float
+    ) -> None:
+        """A wider margin than "low" stops the underflows a stalled callback
+        causes (RMK-554); without one, "low" serves an AEC, except on macOS."""
+        monkeypatch.setattr("sys.platform", platform)
+        backend, streams = _speaker_backend(**kwargs)
+        session = await backend.connect("room-1", "user-1", "voice-1")
+
+        await _play(backend, session, _response())
+
+        assert streams[0].kwargs["latency"] == latency
 
     async def test_send_audio_returns_once_the_response_has_played(self) -> None:
         backend, _ = _speaker_backend()

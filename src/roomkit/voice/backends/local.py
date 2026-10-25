@@ -174,6 +174,15 @@ class LocalAudioBackend(VoiceBackend):
             momentary starvation inserts an audible mid-sentence gap.  A
             response shorter than this plays once complete.  ``0`` plays
             from the first byte.
+        output_latency_ms: The output latency to ask PortAudio for, in
+            milliseconds: the margin the speaker's Python callback has before
+            the device runs dry.  The default (None) asks for PortAudio's
+            "low" with ``aec`` and "high" without it, and always "high" on
+            macOS.  A wider margin stops the underflows, heard as clicks, that
+            a stalled callback causes: with an AEC, a C call holding the GIL
+            for 50 ms every 400 ms gave 84 underflows over three responses at
+            "low" and none at 100 ms.  The AEC's echo delay can still drift
+            under such stalls, and more with the wider margin (RMK-973).
     """
 
     def __init__(
@@ -188,6 +197,7 @@ class LocalAudioBackend(VoiceBackend):
         aec: AECProvider | None = None,
         mute_mic_during_playback: bool | None = None,
         rt_prebuffer_ms: int = 120,
+        output_latency_ms: float | None = None,
         source: AudioCaptureSource | None = None,
     ) -> None:
         input_sample_rate, channels, block_duration_ms = _resolve_input_format(
@@ -203,6 +213,8 @@ class LocalAudioBackend(VoiceBackend):
             raise ValueError("block_duration_ms must be positive")
         if rt_prebuffer_ms < 0:
             raise ValueError("rt_prebuffer_ms must be non-negative")
+        if output_latency_ms is not None and not output_latency_ms > 0:  # NaN too
+            raise ValueError("output_latency_ms must be positive")
         self._sd = import_sounddevice("LocalAudioBackend")
 
         # A shared source owns the input device; this backend only subscribes.
@@ -259,6 +271,7 @@ class LocalAudioBackend(VoiceBackend):
             block_duration_ms=block_duration_ms,
             device=output_device,
             low_latency=aec is not None,
+            latency_ms=output_latency_ms,
             prebuffer_ms=rt_prebuffer_ms,
             on_block=self._on_speaker_block,
             on_finished=self._on_speaker_finished,

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `LocalAudioBackend(output_latency_ms=...)`: the output latency the speaker
+  asks PortAudio for, in milliseconds (RMK-554). The default (`None`) is
+  unchanged: PortAudio's "low" with an `aec`, "high" without it, and "high"
+  on macOS. A wider margin stops the underflows, heard as clicks, that a
+  stalled Python callback causes: with an AEC, a C call holding the GIL for
+  50 ms every 400 ms gave 84 underflows over three responses at "low" and
+  none at 100 ms. The AEC's echo delay can still drift under such stalls,
+  and more with the wider margin (RMK-973). A value that is not positive
+  raises `ValueError`. The `Speaker stream:` log line names the latency
+  asked for (`latency=100ms`).
+
 ### Security
 
 - **BREAKING — an agent's answer text is published only for a delegated

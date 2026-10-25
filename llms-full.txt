@@ -3960,8 +3960,23 @@ Backends handle audio transport between the framework and participants:
 ```python
 from roomkit.voice.backends import LocalAudioBackend
 
-backend = LocalAudioBackend(sample_rate=16000, channels=1)
+backend = LocalAudioBackend(input_sample_rate=16000, channels=1)
 ```
+
+`LocalAudioBackend` plays every response through one PortAudio output stream
+whose callback is Python. `output_latency_ms` sets that stream's margin before
+the device runs dry; the default (`None`) asks PortAudio for "low" with an
+`aec`, "high" without it, and "high" on macOS:
+
+```python
+backend = LocalAudioBackend(aec=aec, output_latency_ms=100)
+```
+
+A wider margin stops the underflows, heard as clicks, that a stalled callback
+causes: with an AEC, a C call holding the GIL for 50 ms every 400 ms gave 84
+underflows over three responses at "low" and none at 100 ms. The AEC's echo
+delay can still drift under such stalls, and more with the wider margin. A
+value that is not positive raises `ValueError`.
 
 ## Shared Capture Sources
 
