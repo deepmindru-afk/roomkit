@@ -12,6 +12,8 @@ from __future__ import annotations
 from roomkit.core._turn_scope import current_turn_id
 from roomkit.turns.base import (
     ExecutorLink,
+    OwnerEvents,
+    OwnerHost,
     OwnerTools,
     RoomOwner,
     TurnBackend,
@@ -44,6 +46,8 @@ __all__ = [
     "ChannelResult",
     "ExecutorLink",
     "InMemoryTurnBackend",
+    "OwnerEvents",
+    "OwnerHost",
     "OwnerTool",
     "OwnerTools",
     "PreviousTurn",

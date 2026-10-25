@@ -23,9 +23,8 @@ from roomkit.models.room import Room
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
+from roomkit.turns import InMemoryTurnBackend, OwnerHost, TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns._error_codec import ROOMKIT_ERRORS, error_record
-from roomkit.turns.base import OwnerHost
 from roomkit.turns.host import current_turn_host
 from roomkit.turns.wire import ErrorRecord
 from tests.test_framework import SimpleChannel

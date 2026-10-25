@@ -35,9 +35,15 @@ from roomkit.models.task import DelegatedTaskResult
 from roomkit.providers.ai.base import AIContext, AITool, ProviderError, StreamEvent
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools.context import ToolCallContext, tool_turn_context
-from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, current_turn_host
+from roomkit.turns import (
+    InMemoryTurnBackend,
+    OwnerHost,
+    OwnerTools,
+    TurnClient,
+    TurnExecutor,
+    current_turn_host,
+)
 from roomkit.turns._error_codec import ErrorClasses, error_record
-from roomkit.turns.base import OwnerHost, OwnerTools
 from roomkit.turns.wire import ErrorRecord, OwnerTool, RoomCall, ToolCall, TurnRequest
 from tests.test_framework import SimpleChannel
 from tests.test_turns_backend import ScriptedChannel, _read_all, _run

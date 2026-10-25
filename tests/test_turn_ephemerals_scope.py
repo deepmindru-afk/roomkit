@@ -16,8 +16,14 @@ import pytest
 
 from roomkit import (
     Access,
+    ChannelBinding,
     ChannelCategory,
+    ChannelType,
+    EventSource,
     InboundMessage,
+    Room,
+    RoomContext,
+    RoomEvent,
     RoomKit,
     SMSChannel,
     TextContent,
@@ -27,6 +33,7 @@ from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.sms.mock import MockSMSProvider
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
+from roomkit.turns import InMemoryTurnBackend, OwnerEvents, TurnClient, TurnExecutor
 from roomkit.turns._owner_between import publish_between_turns
 from roomkit.turns._rooms import RoomRecords
 from roomkit.turns.wire import Ephemeral, PreviousTurn, RoomPublication
@@ -173,3 +180,63 @@ async def test_work_a_turn_began_publishes_after_it_as_that_turn_and_the_room_al
     await publish_between_turns(previous, events, _publication(named_turn))
 
     assert events.published == published
+
+
+class _HostEvents(OwnerEvents):
+    """A host's own publishing side, written before ``reaches_room()``."""
+
+    def __init__(self) -> None:
+        self.published: list[str] = []
+
+    async def publish(self, channel: str, event: EphemeralEvent) -> None:
+        self.published.append(event.type.value)
+
+    async def emit(self, event_type: str, **fields) -> None:
+        return None
+
+
+class _ReachingHostEvents(_HostEvents):
+    async def reaches_room(self, room_id: str, channel_id: str) -> bool:
+        return True
+
+
+@pytest.mark.parametrize(
+    ("events", "publishes"),
+    [(_HostEvents, False), (_ReachingHostEvents, True)],
+    ids=["without reaches_room", "with reaches_room"],
+)
+async def test_a_host_s_owner_events_publishes_a_turn_s_ephemerals_only_with_reaches_room(
+    events: type[_HostEvents], publishes: bool
+) -> None:
+    """The migration RMK-952 asks of a host that gives ``TurnClient(events=)``
+    its own ``OwnerEvents``: ``reaches_room()`` defaults to False, so
+    without it no turn ephemeral is published at all."""
+    answer = AIResponse(content="the answer", thinking="the reasoning")
+    agent = Agent("assistant", provider=MockAIProvider(ai_responses=[answer], streaming=True))
+    channels = {agent.channel_id: agent}
+    owner = events()
+    client = TurnClient(
+        InMemoryTurnBackend(),
+        executor=TurnExecutor(channels.get, hosts=channels.__contains__),
+        events=owner,
+    )
+    binding = ChannelBinding(
+        channel_id="assistant",
+        room_id="r",
+        channel_type=ChannelType.AI,
+        category=ChannelCategory.INTELLIGENCE,
+    )
+    trigger = RoomEvent(
+        room_id="r",
+        source=EventSource(channel_id="sms", channel_type=ChannelType.SMS),
+        content=TextContent(body="hi"),
+    )
+    try:
+        output = await client.run(
+            trigger, binding, RoomContext(room=Room(id="r"), bindings=[binding])
+        )
+        assert [item async for item in output.response_stream]
+    finally:
+        await client.close()
+
+    assert ("thinking_delta" in owner.published) is publishes

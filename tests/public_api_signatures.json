@@ -1525,6 +1525,15 @@
     "install": ["async def", "kit", "room_id"],
     "uninstall": ["async def", "kit", "room_id"]
   },
+  "roomkit.OwnerEvents": {
+    "emit": ["async def", "event_type", "*", "room_id", "channel_id", "event_id", "data"],
+    "publish": ["async def", "channel", "event"],
+    "reaches_room": ["async def", "room_id", "channel_id"]
+  },
+  "roomkit.OwnerHost": {
+    "call": ["async def", "request", "verb", "arguments"],
+    "call_between_turns": ["async def", "message"]
+  },
   "roomkit.OwnerTool": {
     "__init__": ["def", "*", "tool", "waits_by_design=False"]
   },

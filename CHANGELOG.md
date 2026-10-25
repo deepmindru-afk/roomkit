@@ -60,13 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A test catches a public signature change that can break a caller.**
   `tests/public_api_signatures.json` holds the signatures of the classes and
-  functions the packages export (1 078 objects, 6 182 members): parameters and
+  functions the packages export (1 080 objects, 6 173 members): parameters and
   their defaults, sync or async, properties, enum values. `test_public_api.py`
   fails on a name, member or parameter removed or renamed, a parameter made
   required or moved, a default changed, a method made async or an enum value
   changed; an addition passes and needs no entry. The commit that breaks a
   signature on purpose runs `make api-snapshot` and carries its BREAKING
-  entry. Type annotations, and what a call does, are not compared.
+  entry. Type annotations, what a call does, and the hooks pydantic calls
+  on a model (`model_post_init`) are not compared.
 
 - **One rule says which import paths are public** (RMK-948). A name is
   public when the `__all__` of `roomkit` or of one of its packages lists it,
@@ -814,8 +815,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after it follows that turn's trigger, never a later turn's. Framework events
   are unaffected. A custom `OwnerEvents` decides with the new
   `reaches_room(room_id, channel_id)`, whose default, `False`, publishes none.
+  `OwnerEvents` and `OwnerHost`, which `TurnClient(events=, host=)` takes,
+  are now exported from `roomkit.turns` and `roomkit`.
   Migrate: a custom `OwnerEvents` given to `TurnClient(events=)` implements
-  `reaches_room()`, or publishes no turn ephemeral.
+  `reaches_room()`: one that does not publishes no turn ephemeral at all.
 
 - **BREAKING — a WebSocket connection evicted after repeated send failures
   is forgotten with its rooms** (RMK-491). The eviction dropped only the

@@ -178,6 +178,8 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 | `DeclaredChannel` | The channel the kit holds for a registered declaration: bound and routed to, never run in the kit's process |
 | `TurnClient` | The room owner's side: runs a turn, reads it back as the channel's `ChannelOutput` |
 | `OwnerTools` | ABC for the tools a room owner serves its turns: what a request lists, how a call's handler runs |
+| `OwnerHost` | ABC for what a room owner runs for its turns' `TurnHost` (`TurnClient(host=)`): `call(request, verb, arguments)`, and `call_between_turns(message)`, refused by default |
+| `OwnerEvents` | ABC for where a room owner publishes what its turns published on their executors (`TurnClient(events=)`): `publish(channel, event)`, `emit(...)`, and `reaches_room(room_id, channel_id)`, whose default `False` publishes no turn ephemeral (RFC §8.4) |
 | `OwnerTool` | One tool a turn's request lists, served by the room owner (`tool`, `waits_by_design`) |
 | `TurnHost` | What a host's tool or hook on a turn's executor asks of the room owner: `send_event`, `delegate`, `wait_task`, `post_status`, `update_room_metadata`, `add_observation` |
 | `current_turn_host()` | The `TurnHost` of the turn the current code runs in; after the turn, in work it began, the host for `send_event`, `post_status`, `update_room_metadata`, `add_observation` (`host.open` false); `None` elsewhere |
