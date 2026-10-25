@@ -17,7 +17,7 @@ import asyncio
 
 import pytest
 
-from roomkit import FrameworkEvent, HookTrigger, ProcessTimeoutError, RoomKit
+from roomkit import FrameworkEvent, HookExecution, HookTrigger, ProcessTimeoutError, RoomKit
 from roomkit.core.inbound_router import InboundRoomRouter
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -315,4 +315,34 @@ class TestOneDeadlineFromTheCallsStart:
 
         assert (result.blocked, result.reason) == (True, "process_timeout")
         assert await kit.store.get_binding("r1", "sms2") is None
+        await kit.close()
+
+    async def test_the_scope_read_before_a_room_s_own_message_draws_is_bounded(self) -> None:
+        """A message the room's work sends into it for an organization has
+        the room read before it draws its pass (RFC §17.2, §9.5.1), within
+        the call's deadline: a read that hangs refuses it."""
+        store = HangingRoomRead()
+        kit = RoomKit(store=store, process_timeout=SHORT)
+        kit.register_channel(SimpleChannel("sms1"))
+        await kit.create_room(room_id="r1", organization_id="org")
+        await kit.attach_channel("r1", "sms1")
+        answered: list[tuple[bool, str | None]] = []
+        done = asyncio.Event()
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC)
+        async def again(event: RoomEvent, ctx: RoomContext) -> None:
+            if done.is_set():
+                return
+            store.armed = True
+            try:
+                result = await kit.process_inbound(_msg(), room_id="r1", organization_id="org")
+                answered.append((result.blocked, result.reason))
+            finally:
+                store.armed = False
+                done.set()
+
+        await kit.process_inbound(_msg(), room_id="r1")
+        await asyncio.wait_for(done.wait(), 5)
+
+        assert answered == [(True, "process_timeout")]
         await kit.close()
