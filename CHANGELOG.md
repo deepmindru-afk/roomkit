@@ -182,14 +182,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `process_inbound()` returns `blocked=True, reason="reentry_loop_cap"`. A
   direct `update_event()`, `delete_event()` or `regenerate_response()` made
   from a hook's body draws one hook call too, and past the cap raises the
-  new `ReentryLoopCapError` (exported from `roomkit`), nothing written,
-  which the hook engine logs as a warning. A direct change's own hooks run
-  on the budget of the work it is made in, one of their own from outside
-  it.
+  new `ReentryLoopCapError` (exported from `roomkit`), nothing written; an
+  error the body lets escape is logged as a warning. A direct change's own
+  hooks run on the budget of the work it is made in, one of their own from
+  outside it.
   A call a hook's body makes, into whatever room, is also at least one
   deeper than the event that fired the hook, as a call made within a turn
   is at least as deep as its response: a `post()`, a `send_event()`, a
   `deliver()` (a queued item carries the depth), a message, a regeneration.
+  `deliver()` now takes that floor in a turn or a tool call too, queued
+  included: an item a tool handler queues carries the turn's depth, where it
+  carried the `chain_depth` passed, 0 by default.
   A hook that asks an agent again after each of its answers therefore ends
   at `max_chain_depth`, or at a discussion's `max_depth`, whose turns each
   have a budget of their own: about `max_chain_depth / 2` answers (2 at the

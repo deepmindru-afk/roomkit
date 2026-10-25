@@ -105,10 +105,14 @@ class DeliverMixin(HelpersMixin):
                 or replaced session is unavailable; no substitute is selected.
                 A keyed receipt can still be replayed after its session ends.
             chain_depth: The chain the delivered content continues (RFC §8.3).
-                0 opens one. Content delivered for a turn, such as a
-                background task's result, passes that turn's depth, so a
-                cycle of task, result and task again ends at
-                ``max_chain_depth`` (§23.3).
+                0 opens one, outside the room's work. Called while a turn or
+                a tool call runs, the depth is at least the turn's response
+                or the call's, and from an ASYNC hook's body at least one
+                deeper than the hook's event, whatever is passed: a queued
+                item carries it to the worker. Content delivered for a turn
+                once it is over, such as a background task's result, passes
+                that turn's depth, so a cycle of task, result and task again
+                ends at ``max_chain_depth`` (§23.3).
             instruction: Deliver *content* as the application's direction to
                 an agent, never as a participant's words (RFC §22.1): an
                 ``INSTRUCTION`` event through the text pipeline, which needs
