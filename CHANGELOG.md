@@ -536,7 +536,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `base_url` the config names. It is now made by the provider's SDK client,
   with its key, headers, timeout and transport, and fails with the SDK's
   errors (`openai.APIStatusError`, `APIConnectionError`), as the
-  completions do, where it raised httpx's.
+  completions do, where it raised httpx's. A 200 whose body is not JSON
+  still raises `json.JSONDecodeError`.
 
 ## [0.108.0] — 2026-10-24
 

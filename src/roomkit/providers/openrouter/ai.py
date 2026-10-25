@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
@@ -183,10 +184,11 @@ class OpenRouterAIProvider(OpenAIAIProvider):
         Through the provider's own SDK client, as its completions are: the
         same key, headers, timeout and ``transport=``, so a host's policy
         judges this request too. The SDK's errors are raised, as for any
-        other call. ``cast_to=object`` keeps the JSON raw: the SDK's
-        ``Model`` type is what cannot read these items."""
-        payload = await self._client.get("/models", cast_to=object)
-        data = payload.get("data", []) if isinstance(payload, dict) else []
+        other call. The body is read raw, because the SDK's ``Model`` type
+        cannot read these items; one that is not JSON raises
+        ``json.JSONDecodeError``."""
+        payload = json.loads(await self._client.get("/models", cast_to=str))
+        data = payload.get("data", [])
         return data if isinstance(data, list) else []
 
     @staticmethod

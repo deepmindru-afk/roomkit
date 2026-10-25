@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from typing import Any, ClassVar
 
@@ -190,9 +191,11 @@ class LiteLLMAIProvider(OpenAIAIProvider):
 
         Through the provider's own SDK client, as its completions are: the
         same key, timeout and ``transport=``, so a host's policy judges this
-        request too. The SDK's errors are raised, as for any other call."""
-        payload = await self._client.get("/model/info", cast_to=object)
-        data = payload.get("data", []) if isinstance(payload, dict) else []
+        request too. The SDK's errors are raised, as for any other call, and
+        a body that is not JSON raises ``json.JSONDecodeError``: the SDK
+        hands back as text what it cannot read as JSON."""
+        payload = json.loads(await self._client.get("/model/info", cast_to=str))
+        data = payload.get("data", [])
         return data if isinstance(data, list) else []
 
     @staticmethod

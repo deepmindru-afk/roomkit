@@ -12,6 +12,7 @@ LiteLLM's and OpenRouter's model listings (RMK-453).
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any, NamedTuple
 
@@ -343,3 +344,21 @@ async def test_a_retried_image_request_stays_ambiguous_whatever_its_last_failure
     assert caught.value.retryable is False
     if isinstance(caught.value, ImageGenerationError):
         assert [attempt.status for attempt in caught.value.attempts] == ["unknown"]
+
+
+@pytest.mark.parametrize("kind", ["litellm models", "openrouter models"])
+async def test_a_model_listing_that_is_not_json_raises(kind: str) -> None:
+    """A 200 carrying a login page is no listing: an error, not an empty one."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, text="<html>Sign in</html>", headers={"content-type": "text/html"}
+        )
+
+    client = _CALLS[kind]
+    provider = client.build("https://models.example", httpx.MockTransport(handler))
+    try:
+        with pytest.raises(json.JSONDecodeError):
+            await client.call(provider)
+    finally:
+        await provider.close()
