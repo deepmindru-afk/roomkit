@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from roomkit._lazy import lazy_exports
 from roomkit.tools.base import Tool
 from roomkit.tools.compose import compose_tool_handlers, extract_tools
 from roomkit.tools.context import (
@@ -27,6 +28,8 @@ from roomkit.tools.policy import RoleOverride, ToolPolicy
 
 if TYPE_CHECKING:
     from roomkit.tools.mcp import MCPToolProvider
+else:
+    __getattr__, __dir__ = lazy_exports(__name__, {"MCPToolProvider": "roomkit.tools.mcp"})
 
 __all__ = [
     "FENCED_TAGS",
@@ -56,11 +59,3 @@ __all__ = [
     "tool_turn_context",
     "turn_report_claim",
 ]
-
-
-def __getattr__(name: str) -> object:
-    if name == "MCPToolProvider":
-        from roomkit.tools.mcp import MCPToolProvider
-
-        return MCPToolProvider
-    raise AttributeError(f"module 'roomkit.tools' has no attribute {name}")

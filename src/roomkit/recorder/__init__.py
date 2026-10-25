@@ -19,6 +19,8 @@ from roomkit.recorder.mock import MockMediaRecorder
 
 if TYPE_CHECKING:
     from roomkit.recorder.pyav import PyAVMediaRecorder
+else:
+    __getattr__, __dir__ = lazy_exports(__name__, {"PyAVMediaRecorder": "roomkit.recorder.pyav"})
 
 __all__ = [
     "ChannelRecordingConfig",
@@ -33,8 +35,6 @@ __all__ = [
     "RoomRecordingFeed",
     "get_pyav_media_recorder",
 ]
-
-__getattr__ = lazy_exports(__name__, {"PyAVMediaRecorder": "roomkit.recorder.pyav"})
 
 
 def get_pyav_media_recorder() -> type:

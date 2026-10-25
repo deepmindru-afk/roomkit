@@ -11,6 +11,10 @@ from roomkit.video.avatar.websocket import WebSocketAvatarProvider
 
 if TYPE_CHECKING:
     from roomkit.video.avatar.musetalk import MuseTalkAvatarProvider
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__, {"MuseTalkAvatarProvider": "roomkit.video.avatar.musetalk"}
+    )
 
 __all__ = [
     "AvatarProvider",
@@ -18,5 +22,3 @@ __all__ = [
     "MuseTalkAvatarProvider",
     "WebSocketAvatarProvider",
 ]
-
-__getattr__ = lazy_exports(__name__, {"MuseTalkAvatarProvider": "roomkit.video.avatar.musetalk"})

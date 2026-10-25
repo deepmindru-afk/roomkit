@@ -18,6 +18,10 @@ with contextlib.suppress(ImportError):
 
 if TYPE_CHECKING:
     from roomkit.telemetry.opentelemetry import OpenTelemetryProvider
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__, {"OpenTelemetryProvider": "roomkit.telemetry.opentelemetry"}
+    )
 
 __all__ = [
     "Attr",
@@ -32,5 +36,3 @@ __all__ = [
     "TelemetryProvider",
     "get_current_span",
 ]
-
-__getattr__ = lazy_exports(__name__, {"OpenTelemetryProvider": "roomkit.telemetry.opentelemetry"})

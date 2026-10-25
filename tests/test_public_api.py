@@ -85,6 +85,23 @@ class TestPublicAPI:
         """
         assert breaks_since_snapshot() == []
 
+    def test_dir_lists_every_name_a_package_exports(self) -> None:
+        """A name a package exports lazily is not in its namespace until first
+        use; ``dir()`` and ``help()`` list it all the same."""
+        unlisted: dict[str, list[str]] = {}
+        for init in sorted(_PACKAGE_ROOT.rglob("__init__.py"), key=str):
+            package = ".".join(("roomkit", *init.parent.relative_to(_PACKAGE_ROOT).parts))
+            try:
+                module = importlib.import_module(package)
+            except ModuleNotFoundError as missing:
+                _raise_unless_optional(missing)
+                continue
+            names = sorted(set(getattr(module, "__all__", ())) - set(dir(module)))
+            if names:
+                unlisted[package] = names
+
+        assert unlisted == {}
+
     def test_channels_importable_from_channels_package(self) -> None:
         """Every channel resolves from ``roomkit.channels``, factories included.
 

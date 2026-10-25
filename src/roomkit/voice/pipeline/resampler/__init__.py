@@ -7,13 +7,15 @@ from roomkit.voice.pipeline.resampler.linear import LinearResamplerProvider
 from roomkit.voice.pipeline.resampler.mock import MockResamplerProvider
 from roomkit.voice.pipeline.resampler.sinc import SincResamplerProvider
 
-with contextlib.suppress(ImportError):
-    from roomkit.voice.pipeline.resampler.numpy import NumpyResamplerProvider
-
 __all__ = [
     "LinearResamplerProvider",
     "MockResamplerProvider",
-    "NumpyResamplerProvider",
     "ResamplerProvider",
     "SincResamplerProvider",
 ]
+
+# NumpyResamplerProvider requires numpy (optional dep): listed once it imports.
+with contextlib.suppress(ImportError):
+    from roomkit.voice.pipeline.resampler.numpy import NumpyResamplerProvider
+
+    __all__ += ["NumpyResamplerProvider"]

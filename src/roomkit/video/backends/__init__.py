@@ -17,6 +17,20 @@ if TYPE_CHECKING:
     from roomkit.video.backends.screen import ScreenCaptureBackend
     from roomkit.video.backends.sip import SIPVideoBackend
     from roomkit.video.backends.websocket import WebSocketVideoBackend, mount_websocket_video
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__,
+        {
+            "FastRTCVideoBackend": "roomkit.video.backends.fastrtc",
+            "LocalVideoBackend": "roomkit.video.backends.local",
+            "RTPVideoBackend": "roomkit.video.backends.rtp",
+            "SIPVideoBackend": "roomkit.video.backends.sip",
+            "ScreenCaptureBackend": "roomkit.video.backends.screen",
+            "WebSocketVideoBackend": "roomkit.video.backends.websocket",
+            "mount_fastrtc_av": "roomkit.video.backends.fastrtc",
+            "mount_websocket_video": "roomkit.video.backends.websocket",
+        },
+    )
 
 __all__ = [
     "FastRTCVideoBackend",
@@ -28,20 +42,6 @@ __all__ = [
     "mount_fastrtc_av",
     "mount_websocket_video",
 ]
-
-__getattr__ = lazy_exports(
-    __name__,
-    {
-        "FastRTCVideoBackend": "roomkit.video.backends.fastrtc",
-        "LocalVideoBackend": "roomkit.video.backends.local",
-        "RTPVideoBackend": "roomkit.video.backends.rtp",
-        "SIPVideoBackend": "roomkit.video.backends.sip",
-        "ScreenCaptureBackend": "roomkit.video.backends.screen",
-        "WebSocketVideoBackend": "roomkit.video.backends.websocket",
-        "mount_fastrtc_av": "roomkit.video.backends.fastrtc",
-        "mount_websocket_video": "roomkit.video.backends.websocket",
-    },
-)
 
 
 def get_screen_capture_backend() -> type:

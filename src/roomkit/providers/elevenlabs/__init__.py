@@ -9,9 +9,9 @@ from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
 
 if TYPE_CHECKING:
     from roomkit.providers.elevenlabs.realtime import ElevenLabsRealtimeProvider
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__, {"ElevenLabsRealtimeProvider": "roomkit.providers.elevenlabs.realtime"}
+    )
 
 __all__ = ["ElevenLabsRealtimeConfig", "ElevenLabsRealtimeProvider"]
-
-__getattr__ = lazy_exports(
-    __name__, {"ElevenLabsRealtimeProvider": "roomkit.providers.elevenlabs.realtime"}
-)

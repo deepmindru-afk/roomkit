@@ -24,6 +24,21 @@ if TYPE_CHECKING:
     from roomkit.sources.neonize import WhatsAppPersonalSourceProvider
     from roomkit.sources.sse import SSESource
     from roomkit.sources.websocket import WebSocketSource
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__,
+        {
+            "BuzzRelaySource": "roomkit.sources.buzz",
+            "DiscordGatewaySource": "roomkit.sources.discord",
+            "KIND_HUDDLE_STARTED": "roomkit.sources.buzz",
+            "SSESource": "roomkit.sources.sse",
+            "WebSocketSource": "roomkit.sources.websocket",
+            "WhatsAppPersonalSourceProvider": "roomkit.sources.neonize",
+            "huddle_announcement_parser": "roomkit.sources.buzz",
+            "parse_buzz_event": "roomkit.sources.buzz",
+            "parse_discord_message": "roomkit.sources.discord",
+        },
+    )
 
 __all__ = [
     "BaseSourceProvider",
@@ -43,18 +58,3 @@ __all__ = [
     "parse_buzz_event",
     "parse_discord_message",
 ]
-
-__getattr__ = lazy_exports(
-    __name__,
-    {
-        "BuzzRelaySource": "roomkit.sources.buzz",
-        "DiscordGatewaySource": "roomkit.sources.discord",
-        "KIND_HUDDLE_STARTED": "roomkit.sources.buzz",
-        "SSESource": "roomkit.sources.sse",
-        "WebSocketSource": "roomkit.sources.websocket",
-        "WhatsAppPersonalSourceProvider": "roomkit.sources.neonize",
-        "huddle_announcement_parser": "roomkit.sources.buzz",
-        "parse_buzz_event": "roomkit.sources.buzz",
-        "parse_discord_message": "roomkit.sources.discord",
-    },
-)

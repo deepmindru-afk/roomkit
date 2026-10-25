@@ -1,5 +1,10 @@
 """Audio processing pipeline for voice (RFC §12.3)."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from roomkit._lazy import lazy_exports
 from roomkit.voice.pipeline.aec import AECProvider, MockAECProvider, SpeexAECProvider
 from roomkit.voice.pipeline.agc import AGCConfig, AGCProvider, MockAGCProvider, SimpleAGCProvider
 from roomkit.voice.pipeline.backchannel import (
@@ -76,6 +81,14 @@ from roomkit.voice.pipeline.vad import (
     VADProvider,
 )
 
+if TYPE_CHECKING:
+    from roomkit.voice.pipeline.mixer.numpy import NumpyMixerProvider
+else:
+    # NumpyMixerProvider loads on first use: numpy is optional.
+    __getattr__, __dir__ = lazy_exports(
+        __name__, {"NumpyMixerProvider": "roomkit.voice.pipeline.mixer.numpy"}
+    )
+
 __all__ = [
     # Config
     "AudioFormat",
@@ -147,11 +160,3 @@ __all__ = [
     "MockTurnDetector",
     "MockVADProvider",
 ]
-
-
-def __getattr__(name: str) -> object:
-    if name == "NumpyMixerProvider":
-        from roomkit.voice.pipeline.mixer.numpy import NumpyMixerProvider
-
-        return NumpyMixerProvider
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

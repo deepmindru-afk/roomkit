@@ -45,6 +45,16 @@ if TYPE_CHECKING:
     )
     from roomkit.voice.realtime.sip_transport import SIPRealtimeTransport
     from roomkit.voice.realtime.ws_transport import WebSocketRealtimeTransport
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__,
+        {
+            "FastRTCRealtimeTransport": "roomkit.voice.realtime.fastrtc_transport",
+            "SIPRealtimeTransport": "roomkit.voice.realtime.sip_transport",
+            "WebSocketRealtimeTransport": "roomkit.voice.realtime.ws_transport",
+            "mount_fastrtc_realtime": "roomkit.voice.realtime.fastrtc_transport",
+        },
+    )
 
 __all__ = [
     "VoiceInjectionResult",
@@ -81,13 +91,3 @@ __all__ = [
     "MockRealtimeProvider",
     "MockRealtimeTransport",
 ]
-
-__getattr__ = lazy_exports(
-    __name__,
-    {
-        "FastRTCRealtimeTransport": "roomkit.voice.realtime.fastrtc_transport",
-        "SIPRealtimeTransport": "roomkit.voice.realtime.sip_transport",
-        "WebSocketRealtimeTransport": "roomkit.voice.realtime.ws_transport",
-        "mount_fastrtc_realtime": "roomkit.voice.realtime.fastrtc_transport",
-    },
-)

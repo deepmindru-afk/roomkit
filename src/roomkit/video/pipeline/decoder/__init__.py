@@ -10,11 +10,13 @@ from roomkit.video.pipeline.decoder.mock import MockVideoDecoderProvider
 
 if TYPE_CHECKING:
     from roomkit.video.pipeline.decoder.pyav import PyAVVideoDecoder
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__, {"PyAVVideoDecoder": "roomkit.video.pipeline.decoder.pyav"}
+    )
 
 __all__ = [
     "MockVideoDecoderProvider",
     "PyAVVideoDecoder",
     "VideoDecoderProvider",
 ]
-
-__getattr__ = lazy_exports(__name__, {"PyAVVideoDecoder": "roomkit.video.pipeline.decoder.pyav"})

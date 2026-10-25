@@ -16,6 +16,10 @@ from roomkit.providers.xai.image import XAIImageProvider
 
 if TYPE_CHECKING:
     from roomkit.providers.xai.realtime import XAIRealtimeProvider
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__, {"XAIRealtimeProvider": "roomkit.providers.xai.realtime"}
+    )
 
 __all__ = [
     "XAIAIProvider",
@@ -25,5 +29,3 @@ __all__ = [
     "XAIRealtimeConfig",
     "XAIRealtimeProvider",
 ]
-
-__getattr__ = lazy_exports(__name__, {"XAIRealtimeProvider": "roomkit.providers.xai.realtime"})

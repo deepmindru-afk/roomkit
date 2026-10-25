@@ -13,6 +13,16 @@ if TYPE_CHECKING:
     from roomkit.providers.openai.live import OpenAILiveProvider
     from roomkit.providers.openai.live_config import HostedReasoning, IntegratorReasoning
     from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__,
+        {
+            "HostedReasoning": "roomkit.providers.openai.live_config",
+            "IntegratorReasoning": "roomkit.providers.openai.live_config",
+            "OpenAILiveProvider": "roomkit.providers.openai.live",
+            "OpenAIRealtimeProvider": "roomkit.providers.openai.realtime",
+        },
+    )
 
 __all__ = [
     "HostedReasoning",
@@ -24,13 +34,3 @@ __all__ = [
     "OpenAILiveProvider",
     "OpenAIRealtimeProvider",
 ]
-
-__getattr__ = lazy_exports(
-    __name__,
-    {
-        "HostedReasoning": "roomkit.providers.openai.live_config",
-        "IntegratorReasoning": "roomkit.providers.openai.live_config",
-        "OpenAILiveProvider": "roomkit.providers.openai.live",
-        "OpenAIRealtimeProvider": "roomkit.providers.openai.realtime",
-    },
-)

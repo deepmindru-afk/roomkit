@@ -1,19 +1,23 @@
 """Audio mixer providers for PCM frame mixing."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from roomkit._lazy import lazy_exports
 from roomkit.voice.pipeline.mixer.base import MixerProvider
 from roomkit.voice.pipeline.mixer.python import PythonMixerProvider
+
+if TYPE_CHECKING:
+    from roomkit.voice.pipeline.mixer.numpy import NumpyMixerProvider
+else:
+    # NumpyMixerProvider loads on first use: numpy is optional.
+    __getattr__, __dir__ = lazy_exports(
+        __name__, {"NumpyMixerProvider": "roomkit.voice.pipeline.mixer.numpy"}
+    )
 
 __all__ = [
     "MixerProvider",
     "NumpyMixerProvider",
     "PythonMixerProvider",
 ]
-
-
-def __getattr__(name: str) -> object:
-    # Lazy import for NumpyMixerProvider to avoid hard numpy dependency
-    if name == "NumpyMixerProvider":
-        from roomkit.voice.pipeline.mixer.numpy import NumpyMixerProvider
-
-        return NumpyMixerProvider
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

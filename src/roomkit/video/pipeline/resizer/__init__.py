@@ -10,11 +10,13 @@ from roomkit.video.pipeline.resizer.mock import MockVideoResizerProvider
 
 if TYPE_CHECKING:
     from roomkit.video.pipeline.resizer.pyav import PyAVVideoResizer
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__, {"PyAVVideoResizer": "roomkit.video.pipeline.resizer.pyav"}
+    )
 
 __all__ = [
     "MockVideoResizerProvider",
     "PyAVVideoResizer",
     "VideoResizerProvider",
 ]
-
-__getattr__ = lazy_exports(__name__, {"PyAVVideoResizer": "roomkit.video.pipeline.resizer.pyav"})

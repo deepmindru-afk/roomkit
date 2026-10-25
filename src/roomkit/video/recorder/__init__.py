@@ -16,6 +16,14 @@ from roomkit.video.recorder.mock import MockVideoRecorder
 if TYPE_CHECKING:
     from roomkit.video.recorder.opencv import OpenCVVideoRecorder
     from roomkit.video.recorder.pyav import PyAVVideoRecorder
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__,
+        {
+            "OpenCVVideoRecorder": "roomkit.video.recorder.opencv",
+            "PyAVVideoRecorder": "roomkit.video.recorder.pyav",
+        },
+    )
 
 
 def get_opencv_recorder() -> type:
@@ -43,11 +51,3 @@ __all__ = [
     "get_opencv_recorder",
     "get_pyav_recorder",
 ]
-
-__getattr__ = lazy_exports(
-    __name__,
-    {
-        "OpenCVVideoRecorder": "roomkit.video.recorder.opencv",
-        "PyAVVideoRecorder": "roomkit.video.recorder.pyav",
-    },
-)

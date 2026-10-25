@@ -35,6 +35,38 @@ if TYPE_CHECKING:
         VoxtralTurnDetection,
     )
     from roomkit.voice.stt.voxtral_protocol import VoxtralSTTError
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__,
+        {
+            "AzureMAISTTConfig": "roomkit.voice.stt.azure_mai",
+            "AzureMAISTTError": "roomkit.voice.stt.azure_mai_protocol",
+            "AzureMAISTTProvider": "roomkit.voice.stt.azure_mai",
+            "DeepgramConfig": "roomkit.voice.stt.deepgram",
+            "DeepgramSTTProvider": "roomkit.voice.stt.deepgram",
+            "GeminiSTTConfig": "roomkit.voice.stt.gemini",
+            "GeminiSTTProvider": "roomkit.voice.stt.gemini",
+            "GeminiTranscribeConfig": "roomkit.voice.stt.gemini_transcribe",
+            "GeminiTranscribeProvider": "roomkit.voice.stt.gemini_transcribe",
+            "GeminiTranscript": "roomkit.voice.stt.gemini_transcript:Transcript",
+            "GeminiTranscriptSegment": "roomkit.voice.stt.gemini_transcript:TranscriptSegment",
+            "GeminiTranscriptWord": "roomkit.voice.stt.gemini_transcript:TranscriptWord",
+            "GradiumSTTConfig": "roomkit.voice.stt.gradium",
+            "GradiumSTTProvider": "roomkit.voice.stt.gradium",
+            "MetaSTTConfig": "roomkit.voice.stt.meta",
+            "MetaSTTError": "roomkit.voice.stt.meta_protocol",
+            "MetaSTTProvider": "roomkit.voice.stt.meta",
+            "MockSTTProvider": "roomkit.voice.stt.mock",
+            "Qwen3ASRConfig": "roomkit.voice.stt.qwen3",
+            "Qwen3ASRProvider": "roomkit.voice.stt.qwen3",
+            "SherpaOnnxSTTConfig": "roomkit.voice.stt.sherpa_onnx",
+            "SherpaOnnxSTTProvider": "roomkit.voice.stt.sherpa_onnx",
+            "VoxtralSTTConfig": "roomkit.voice.stt.voxtral",
+            "VoxtralSTTError": "roomkit.voice.stt.voxtral_protocol",
+            "VoxtralSTTProvider": "roomkit.voice.stt.voxtral",
+            "VoxtralTurnDetection": "roomkit.voice.stt.voxtral",
+        },
+    )
 
 __all__ = [
     "AzureMAISTTConfig",
@@ -65,35 +97,3 @@ __all__ = [
     "VoxtralSTTProvider",
     "VoxtralTurnDetection",
 ]
-
-__getattr__ = lazy_exports(
-    __name__,
-    {
-        "AzureMAISTTConfig": "roomkit.voice.stt.azure_mai",
-        "AzureMAISTTError": "roomkit.voice.stt.azure_mai_protocol",
-        "AzureMAISTTProvider": "roomkit.voice.stt.azure_mai",
-        "DeepgramConfig": "roomkit.voice.stt.deepgram",
-        "DeepgramSTTProvider": "roomkit.voice.stt.deepgram",
-        "GeminiSTTConfig": "roomkit.voice.stt.gemini",
-        "GeminiSTTProvider": "roomkit.voice.stt.gemini",
-        "GeminiTranscribeConfig": "roomkit.voice.stt.gemini_transcribe",
-        "GeminiTranscribeProvider": "roomkit.voice.stt.gemini_transcribe",
-        "GeminiTranscript": "roomkit.voice.stt.gemini_transcript:Transcript",
-        "GeminiTranscriptSegment": "roomkit.voice.stt.gemini_transcript:TranscriptSegment",
-        "GeminiTranscriptWord": "roomkit.voice.stt.gemini_transcript:TranscriptWord",
-        "GradiumSTTConfig": "roomkit.voice.stt.gradium",
-        "GradiumSTTProvider": "roomkit.voice.stt.gradium",
-        "MetaSTTConfig": "roomkit.voice.stt.meta",
-        "MetaSTTError": "roomkit.voice.stt.meta_protocol",
-        "MetaSTTProvider": "roomkit.voice.stt.meta",
-        "MockSTTProvider": "roomkit.voice.stt.mock",
-        "Qwen3ASRConfig": "roomkit.voice.stt.qwen3",
-        "Qwen3ASRProvider": "roomkit.voice.stt.qwen3",
-        "SherpaOnnxSTTConfig": "roomkit.voice.stt.sherpa_onnx",
-        "SherpaOnnxSTTProvider": "roomkit.voice.stt.sherpa_onnx",
-        "VoxtralSTTConfig": "roomkit.voice.stt.voxtral",
-        "VoxtralSTTError": "roomkit.voice.stt.voxtral_protocol",
-        "VoxtralSTTProvider": "roomkit.voice.stt.voxtral",
-        "VoxtralTurnDetection": "roomkit.voice.stt.voxtral",
-    },
-)

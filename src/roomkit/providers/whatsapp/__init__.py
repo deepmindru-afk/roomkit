@@ -10,13 +10,13 @@ from roomkit.providers.whatsapp.mock import MockWhatsAppProvider
 
 if TYPE_CHECKING:
     from roomkit.providers.whatsapp.personal import WhatsAppPersonalProvider
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__, {"WhatsAppPersonalProvider": "roomkit.providers.whatsapp.personal"}
+    )
 
 __all__ = [
     "MockWhatsAppProvider",
     "WhatsAppPersonalProvider",
     "WhatsAppProvider",
 ]
-
-__getattr__ = lazy_exports(
-    __name__, {"WhatsAppPersonalProvider": "roomkit.providers.whatsapp.personal"}
-)

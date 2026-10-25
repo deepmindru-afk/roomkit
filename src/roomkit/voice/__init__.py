@@ -141,6 +141,15 @@ from roomkit.voice.voices import DialogueTurn, VoiceInfo, filter_voices
 if TYPE_CHECKING:
     from roomkit.voice.auth import AuthCallback, auth_context
     from roomkit.voice.pipeline.mixer.numpy import NumpyMixerProvider
+else:
+    __getattr__, __dir__ = lazy_exports(
+        __name__,
+        {
+            "AuthCallback": "roomkit.voice.auth",
+            "NumpyMixerProvider": "roomkit.voice.pipeline.mixer.numpy",
+            "auth_context": "roomkit.voice.auth",
+        },
+    )
 
 __all__ = [
     # Bridge
@@ -284,15 +293,6 @@ __all__ = [
     "StripTechnicalText",
     "TTSStreamFilter",
 ]
-
-__getattr__ = lazy_exports(
-    __name__,
-    {
-        "AuthCallback": "roomkit.voice.auth",
-        "NumpyMixerProvider": "roomkit.voice.pipeline.mixer.numpy",
-        "auth_context": "roomkit.voice.auth",
-    },
-)
 
 
 # Optional providers (lazy imports to avoid requiring dependencies)
