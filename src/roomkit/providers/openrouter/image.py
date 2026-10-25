@@ -15,7 +15,7 @@ unbounded concurrency and spend.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from roomkit.providers.ai.base import (
     AIImagePart,
@@ -36,11 +36,21 @@ from roomkit.providers.openrouter.config import OpenRouterImageConfig
 from roomkit.providers.openrouter.image_models import MODELS
 from roomkit.providers.utils import http_timeout
 
+if TYPE_CHECKING:
+    import httpx
+
 
 class OpenRouterImageProvider(ImageProvider):
     """Image provider using OpenRouter's Image API."""
 
-    def __init__(self, config: OpenRouterImageConfig) -> None:
+    def __init__(
+        self, config: OpenRouterImageConfig, *, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
+        """*transport* carries every request, as for
+        :class:`~roomkit.providers.openai.ai.OpenAIAIProvider`: the seam for a
+        policy that judges the address dialled when users name ``base_url``.
+        It owns the pool and closes with the provider; redirects are not
+        followed, with or without one."""
         try:
             import httpx as _httpx
         except ImportError as exc:
@@ -56,6 +66,7 @@ class OpenRouterImageProvider(ImageProvider):
             base_url=config.base_url.rstrip("/"),
             timeout=http_timeout(config),
             headers=self._headers(config),
+            transport=transport,
         )
 
     @staticmethod

@@ -7,7 +7,8 @@ own SDK client included (Azure, OpenRouter) and ``create_vllm_provider``; and
 by the other clients built on the ``openai`` SDK, whose endpoint a host's
 users name too: the OpenAI, Azure, xAI and Meta image providers and
 ``OpenAIVisionProvider``; and by the requests beside a completion, such as
-LiteLLM's and OpenRouter's model listings (RMK-453).
+LiteLLM's and OpenRouter's model listings. ``OpenRouterImageProvider``, on
+httpx alone, takes the same keyword (RMK-453).
 """
 
 from __future__ import annotations
@@ -33,7 +34,8 @@ from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openai.config import OpenAIConfig, OpenAIImageConfig
 from roomkit.providers.openai.image import OpenAIImageProvider
 from roomkit.providers.openrouter.ai import OpenRouterAIProvider
-from roomkit.providers.openrouter.config import OpenRouterConfig
+from roomkit.providers.openrouter.config import OpenRouterConfig, OpenRouterImageConfig
+from roomkit.providers.openrouter.image import OpenRouterImageProvider
 from roomkit.providers.url_safety import validate_public_url
 from roomkit.providers.vllm import create_vllm_provider
 from roomkit.providers.vllm.config import VLLMConfig
@@ -129,7 +131,7 @@ _IMAGES = {"created": 0, "data": [{"b64_json": _PNG_B64}]}
 def _answer(request: httpx.Request) -> httpx.Response:
     """The endpoint's answer: an image to an images call, an empty model
     listing to a listing, a completion otherwise."""
-    if request.url.path.endswith("/images/generations"):
+    if request.url.path.endswith(("/images/generations", "/images")):
         return httpx.Response(200, json=_IMAGES)
     if request.url.path.endswith(("/model/info", "/models")):
         return httpx.Response(200, json={"data": []})
@@ -137,7 +139,7 @@ def _answer(request: httpx.Request) -> httpx.Response:
 
 
 class _Client(NamedTuple):
-    """A client on the ``openai`` SDK, and one call it makes beside a completion."""
+    """A client that takes ``transport=``, and one call it makes beside a completion."""
 
     build: Callable[..., Any]
     """``(origin, transport, **config)``: the client for an endpoint at this
@@ -196,6 +198,15 @@ _CALLS: dict[str, _Client] = {
             LiteLLMConfig(api_key="k", model="m", base_url=origin, **c), transport=t
         ),
         _list,
+    ),
+    "openrouter image": _Client(
+        lambda origin, t, **c: OpenRouterImageProvider(
+            OpenRouterImageConfig(
+                api_key="k", model="vendor/painter", base_url=f"{origin}/api/v1", **c
+            ),
+            transport=t,
+        ),
+        _draw,
     ),
     "openrouter models": _Client(
         lambda origin, t, **c: OpenRouterAIProvider(

@@ -523,11 +523,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that resolves to a private address at call time, past any check made when
   it was saved, was dialled anyway. Every request, an edit's included, now
   goes through the `httpx.AsyncBaseTransport` given, inside the SDK's own
-  default client, built in one place for every client on that SDK.
-  Redirects are still followed, each hop through the transport, and the
-  per-request timeout applies; the transport owns its pool, and closes with
-  the client. `examples/openai_outbound_policy.py` refuses a metadata
-  address to an image provider too.
+  default client, built in one place for the AI, image and vision clients
+  on that SDK (`OpenAIClassifier`, on OpenAI's own endpoint, takes a
+  `client=` of the caller's instead). Redirects are still followed, each
+  hop through the transport, and the per-request timeout applies; the
+  transport owns its pool, and closes with the client.
+  `OpenRouterImageProvider`, which runs on httpx alone, takes the same
+  keyword, in its own `httpx.AsyncClient` (redirects not followed, as
+  before). `examples/openai_outbound_policy.py` refuses a metadata address
+  to an image provider too.
 
 - **`LiteLLMAIProvider.list_models()` and `OpenRouterAIProvider.list_models()`
   go through the provider's `transport=`** (RMK-453). They read the proxy's

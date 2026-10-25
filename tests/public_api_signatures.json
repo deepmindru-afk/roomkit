@@ -4264,7 +4264,7 @@
     "__init__": ["def", "*", "api_key", "base_url='https://openrouter.ai/api/v1'", "model", "quality=None", "background=None", "output_format=None", "timeout=120.0", "connect_timeout=5.0", "max_retries=0", "default_headers=None", "site_url=None", "app_name=None"]
   },
   "roomkit.providers.openrouter.OpenRouterImageProvider": {
-    "__init__": ["def", "config"],
+    "__init__": ["def", "config", "*", "transport=None"],
     "available_models": ["classmethod"],
     "catalog_entry": ["def"],
     "close": ["async def"],

@@ -92,12 +92,14 @@ def openai_http_client(
 ) -> httpx.AsyncClient | None:
     """The OpenAI SDK's default HTTP client over *transport*; ``None`` without one.
 
-    Every client RoomKit builds on the ``openai`` SDK takes its
-    ``http_client`` from here, so a host's ``transport=`` reaches each the
-    same way: the seam for an outbound policy that judges the address
-    actually dialled. The SDK's own class, not a bare ``httpx.AsyncClient``,
-    so redirects are still followed, each hop through the transport. Its
-    timeout is the one the SDK client is built with, applied per request.
+    The AI, image and vision clients RoomKit builds on the ``openai`` SDK for
+    an endpoint their config names take their ``http_client`` from here, so a
+    host's ``transport=`` reaches each the same way: the seam for an outbound
+    policy that judges the address actually dialled. (``OpenAIClassifier``,
+    on OpenAI's own endpoint, takes a ``client=`` of the caller's instead.)
+    The SDK's own class, not a bare ``httpx.AsyncClient``, so redirects are
+    still followed, each hop through the transport. Its timeout is the one
+    the SDK client is built with, applied per request.
     The pool and its limits are the transport's; httpx reads no environment
     proxy beside a transport. Closing the SDK client closes it, and the
     transport with it.
