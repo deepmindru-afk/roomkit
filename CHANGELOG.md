@@ -489,7 +489,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one (`httpx.ConnectError`), is reported `failed` (RMK-453, RFC §25.2). It
   was `unknown`, as if the vendor might have run and billed it, for every
   connection error. A failure once the request left stays `unknown`. xAI
-  and Meta already told the two apart.
+  and Meta already told the two apart. With the SDK's retries
+  (`max_retries` above 0), the error raised is the last attempt's, after
+  attempts that may have left: an Azure attempt is then `unknown`, and an
+  `XAIImageProvider` or `MetaImageProvider` error not retryable, whatever
+  the last failure. A timeout retried into a connect failure was marked
+  retryable by xAI and Meta.
 
 ### Security
 

@@ -40,6 +40,7 @@ class AzureImageProvider(OpenAIImageProvider):
             ) from exc
         self._config = config
         self._httpx = _httpx
+        self._sdk_retries = config.max_retries
         self._api_status_error = _openai.APIStatusError
         self._api_connection_error = _openai.APIConnectionError
         self._client = _openai.AsyncAzureOpenAI(
@@ -47,7 +48,7 @@ class AzureImageProvider(OpenAIImageProvider):
             azure_endpoint=config.azure_endpoint,
             api_version=config.api_version,
             timeout=http_timeout(config),
-            max_retries=config.max_retries,
+            max_retries=self._sdk_retries,
             http_client=openai_http_client(_openai, transport),
         )
 

@@ -44,12 +44,19 @@ vendor did not run the generation. A 500, 502 or 504 may follow one it ran and
 billed, so it stays final, and the host decides (RFC §25.2)."""
 
 
-def never_sent(exc: BaseException, httpx: Any) -> bool:
+def never_sent(exc: BaseException, httpx: Any, *, retries: int) -> bool:
     """Whether a transport failure *exc* happened before its request left:
     the *httpx* client could not connect (a connect error, a connect or pool
     timeout), here or on its cause chain. The vendor ran nothing, so the
     failure may be retried; a timeout or a connection lost once the request
-    went out is ambiguous, and final (RFC §25.2)."""
+    went out is ambiguous, and final (RFC §25.2).
+
+    *retries* is the retry count of the client that raised *exc* (an SDK's
+    ``max_retries``). A client that retries raises its last attempt's error,
+    after earlier attempts that may have left: only a client that makes one
+    attempt can tell a request never left."""
+    if retries > 0:
+        return False
     unsent = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
     seen: BaseException | None = exc
     visited: set[int] = set()

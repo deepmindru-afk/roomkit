@@ -58,13 +58,15 @@ class OpenAIImageProvider(ImageProvider):
             ) from exc
         self._config = config
         self._httpx = _httpx
+        # No SDK retry: a paid generation is never retried automatically (RFC §25.2).
+        self._sdk_retries = 0
         self._api_status_error = _openai.APIStatusError
         self._api_connection_error = (_openai.APIConnectionError, _httpx.TransportError)
         self._client = _openai.AsyncOpenAI(
             api_key=config.api_key.get_secret_value(),
             base_url=config.base_url,
             timeout=http_timeout(config),
-            max_retries=0,
+            max_retries=self._sdk_retries,
             default_headers=config.default_headers,
             http_client=openai_http_client(_openai, transport),
         )
@@ -208,12 +210,12 @@ class OpenAIImageProvider(ImageProvider):
 
     def _failure_status(self, exc: Exception) -> Literal["failed", "unknown"]:
         """``unknown`` when the vendor may have run, and billed, the request: a
-        transport failure once it left. One that never left (a connect
-        failure, a host's policy refusing the address as one) ``failed``
-        (RFC §25.2)."""
-        if isinstance(exc, self._api_connection_error) and not never_sent(exc, self._httpx):
-            return "unknown"
-        return "failed"
+        transport failure once it left, or after an SDK retry (an earlier
+        attempt may have left). One that never left (a connect failure, a
+        host's policy refusing the address as one) ``failed`` (RFC §25.2)."""
+        if not isinstance(exc, self._api_connection_error):
+            return "failed"
+        return "failed" if never_sent(exc, self._httpx, retries=self._sdk_retries) else "unknown"
 
     @staticmethod
     def _validated_size(size: str) -> str:

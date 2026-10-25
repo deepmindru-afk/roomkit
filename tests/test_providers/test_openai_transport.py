@@ -319,3 +319,27 @@ async def test_an_image_attempt_is_unknown_once_its_request_may_have_left(
 
     [attempt] = caught.value.attempts
     assert attempt.status == status
+
+
+@pytest.mark.parametrize("kind", ["azure image", "xai image", "meta image"])
+async def test_a_retried_image_request_stays_ambiguous_whatever_its_last_failure(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the SDK's retries (``max_retries``), the error raised is the last
+    attempt's: the first timed out, and may have run and been billed. A
+    connect failure last does not make the request unsent: the attempt is
+    ``unknown`` and the error is not retryable (RFC §25.2)."""
+    monkeypatch.setattr("openai._base_client.INITIAL_RETRY_DELAY", 0.0)
+    transport = _Scripted(httpx.ReadTimeout, httpx.ConnectError)
+    client = _CALLS[kind]
+    provider = client.build("https://models.example", transport, max_retries=1)
+    try:
+        with pytest.raises(ProviderError) as caught:
+            await client.call(provider)
+    finally:
+        await provider.close()
+
+    assert transport.requests == 2
+    assert caught.value.retryable is False
+    if isinstance(caught.value, ImageGenerationError):
+        assert [attempt.status for attempt in caught.value.attempts] == ["unknown"]

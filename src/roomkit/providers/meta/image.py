@@ -71,12 +71,13 @@ class MetaImageProvider(ImageProvider):
         self._api_status_error = _openai.APIStatusError
         self._api_connection_error = _openai.APIConnectionError
         self._httpx = _httpx
+        self._sdk_retries = config.max_retries
         self._images_response_cls = _openai.types.ImagesResponse
         self._client = _openai.AsyncOpenAI(
             api_key=config.api_key.get_secret_value(),
             base_url=config.base_url,
             timeout=http_timeout(config),
-            max_retries=config.max_retries,
+            max_retries=self._sdk_retries,
             http_client=openai_http_client(_openai, transport),
         )
 
@@ -209,7 +210,9 @@ class MetaImageProvider(ImageProvider):
             return await self._client.images.generate(**generation, extra_body=extra)
         except self._api_connection_error as exc:
             raise ProviderError(
-                str(exc), retryable=never_sent(exc, self._httpx), provider="meta"
+                str(exc),
+                retryable=never_sent(exc, self._httpx, retries=self._sdk_retries),
+                provider="meta",
             ) from exc
         except self._api_status_error as exc:
             raise ProviderError(
