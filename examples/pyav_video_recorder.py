@@ -12,9 +12,18 @@ Run with:
     uv run python examples/pyav_video_recorder.py --duration 30
     uv run python examples/pyav_video_recorder.py --codec h264_nvenc
     uv run python examples/pyav_video_recorder.py --output ./my_recordings --fps 30
+    uv run python examples/pyav_video_recorder.py --duration 5 --encrypt
 
 The MP4 goes to ``<temp dir>/roomkit-recordings`` unless ``--output`` names
 another directory; the path of the file is printed at the end.
+
+By default the MP4 is written in the clear, so you can play it. ``--encrypt``
+stores it encrypted at rest instead (RFC 17.6): ``VideoRecordingConfig`` takes
+the same ``encryption=`` as the audio recorders, and the recorder hands the
+finished file to it, which leaves only the ``.mp4.enc`` artifact. The cipher
+below is a stand-in so the example needs no key management: it is NOT
+encryption. A deployment passes its own ``RecordingEncryption``, or
+``storage_encrypted_at_rest=True`` when the storage already encrypts.
 
 Press Ctrl+C to stop early.
 """
@@ -39,10 +48,30 @@ from roomkit.video import VideoFrame
 from roomkit.video.backends import LocalVideoBackend
 from roomkit.video.pipeline import VideoPipelineConfig
 from roomkit.video.recorder import PyAVVideoRecorder, VideoRecordingConfig
+from roomkit.voice.pipeline import RecordingEncryption
 
 setup_logging("pyav_video_recorder", level=logging.WARNING)
 
 DEFAULT_OUTPUT = Path(tempfile.gettempdir()) / "roomkit-recordings"
+
+
+class ReversingEncryption(RecordingEncryption):
+    """Stand-in cipher: reverses the bytes. Do not ship this.
+
+    It shows the contract a real cipher honours: leave no plaintext behind,
+    and return the path of the encrypted artifact.
+    """
+
+    @property
+    def name(self) -> str:
+        return "reversing-stand-in"
+
+    def encrypt_file(self, path: str) -> str:
+        source = Path(path)
+        target = source.with_name(source.name + ".enc")
+        target.write_bytes(source.read_bytes()[::-1])
+        source.unlink()
+        return str(target)
 
 
 async def main() -> None:
@@ -61,6 +90,11 @@ async def main() -> None:
         choices=["auto", "libx264", "h264_nvenc", "libx265"],
         help="Video codec (auto = NVENC if available, else libx264)",
     )
+    parser.add_argument(
+        "--encrypt",
+        action="store_true",
+        help="Store the MP4 encrypted at rest (stand-in cipher, see the module docstring)",
+    )
     args = parser.parse_args()
 
     kit = RoomKit()
@@ -75,6 +109,7 @@ async def main() -> None:
         format="mp4",
         codec=args.codec,
         fps=float(args.fps),
+        encryption=ReversingEncryption() if args.encrypt else None,
     )
 
     # --- Video channel with pipeline recorder --------------------------------
@@ -115,7 +150,7 @@ async def main() -> None:
     print("=" * 60)
     print(f"Codec: {args.codec}")
     print(f"Camera: device {args.device} at 640x480 @ {args.fps}fps")
-    print(f"Output: {args.output}/")
+    print(f"Output: {args.output}/{' (encrypted at rest)' if args.encrypt else ''}")
     if args.duration:
         print(f"Duration: {args.duration}s")
     else:
@@ -144,7 +179,8 @@ async def main() -> None:
 
     # Show output info: the newest MP4 is this run's (file names start with
     # a random session id, so sorting by name would pick an older one).
-    files = sorted(Path(args.output).glob("*.mp4"), key=lambda f: f.stat().st_mtime)
+    pattern = "*.mp4.enc" if args.encrypt else "*.mp4"
+    files = sorted(Path(args.output).glob(pattern), key=lambda f: f.stat().st_mtime)
     if files:
         latest = files[-1]
         size_kb = latest.stat().st_size / 1024

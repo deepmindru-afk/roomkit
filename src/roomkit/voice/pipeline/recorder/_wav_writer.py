@@ -390,7 +390,7 @@ class WavWriterThread:
 
 
 def _discard_files(ws: _WriterSession) -> None:
-    """Delete what a session left on disk when its finalisation failed.
+    """Delete what a session left on disk when its finalisation raised.
 
     The files never reached the cipher, so with ``encryption`` configured they
     are plaintext the caller asked not to keep (RFC §17.6); being unfinished,

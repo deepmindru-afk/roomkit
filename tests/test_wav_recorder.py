@@ -14,8 +14,7 @@ import pytest
 
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import VoiceSession
-from roomkit.voice.pipeline.config import AudioPipelineConfig
-from roomkit.voice.pipeline.engine import AudioPipeline
+from roomkit.voice.pipeline import AudioPipeline, AudioPipelineConfig
 from roomkit.voice.pipeline.recorder import wav
 from roomkit.voice.pipeline.recorder._wav_writer import make_frame_op
 from roomkit.voice.pipeline.recorder.base import (
@@ -125,6 +124,43 @@ class TestWavFileRecorderBasic:
         # Should not raise, path should be set
         assert handle.path
         recorder.stop(handle)
+
+    @pytest.mark.parametrize("storage", ["{tmp}/volume/app/../recordings", "../recordings"])
+    def test_storage_with_dotdot_is_refused_and_nothing_is_written(
+        self,
+        storage: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A ``storage`` with '..' is a configuration error (RFC §12.3.7, RMK-569).
+
+        It used to be swapped for the temp directory: the recording landed in
+        the clear outside the storage declared encrypted, and the result still
+        reported ``"encryption": "storage"``. The voice pipeline logs the
+        refusal and the call goes on unrecorded, as for any refused start.
+        """
+        temp_dir = tmp_path / "tmp"
+        temp_dir.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(temp_dir))
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+        recorder = WavFileRecorder()
+        config = _recording_config(storage=storage.format(tmp=tmp_path))
+        pipeline = AudioPipeline(AudioPipelineConfig(recorder=recorder, recording_config=config))
+        started: list[RecordingHandle] = []
+        pipeline.on_recording_started(lambda _session, handle: started.append(handle))
+        session = _session()
+
+        with caplog.at_level(logging.ERROR, logger="roomkit.voice.pipeline"):
+            pipeline.on_session_active(session)
+        pipeline.process_inbound(session, _frame(_pcm_tone(320)))
+        recorder.close()
+
+        assert list(tmp_path.rglob("*.wav")) == []
+        assert started == []
+        assert "Storage path must not contain '..'" in caplog.text
 
 
 class TestMixedMode:
@@ -663,43 +699,6 @@ class TestSilenceGapEdgeCases:
 
         # Outbound-only mixed file should have silence inserted
         assert total_frames > 200
-
-    @pytest.mark.parametrize("storage", ["{tmp}/volume/app/../recordings", "../recordings"])
-    def test_storage_with_dotdot_is_refused_and_nothing_is_written(
-        self,
-        storage: str,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """A ``storage`` with '..' is a configuration error (RFC §12.3.7, RMK-569).
-
-        It used to be swapped for the temp directory: the recording landed in
-        the clear outside the storage declared encrypted, and the result still
-        reported ``"encryption": "storage"``. The voice pipeline logs the
-        refusal and the call goes on unrecorded, as for any refused start.
-        """
-        temp_dir = tmp_path / "tmp"
-        temp_dir.mkdir()
-        monkeypatch.setattr(tempfile, "tempdir", str(temp_dir))
-        cwd = tmp_path / "cwd"
-        cwd.mkdir()
-        monkeypatch.chdir(cwd)
-        recorder = WavFileRecorder()
-        config = _recording_config(storage=storage.format(tmp=tmp_path))
-        pipeline = AudioPipeline(AudioPipelineConfig(recorder=recorder, recording_config=config))
-        started: list[RecordingHandle] = []
-        pipeline.on_recording_started(lambda _session, handle: started.append(handle))
-        session = _session()
-
-        with caplog.at_level(logging.ERROR, logger="roomkit.voice.pipeline"):
-            pipeline.on_session_active(session)
-        pipeline.process_inbound(session, _frame(_pcm_tone(320)))
-        recorder.close()
-
-        assert list(tmp_path.rglob("*.wav")) == []
-        assert started == []
-        assert "Storage path must not contain '..'" in caplog.text
 
 
 class TestWriterThread:
