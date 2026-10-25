@@ -553,6 +553,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded on the binding its attach made, and the attach's
   `ON_CHANNEL_ATTACHED` hooks are not cut.
 
+- A message refused for its organization draws nothing from the reentry
+  budget of the room's work that sends it (RFC §9.5.1, §17.2, RMK-487,
+  RMK-954). `process_inbound(msg, room_id=..., organization_id=...)` sent by
+  the room's own work (an off-lock hook's body, a parse, a turn, a delivery,
+  and now an ASYNC hook's body) took its pass before step 2 found the room
+  another organization's, as 0.108.0 did: twelve such calls from one hook's
+  body raised `RoomNotFoundError` ten times, then returned `blocked
+  reentry_loop_cap`, and the body's next post was stored `BLOCKED`. The room
+  a scoped message names is now read with its organization before the pass
+  is drawn, as `send_event()`, `post()` and `deliver()` read it; a room the
+  store does not hold is still created under the organization.
+
 - Documented imports that failed now work (RMK-948): 25 distinct imports in
   the README, AGENTS.md, the Context7 pages and the docs site named a name
   where it is not, or one that does not exist. `RetryPolicy` and

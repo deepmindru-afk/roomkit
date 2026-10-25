@@ -202,7 +202,9 @@ the event it runs for. The call is part of that event's work (RFC §9.5.1):
   stores the event `BLOCKED` with `reentry_loop_cap`, no hook run, and returns
   that record; `process_inbound()` naming the room returns `blocked=True,
   reason="reentry_loop_cap"` with no event, before anything else: its channel
-  is not looked up, nothing is attached.
+  is not looked up, nothing is attached. A call acting for an organization
+  has the room read with it first, so another organization's room raises
+  `RoomNotFoundError` and draws nothing.
 - A message routed back into the room (`process_inbound()` with no
   `room_id`) raises `ReentrantCallError` before anything is written: its room
   is known only once routed, so it cannot be adopted. Name the room instead.
@@ -267,6 +269,10 @@ its response:
 - A hook that posts after every event, its own posts included, stops at the
   cap: each post draws one hook call, and past the cap it is stored `BLOCKED`
   with `reentry_loop_cap`.
+- A call refused for its organization (`organization_id=` naming another
+  organization's room) raises `RoomNotFoundError` before it draws anything:
+  `process_inbound()` naming the room as much as `post()`, `send_event()`,
+  `deliver()` or a regeneration.
 - A hook that asks an agent again after each of its answers (a judge) ends at
   `max_chain_depth`, or at a discussion's `max_depth`: each post, message,
   `deliver()` (a queued item carries the depth) or regeneration is one deeper

@@ -223,8 +223,10 @@ class InboundMixin(HelpersMixin):
         cascade that delivers, as it starts: past it, it is refused
         ``reentry_loop_cap`` with no event, before anything else when it names
         its room (its channel not looked up, nothing attached), once routing
-        knows its room when it is routed. A message sent within a turn is at
-        least as deep as the turn's response (RFC §8.3).
+        knows its room when it is routed. Named with an *organization_id*,
+        the room is read with it before the budget: another organization's
+        room is not found, and nothing is drawn (RFC §17.2). A message sent
+        within a turn is at least as deep as the turn's response (RFC §8.3).
 
         Raises:
             ChannelNotRegisteredError: the message's channel is not registered
@@ -237,12 +239,29 @@ class InboundMixin(HelpersMixin):
                 Its channel is a host channel, which receives no external
                 payload (RFC §10.5); nothing is read or written.
         """
-        from roomkit.telemetry.base import SpanKind
-        from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
-
         # A sixth composite level is refused where it is built (RFC §5.3):
         # the message fails before anything is read or written.
         refuse_too_deep(message.content)
+        # The message's key names its delivery from the call's start, before
+        # anything is awaited (RFC §10.1): the read of its room's scope too.
+        with self._delivery_keys.naming(message.delivery_key, organization_id) as named:
+            return await self._process_named_inbound(
+                message, room_id, defer_delivery, organization_id, named
+            )
+
+    async def _process_named_inbound(
+        self,
+        message: InboundMessage,
+        room_id: str | None,
+        defer_delivery: bool,
+        organization_id: str | None,
+        named: NamedDelivery,
+    ) -> InboundResult:
+        """:meth:`process_inbound` for *message*, whose delivery *named*
+        names, from RFC §10.1 step 1."""
+        from roomkit.telemetry.base import SpanKind
+        from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
+
         telemetry = self._telemetry
 
         def open_span() -> str:
@@ -256,17 +275,31 @@ class InboundMixin(HelpersMixin):
                 attributes={"sender_id": message.sender_id or ""},
             )
 
+        # One deadline from the call's start to its decision (RFC §13.6), as
+        # an absolute instant shared by every wait before the commit rather
+        # than re-applied at each: the scope's read of a room the call names
+        # from its work, routing, with the identity it reads, the router and
+        # step 2's waits for the room lock, then the context build, the
+        # parse, the off-lock check and the room lock. A router or a lock
+        # that hangs holds the caller no longer than the bound. A room step 2
+        # creates is completed whatever the deadline: it is the room's state,
+        # not the event's.
+        deadline = asyncio.get_running_loop().time() + self._process_timeout
         # RFC §10.1 step 1, §9.5.1 Past the cap: a message that names its
         # room, sent by that room's work, draws on its budget as it starts,
-        # before anything else; a routed one, and one naming a room of no
-        # work, are charged at step 2 once their room is known. The refusal
-        # writes nothing, and is traced as any call: a loop the cap cut stays
-        # visible.
+        # before anything else but its scope's check; a routed one, and one
+        # naming a room of no work, are charged at step 2 once their room is
+        # known. The refusal writes nothing, and is traced as any call: a
+        # loop the cap cut stays visible.
         charged = self._named_room_work(room_id)
-        if charged is not None and not charged.draw():
-            refused = {"blocked": True, "deferred": defer_delivery}
-            telemetry.end_span(open_span(), attributes=refused)
-            return _past_the_cap(room_id, message)
+        if charged is not None and room_id is not None:
+            refused = await self._charge_named_room(
+                charged, room_id, message, organization_id, deadline
+            )
+            if refused is not None:
+                attributes = {"blocked": True, "deferred": defer_delivery}
+                telemetry.end_span(open_span(), attributes=attributes)
+                return refused
 
         # Inbound rate limiting — drop excess messages before any processing
         if (
@@ -310,6 +343,8 @@ class InboundMixin(HelpersMixin):
                 telemetry,
                 inbound_span_id,
                 defer_delivery,
+                deadline,
+                named,
                 organization_id=organization_id,
                 charged=charged,
             )
@@ -387,6 +422,37 @@ class InboundMixin(HelpersMixin):
         entry = self._room_work.entry(room_id)
         return entry if entry.charged else None
 
+    async def _charge_named_room(
+        self,
+        charged: Entry,
+        room_id: str,
+        message: InboundMessage,
+        organization_id: str | None,
+        deadline: float,
+    ) -> InboundResult | None:
+        """Draw the pass a message naming *room_id*, sent by that room's
+        work, takes as it starts (RFC §10.1 step 1, §9.5.1): its refusal
+        past the budget, ``None`` once drawn. A caller acting for an
+        organization has the room read with it first, within the call's
+        *deadline* (§13.6): another organization's room is not found before
+        anything is drawn from the budget (§17.2). A room the store does not
+        hold is left to step 2, which creates it under the organization.
+
+        Raises:
+            RoomNotFoundError: the room is another organization's.
+        """
+        if organization_id is not None:
+            try:
+                async with asyncio.timeout_at(deadline):
+                    room = await self._store.get_room(room_id)
+            except TimeoutError:
+                return await self._refuse_on_timeout(room_id, channel_id=message.channel_id)
+            if room is not None and room.organization_id != organization_id:
+                raise RoomNotFoundError(f"Room {room_id} not found")
+        if not charged.draw():
+            return _past_the_cap(room_id, message)
+        return None
+
     async def _process_inbound_inner(
         self,
         message: InboundMessage,
@@ -395,18 +461,16 @@ class InboundMixin(HelpersMixin):
         telemetry: Any,
         inbound_span_id: str,
         defer_delivery: bool,
+        deadline: float,
+        named: NamedDelivery,
         organization_id: str | None = None,
         charged: Entry | None = None,
     ) -> InboundResult:
         """Inner inbound processing (extracted for telemetry wrapping), its
-        delivery named by the message's key from the call's start (RFC
-        §10.1): nothing awaited before this point. A failed release of the
-        room lock is the result's error when no earlier error was met
-        (§13.5)."""
-        with (
-            self._delivery_keys.naming(message.delivery_key, organization_id) as named,
-            collecting_release_failures() as failed_releases,
-        ):
+        delivery *named* by the message's key from the call's start (RFC
+        §10.1), *deadline* the call's (§13.6). A failed release of the room
+        lock is the result's error when no earlier error was met (§13.5)."""
+        with collecting_release_failures() as failed_releases:
             result = await self._route_and_deliver(
                 message,
                 channel,
@@ -415,6 +479,7 @@ class InboundMixin(HelpersMixin):
                 inbound_span_id,
                 defer_delivery,
                 named,
+                deadline=deadline,
                 organization_id=organization_id,
                 charged=charged,
             )
@@ -433,20 +498,13 @@ class InboundMixin(HelpersMixin):
         defer_delivery: bool,
         named: NamedDelivery,
         *,
+        deadline: float,
         organization_id: str | None,
         charged: Entry | None,
     ) -> InboundResult:
-        """RFC §10.1 steps 2-18 for *message*, whose delivery *named* names;
-        *charged* the entry of a call naming its room, drawn as it started."""
-        # One deadline from the call's start to its decision (RFC §13.6), as
-        # an absolute instant shared by every wait before the commit rather
-        # than re-applied at each: routing, with the identity it reads, the
-        # router and step 2's waits for the room lock, then the context
-        # build, the parse, the off-lock check and the room lock. A router or
-        # a lock that hangs holds the caller no longer than the bound. A room
-        # step 2 creates is completed whatever the deadline: it is the room's
-        # state, not the event's.
-        deadline = asyncio.get_running_loop().time() + self._process_timeout
+        """RFC §10.1 steps 2-18 for *message*, whose delivery *named* names,
+        by the call's *deadline* (§13.6); *charged* the entry of a call
+        naming its room, drawn as it started."""
         refused = self._refused_instruction(message)
         if refused is not None:
             return refused

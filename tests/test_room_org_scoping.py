@@ -585,7 +585,23 @@ class TestScopedTurnsAndDeliveries:
         await kit.close()
 
 
-async def test_a_refused_regeneration_draws_nothing_from_the_hooks_budget() -> None:
+_FROM_ANOTHER_ORGANIZATION: dict[str, Callable[[RoomKit], Awaitable[Any]]] = {
+    "regenerate_response": lambda kit: kit.regenerate_response(
+        "globex-room", organization_id="acme"
+    ),
+    "process_inbound": lambda kit: kit.process_inbound(
+        _message(), room_id="globex-room", organization_id="acme"
+    ),
+    "send_event": lambda kit: kit.send_event(
+        "globex-room", "sms1", TextContent(body="from acme"), organization_id="acme"
+    ),
+    "post": lambda kit: kit.post("globex-room", "from acme", organization_id="acme"),
+    "deliver": lambda kit: kit.deliver("globex-room", "from acme", organization_id="acme"),
+}
+
+
+@pytest.mark.parametrize("call", sorted(_FROM_ANOTHER_ORGANIZATION))
+async def test_a_refused_call_draws_nothing_from_the_hooks_budget(call: str) -> None:
     """The scope is read before the call draws on the budget of the ASYNC
     hook's body it is made from (RFC §9.5.1, §17.2): eleven refused calls,
     past the cascade's ten hook calls (depth limit 1), leave the budget
@@ -601,14 +617,19 @@ async def test_a_refused_regeneration_draws_nothing_from_the_hooks_budget() -> N
     async def probe(event: Any, context: Any) -> None:
         if done.is_set():
             return
-        for _ in range(11):
-            try:
-                await kit.regenerate_response("globex-room", organization_id="acme")
-            except Exception as error:  # the type is the assertion
-                outcomes.append(type(error).__name__)
-        updated = await kit.update_event("globex-room", event.id, metadata={"seen": True})
-        outcomes.append("updated" if updated is not None else "not updated")
-        done.set()
+        try:
+            for _ in range(11):
+                try:
+                    await _FROM_ANOTHER_ORGANIZATION[call](kit)
+                    outcomes.append("not refused")
+                except RoomNotFoundError as error:
+                    outcomes.append(type(error).__name__)
+            updated = await kit.update_event("globex-room", event.id, metadata={"seen": True})
+            outcomes.append("updated" if updated is not None else "not updated")
+        except Exception as error:  # the type is the assertion
+            outcomes.append(type(error).__name__)
+        finally:
+            done.set()
 
     await kit.process_inbound(_message(), room_id="globex-room")
     await asyncio.wait_for(done.wait(), 2)
