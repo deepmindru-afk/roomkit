@@ -11,7 +11,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._runtime_record import RUNTIME_RECORD
-from roomkit.channels.addressing import written_recipient
+from roomkit.channels.addressing import read_recipient
 from roomkit.core._changes import for_channels
 from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
 from roomkit.core._instructions import FINGERPRINT, names_an_agent
@@ -33,6 +33,7 @@ from roomkit.core.inbound_router import (
     binding_names_no_one,
     known_as,
     recordable_sender,
+    routed_recipient,
     still_the_messages,
 )
 from roomkit.core.locks import collecting_release_failures, failed_release
@@ -1199,7 +1200,7 @@ class InboundMixin(HelpersMixin):
         # room due to close is no longer the message's.
         room = await self._room_timers.apply_due(room)
         binding = await self._store.get_binding(room_id, channel_id)
-        recipient = channel.recipient_address(binding) if binding is not None else None
+        recipient = routed_recipient(channel, binding) if binding is not None else None
         if not await still_the_messages(
             self._store, room, channel_id, binding, sender, own, recipient
         ):
@@ -1247,11 +1248,13 @@ class InboundMixin(HelpersMixin):
         """Write the sender on *binding*, read under the room lock, where it names no one.
 
         The binding that names the sender by their address also gets them as
-        its recipient where it has none (``channel.reply_metadata``): the
-        room then replies to the person it is the conversation of, including
-        a binding recorded before it carried a recipient. A recipient already
-        there, the host's above all, is never replaced. Pushed to the channel
-        as every binding update is; a group binding is never written.
+        its recipient where it holds no value (``channel.reply_metadata``):
+        the room then replies to the person it is the conversation of,
+        including a binding recorded before it carried a recipient. A
+        recipient already there, the host's above all, is never replaced, nor
+        is a value that is not a recipient (RFC §5.7), whose deliveries stay
+        refused ``no_recipient``. Pushed to the channel as every binding
+        update is; a group binding is never written.
         """
         if binding.group:
             return
@@ -1267,7 +1270,7 @@ class InboundMixin(HelpersMixin):
             missing = {
                 key: value
                 for key, value in channel.reply_metadata(message).items()
-                if written_recipient(binding.metadata, key) is None
+                if read_recipient(binding.metadata, key) is None
             }
             update["metadata"] = {**binding.metadata, **missing}
         if not update:
@@ -1587,9 +1590,11 @@ def _conversation(message: InboundMessage, channel: Channel) -> str:
 
 
 def _lacks_recipient(binding: ChannelBinding, message: InboundMessage, channel: Channel) -> bool:
-    """Whether *binding* names *message*'s conversation but has no reply address for it."""
+    """Whether *binding* names *message*'s conversation but holds no value
+    where its reply address goes. A value that is not a recipient is one
+    held (RFC §5.7): the record does not write over it."""
     if binding.participant_id != _conversation(message, channel):
         return False
     return any(
-        written_recipient(binding.metadata, key) is None for key in channel.reply_metadata(message)
+        read_recipient(binding.metadata, key) is None for key in channel.reply_metadata(message)
     )

@@ -14,7 +14,7 @@ from roomkit.core.hooks import (
     SyncHookFn,
     hook_decorator,
 )
-from roomkit.core.inbound_router import binding_admits
+from roomkit.core.inbound_router import binding_admits, routed_recipient
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import DeliveryStatus
@@ -392,11 +392,12 @@ class HooksApiMixin(HelpersMixin):
             return candidates[0]
         # The one room is the recipient's only if its binding could name them:
         # a binding naming another correspondent, its participant or else its
-        # recipient in the channel's form (RFC §5.7), is that person's room.
+        # recipient in the channel's form (RFC §5.7), is that person's room. A
+        # value that is not a recipient is no one's this status can name.
         binding = await self._store.get_binding(candidates[0], channel_id)
         if binding is None or not binding_admits(binding, frozenset({recipient})):
             return None
-        delivers_to = channel.recipient_address(binding) if channel is not None else None
+        delivers_to = routed_recipient(channel, binding)
         named_by_recipient = not binding.group and binding.participant_id is None
         if named_by_recipient and delivers_to not in (None, recipient):
             return None

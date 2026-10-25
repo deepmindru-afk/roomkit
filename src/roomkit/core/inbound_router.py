@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels.addressing import UnreadableRecipient, read_recipient
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.delivery import SYSTEM_SENDER_ID
 from roomkit.models.enums import ChannelType, RoomStatus
@@ -224,8 +225,40 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         if binding is None:
             return False
         channel = self._channel_of(channel_id) if self._channel_of is not None else None
-        recipient = channel.recipient_address(binding) if channel is not None else None
+        recipient = routed_recipient(channel, binding)
         return await step_three_admits(self._store, binding, sender, own, recipient)
+
+
+def routed_recipient(
+    channel: Channel | None, binding: ChannelBinding
+) -> str | UnreadableRecipient | None:
+    """The recipient *binding* delivers to, as routing reads it (RFC §5.7, §10.4).
+
+    Its address in the channel's form; ``None`` when it holds no value, or
+    on a channel whose recipient names no conversation (or no channel); an
+    :class:`UnreadableRecipient` for a value under the channel's recipient
+    key that is not a recipient. That one is not "no recipient": it is a
+    recipient no sender is, so it admits no one by step 3, makes the room
+    no longer a routed message's under the lock, and is never written over
+    by the record of a sender. It is logged as a warning naming the binding
+    and the value's type, never the value, which may be a person's number.
+    """
+    if channel is None:
+        return None
+    key = channel.recipient_key
+    held = read_recipient(binding.metadata, key) if key is not None else None
+    if isinstance(held, UnreadableRecipient):
+        logger.warning(
+            "The binding of channel %r in room %r holds a %s under %r, which is not a "
+            "recipient: routing reads it as no sender's, and deliveries to it are refused "
+            "no_recipient (RFC §5.7)",
+            binding.channel_id,
+            binding.room_id,
+            held.kind,
+            key,
+        )
+        return held
+    return channel.recipient_address(binding)
 
 
 async def step_three_admits(
@@ -233,16 +266,18 @@ async def step_three_admits(
     binding: ChannelBinding,
     sender: str | None,
     own: frozenset[str],
-    recipient: str | None,
+    recipient: str | UnreadableRecipient | None,
 ) -> bool:
     """Whether the room of *binding*, its binding of the channel, admits
     *sender* by RFC §10.4 step 3's conditions.
 
     *own* holds the ids the sender is known by (:func:`known_as`), and
-    *recipient* the address the binding delivers to, in its channel's form.
-    The default router asks it of the one room bound to the channel, and the
-    framework again under the room lock before it records the sender there
-    (§10.1 step 2): one predicate, so the two never drift apart.
+    *recipient* the address the binding delivers to, in its channel's form,
+    as :func:`routed_recipient` reads it: a value that is not a recipient
+    is someone else's. The default router asks it of the one room bound to
+    the channel, and the framework again under the room lock before it
+    records the sender there (§10.1 step 2): one predicate, so the two never
+    drift apart.
     """
     if binding.group:
         return True
@@ -253,8 +288,11 @@ async def step_three_admits(
         return False
     if not binding_admits(binding, own):
         return False
-    if recipient is not None and recipient not in own:
-        # The room delivers to someone else: it is their conversation.
+    if recipient is not None and (
+        isinstance(recipient, UnreadableRecipient) or recipient not in own
+    ):
+        # The room delivers to someone else: it is their conversation. A
+        # value that is not a recipient is no sender's (RFC §5.7).
         return False
     for participant in await store.list_participants(binding.room_id):
         if binding.channel_id in participant.connected_via and not own & {
@@ -272,27 +310,31 @@ async def still_the_messages(
     binding: ChannelBinding | None,
     sender: str | None,
     own: frozenset[str],
-    recipient: str | None,
+    recipient: str | UnreadableRecipient | None,
 ) -> bool:
     """Whether a routed message's *room*, read under the room lock, is still
     the message's (RFC §10.1 step 2, §10.4), whichever strategy chose it.
 
     *binding* is the room's binding of *channel_id*, *own* the ids the sender
-    is known by and *recipient* the address the binding delivers to. Not the
-    message's: a room whose status refuses events; a PAUSED room that is not
-    the sender's conversation by step 1 (the binding names them, or a
-    participant they are was reached through the channel) and whose binding
-    is not ``group``; a binding, not ``group``, naming a correspondent other
-    than the sender (its participant, else its recipient); a binding naming
-    no one that the room no longer opens to the sender by step 3's
-    conditions, unless the sender is a participant reached through the
-    channel; a message with no address is held to those conditions too. The
-    framework's own sender and a message with no address are no one's
-    correspondent, and are recorded on no binding.
+    is known by and *recipient* the address the binding delivers to, as
+    :func:`routed_recipient` reads it. Not the message's: a room whose
+    status refuses events; a PAUSED room that is not the sender's
+    conversation by step 1 (the binding names them, or a participant they
+    are was reached through the channel) and whose binding is not
+    ``group``; a binding, not ``group``, naming a correspondent other than
+    the sender (its participant, else its recipient, a value that is not a
+    recipient being no sender's, RFC §5.7); a binding naming no one that the
+    room no longer opens to the sender by step 3's conditions, unless the
+    sender is a participant reached through the channel; a message with no
+    address is held to those conditions too. The framework's own sender and
+    a message with no address are no one's correspondent, and are recorded
+    on no binding.
     """
     if room.status in _REFUSING:
         return False
     group = binding is not None and binding.group
+    # An unreadable recipient is a correspondent no sender is: it is in no
+    # one's names, so the room is not the message's (RFC §5.7).
     correspondent = None if binding is None or group else binding.participant_id or recipient
     if room.status != RoomStatus.PAUSED and (
         binding is None or group or (correspondent is not None and correspondent in own)

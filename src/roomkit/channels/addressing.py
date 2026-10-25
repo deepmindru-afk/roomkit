@@ -130,19 +130,51 @@ def addressing_of(channel_type: ChannelType) -> ChannelAddressing:
     return _BY_TYPE.get(channel_type, _AS_WRITTEN)
 
 
-def written_recipient(metadata: Mapping[str, Any], key: str) -> str | int | None:
-    """The recipient *metadata* holds under *key*, as written (RFC §5.7, §10.2
-    step 3d): a string that is not blank, or an integer (a chat id). Null, a
-    blank string, a boolean, a float, a list and an object are none: a
-    delivery to a binding holding one is refused ``no_recipient``, and
-    routing reads no correspondent in it. The same rule reads the chat a
-    message carries under its channel's chat key, and the stores' recipient
-    lookup (``find_room_id_by_binding``)."""
+@dataclass(frozen=True)
+class UnreadableRecipient:
+    """A value under a recipient key that is not a recipient (RFC §5.7): a
+    boolean, a float, a list, an object, any value that is neither a
+    recipient nor no value.
+
+    It is not "no recipient": routing reads it as a recipient that is not
+    the sender, whoever writes, so it equals no address. *kind* is the
+    value's type name, which a log may show; the value itself, perhaps a
+    person's number, is not kept.
+    """
+
+    kind: str
+
+
+def read_recipient(
+    metadata: Mapping[str, Any], key: str
+) -> str | int | UnreadableRecipient | None:
+    """What *metadata* holds under *key* as a recipient (RFC §5.7), the one
+    rule every read of a recipient takes.
+
+    The recipient as written: a string that is not blank, or an integer (a
+    chat id). ``None`` for no value: the key absent, null, or a blank
+    string. An :class:`UnreadableRecipient` for any other value (a boolean,
+    a float, a list, an object): a delivery to it is refused
+    ``no_recipient``, as one to no value is, while routing reads it as
+    someone else's and the record of a routed sender never writes over it.
+    """
     value = metadata.get(key)
-    if isinstance(value, bool):
+    if value is None:
         return None
     if isinstance(value, str):
         return value if value.strip() else None
-    if isinstance(value, int):
+    if isinstance(value, int) and not isinstance(value, bool):
         return value
-    return None
+    return UnreadableRecipient(type(value).__name__)
+
+
+def written_recipient(metadata: Mapping[str, Any], key: str) -> str | int | None:
+    """The recipient *metadata* holds under *key*, as written (RFC §5.7, §10.2
+    step 3d), by :func:`read_recipient`'s rule: a string that is not blank,
+    or an integer (a chat id); ``None`` for no value and for a value that is
+    not a recipient. A delivery reads it, refusing ``no_recipient`` where
+    it is ``None``, and so do the stores' recipient lookup
+    (``find_room_id_by_binding``), where it finds no one, and the chat a
+    message carries under its channel's chat key."""
+    held = read_recipient(metadata, key)
+    return None if isinstance(held, UnreadableRecipient) else held

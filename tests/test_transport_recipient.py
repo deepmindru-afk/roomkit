@@ -244,21 +244,44 @@ async def test_a_host_address_is_written_in_e164() -> None:
     await kit.close()
 
 
-async def test_a_binding_naming_the_sender_without_recipient_gets_one() -> None:
-    """A binding recorded before it carried a recipient is completed by the next message."""
+@pytest.mark.parametrize(
+    ("held", "completed"),
+    [(None, True), ("  ", True), (15550000001.0, False), ([ALICE], False)],
+    ids=["nothing", "blank", "float", "list"],
+)
+async def test_a_binding_naming_the_sender_without_recipient_gets_one(
+    held: object, completed: bool
+) -> None:
+    """A binding recorded before it carried a recipient is completed by the
+    next message, and the host's notice reaches the sender. A binding
+    holding a value that is not a recipient (RFC §5.7) has one, which the
+    record keeps: the field stays the host's, and the notice is refused
+    ``no_recipient`` rather than sent anywhere."""
     sms = MockSMSProvider()
-    kit = _kit_with_agent(SMSChannel("sms", provider=sms))
+    kit = RoomKit()
+    kit.register_channel(SMSChannel("sms", provider=sms))
+    kit.register_channel(WebSocketChannel("bank"))
+    failed: list[FrameworkEvent] = []
+
+    @kit.on("delivery_failed")
+    async def on_failed(event: FrameworkEvent) -> None:
+        failed.append(event)
+
     await kit.create_room(room_id="r1")
-    await kit.attach_channel("r1", "ai")
-    await kit.attach_channel("r1", "sms", participant_id=ALICE)
+    await kit.attach_channel("r1", "bank")
+    metadata = {} if held is None else {"phone_number": held}
+    await kit.attach_channel("r1", "sms", participant_id=ALICE, metadata=metadata)
 
     result = await kit.process_inbound(_text("sms", ALICE))
     assert result.event is not None and result.event.room_id == "r1"
-    await _eventually(lambda: sms.sent)
+    await kit.send_event("r1", "bank", TextContent(body="your appointment"))
+    await _eventually(lambda: sms.sent or failed)
 
     binding = await kit.store.get_binding("r1", "sms")
-    assert binding is not None and binding.metadata["phone_number"] == ALICE
-    assert [m["to"] for m in sms.sent] == [ALICE]
+    assert binding is not None
+    assert binding.metadata["phone_number"] == (ALICE if completed else held)
+    assert [m["to"] for m in sms.sent] == ([ALICE] if completed else [])
+    assert [e.data.get("error") for e in failed] == ([] if completed else ["no_recipient"])
     await kit.close()
 
 
@@ -433,4 +456,41 @@ async def test_no_recipient_is_refused_before_any_send_and_spares_the_breaker(
     await kit.send_event("alice", "bank", TextContent(body="your appointment"))
     await _eventually(lambda: sms.sent)
     assert [m["to"] for m in sms.sent] == [ALICE]
+    await kit.close()
+
+
+async def test_a_room_with_an_unreadable_recipient_is_no_strangers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """End to end, as an integrator meets it (RFC §5.7, §10.4 step 3): the
+    host opens host-room with a ``phone_number`` written as a float, and bob
+    texts the number. Routed, he gets a room of his own and is answered
+    there; host-room stores nothing of his, keeps the field the host wrote,
+    and a warning names its binding. Named by room id, the message lands in
+    host-room as before, and the agent's answer there is refused
+    ``no_recipient`` rather than sent to anyone."""
+    sms = MockSMSProvider()
+    kit = _kit_with_agent(SMSChannel("sms", provider=sms))
+    await kit.create_room(room_id="host-room")
+    await kit.attach_channel("host-room", "ai")
+    await kit.attach_channel("host-room", "sms", metadata={"phone_number": 15550000001.0})
+
+    with caplog.at_level("WARNING", logger="roomkit"):
+        routed = await kit.process_inbound(_text("sms", BOB, "bob: hello"))
+        assert routed.event is not None and routed.event.room_id != "host-room"
+        await _eventually(lambda: sms.sent)
+        assert [m["to"] for m in sms.sent] == [BOB]
+        stored = await kit.store.list_events("host-room")
+        assert not [e for e in stored if e.source.participant_id == BOB]
+        warned = [r.getMessage() for r in caplog.records if "not a recipient" in r.getMessage()]
+        assert warned and "'host-room'" in warned[0] and "float" in warned[0]
+
+        named = await kit.process_inbound(_text("sms", BOB, "bob: hello"), room_id="host-room")
+        assert named.event is not None and named.event.room_id == "host-room"
+        await _eventually(lambda: any("refused" in r.getMessage() for r in caplog.records))
+        assert [m["to"] for m in sms.sent] == [BOB]
+
+    binding = await kit.store.get_binding("host-room", "sms")
+    assert binding is not None and binding.participant_id is None
+    assert binding.metadata == {"phone_number": 15550000001.0}
     await kit.close()

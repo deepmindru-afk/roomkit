@@ -64,10 +64,10 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[ConversationSto
 class _Shop:
     """A kit with one SMS number and an agent that joins every room it opens."""
 
-    def __init__(self, store: ConversationStore, resolver: Any = None) -> None:
+    def __init__(self, store: ConversationStore, resolver: Any = None, router: Any = None) -> None:
         self.sms = MockSMSProvider()
         self.ai = MockAIProvider(responses=["AI reply"])
-        self.kit = RoomKit(store=store, identity_resolver=resolver)
+        self.kit = RoomKit(store=store, identity_resolver=resolver, inbound_router=router)
         self.kit.register_channel(SMSChannel("sms", provider=self.sms))
         self.kit.register_channel(AIChannel("ai", provider=self.ai))
 
@@ -224,18 +224,18 @@ class TestARoomTheHostOpened:
         assert shop.sent_to(BOB) and shop.sent_to(ALICE)
 
     @pytest.mark.parametrize(
-        "held",
-        [None, True, "  ", {"number": BOB}, [BOB], 15550000002.0],
-        ids=["nothing", "true", "blank", "object", "list", "float"],
+        "metadata",
+        [{}, {"phone_number": None}, {"phone_number": ""}, {"phone_number": "  "}],
+        ids=["nothing", "null", "empty", "blank"],
     )
     async def test_a_room_opened_for_no_one_keeps_its_first_sender(
-        self, store: ConversationStore, held: object
+        self, store: ConversationStore, metadata: dict[str, Any]
     ) -> None:
-        """A value under the recipient key that is no recipient (RFC §5.7: a
-        string that is not blank, or an integer) names no one: the first
-        sender is the room's, and their address its recipient."""
+        """No value under the recipient key (RFC §5.7: the key absent, null,
+        or a blank string) names no one: the first sender is the room's, and
+        their address its recipient."""
         shop = _Shop(store)
-        room = await shop.open_free_room(metadata=None if held is None else {"phone_number": held})
+        room = await shop.open_free_room(metadata=metadata)
 
         assert await shop.room_of(ALICE) == room
         assert await shop.room_of(BOB) != room
@@ -243,6 +243,44 @@ class TestARoomTheHostOpened:
         assert await shop.room_of(ALICE) == room
         assert await shop.named_on(room) == ALICE
         assert len(shop.sent_to(ALICE)) == 2
+
+    @pytest.mark.parametrize("router", ["default", "custom"])
+    @pytest.mark.parametrize(
+        "held",
+        [True, {"number": BOB}, [BOB], 15550000001.0, 15550000002.0],
+        ids=["true", "object", "list", "float", "whole-float-of-bob"],
+    )
+    async def test_a_room_whose_recipient_is_unreadable_admits_no_one(
+        self,
+        store: ConversationStore,
+        held: object,
+        router: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A value under the recipient key that is not a recipient (RFC §5.7:
+        a boolean, a float, a list, an object) is not "no recipient": it reads
+        as a recipient that is not the sender, whichever strategy chose the
+        room (§10.4 step 3, §10.1 step 2). Bob gets a room of his own and is
+        answered there; the binding is left as the host wrote it, and a
+        warning names the binding and the value's type, never the value."""
+        shop = _Shop(store, router=_AnswersWith("free") if router == "custom" else None)
+        room = await shop.open_free_room(metadata={"phone_number": held})
+
+        with caplog.at_level("WARNING", logger="roomkit"):
+            bob_room = await shop.room_of(BOB)
+
+        assert bob_room != room
+        binding = await store.get_binding(room, "sms")
+        assert binding is not None
+        assert binding.participant_id is None
+        assert binding.metadata == {"phone_number": held}
+        assert shop.sent_to(BOB)
+        warned = [r.getMessage() for r in caplog.records if "not a recipient" in r.getMessage()]
+        assert warned
+        for message in warned:
+            assert f"room {room!r}" in message and "'sms'" in message
+            assert type(held).__name__ in message
+            assert "555000000" not in message
 
     async def test_two_first_messages_arriving_together_land_apart(
         self, store: ConversationStore
@@ -590,22 +628,24 @@ class TestADeliveryStatus:
         ("held", "taken"),
         [
             (ALICE, False),
-            (True, True),
+            (True, False),
+            ({"number": BOB}, False),
+            ([BOB], False),
+            (15550000002.0, False),
+            (None, True),
             ("  ", True),
-            ({"number": ALICE}, True),
-            ([ALICE], True),
-            (15550000001.0, True),
         ],
-        ids=["another-number", "true", "blank", "object", "list", "float"],
+        ids=["another-number", "true", "object", "list", "float", "null", "blank"],
     )
     async def test_the_one_room_delivering_to_another_number_is_not_the_status(
         self, store: ConversationStore, held: object, taken: bool
     ) -> None:
         """The fallback of the one ACTIVE room reads its binding's recipient as
         step 3 does: Bob's room is closed, Alice's, delivering to her number
-        and naming no correspondent, is not Bob's. A value that is no
-        recipient (RFC §5.7: a string that is not blank, or an integer)
-        delivers to no one: the room takes Bob's status."""
+        and naming no correspondent, is not Bob's. A value that is not a
+        recipient (RFC §5.7: a boolean, a float, a list, an object) reads as
+        someone else's too; no value (null, a blank string) delivers to no
+        one: the room takes Bob's status."""
         shop = _Shop(store)
         bob_room = await shop.room_of(BOB)
         await shop.kit.close_room(bob_room)
