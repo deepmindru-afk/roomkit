@@ -16,6 +16,7 @@ mixed with a per-sample Python loop at stop, on the event loop).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import struct
@@ -296,6 +297,10 @@ class WavWriterThread:
             return
         try:
             op.result.append(self._finalize(ws))
+        except Exception:
+            if ws.config.encryption is not None:
+                _discard_files(ws)
+            raise
         finally:
             op.done.set()
 
@@ -382,6 +387,28 @@ class WavWriterThread:
             w.setsampwidth(ws.sample_width)
             w.setframerate(ws.sample_rate)
             w.writeframes(data)
+
+
+def _discard_files(ws: _WriterSession) -> None:
+    """Delete what a session left on disk when its finalisation failed.
+
+    The files never reached the cipher, so with ``encryption`` configured they
+    are plaintext the caller asked not to keep (RFC §17.6); being unfinished,
+    they are deleted rather than encrypted, as a file the cipher refuses is.
+    """
+    for stream in (ws.inbound_writer, ws.outbound_writer, ws.inbound_spool, ws.outbound_spool):
+        if stream is not None:
+            with contextlib.suppress(Exception):
+                stream.close()
+    base = ws.handle.path
+    leftovers = [base] + [
+        f"{base}_{label}.{ext}"
+        for label in ("inbound", "outbound", "mixed")
+        for ext in ("wav", "raw")
+    ]
+    for leftover in leftovers:
+        with contextlib.suppress(OSError):
+            Path(leftover).unlink(missing_ok=True)
 
 
 def _numpy() -> Any | None:

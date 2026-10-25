@@ -60,6 +60,20 @@ class _ActiveRecording:
         self.start_time = time.monotonic()
 
 
+def _finish(active: _ActiveRecording) -> tuple[str, int, dict[str, object]]:
+    """Release the writer, then store the file as configured, even when that raised.
+
+    A release that fails must not keep the file from its encryption: it would
+    stay on the storage in the clear (RFC §17.6).
+    """
+    try:
+        if active.writer is not None:
+            active.writer.release()
+    finally:
+        stored = store_finished_recording(active.config, active.path)
+    return stored
+
+
 class OpenCVVideoRecorder(VideoRecorder):
     """Video recorder using OpenCV's VideoWriter.
 
@@ -99,11 +113,8 @@ class OpenCVVideoRecorder(VideoRecorder):
         if active is None:
             return VideoRecordingResult(id=handle.id)
 
-        if active.writer is not None:
-            active.writer.release()
-
         elapsed = time.monotonic() - active.start_time
-        url, size, metadata = store_finished_recording(active.config, active.path)
+        url, size, metadata = _finish(active)
 
         logger.info(
             "Recording stopped: %s (%d frames, %.1fs, %d bytes)",
@@ -161,11 +172,13 @@ class OpenCVVideoRecorder(VideoRecorder):
             logger.debug("Skipping encoded frame (codec=%s)", frame.codec)
 
     def close(self) -> None:
+        # A recording still open is stored as configured too, or closing the
+        # recorder would leave it in the clear; one failing stops no other.
         for rec_id, active in list(self._active.items()):
-            if active.writer is not None:
-                active.writer.release()
-            # A recording still open is stored as configured too, or closing
-            # the recorder would leave it in the clear.
-            store_finished_recording(active.config, active.path)
-            logger.info("Recording closed: %s", rec_id)
+            try:
+                _finish(active)
+            except Exception:
+                logger.exception("Recording %s failed to close", rec_id)
+            else:
+                logger.info("Recording closed: %s", rec_id)
         self._active.clear()

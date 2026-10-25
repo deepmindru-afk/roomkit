@@ -96,6 +96,19 @@ def _flush_and_close(active: _ActiveRecording) -> None:
         active.container.close()
 
 
+def _finish(active: _ActiveRecording) -> tuple[str, int, dict[str, object]]:
+    """Close the file, then store it as configured, even when closing raised.
+
+    A flush or close that fails must not keep the file from its encryption:
+    it would stay on the storage in the clear (RFC §17.6).
+    """
+    try:
+        _flush_and_close(active)
+    finally:
+        stored = store_finished_recording(active.config, active.path)
+    return stored
+
+
 class PyAVVideoRecorder(VideoRecorder):
     """Video recorder using PyAV (FFmpeg) for H.264/H.265 encoding.
 
@@ -145,10 +158,8 @@ class PyAVVideoRecorder(VideoRecorder):
         if active is None:
             return VideoRecordingResult(id=handle.id)
 
-        _flush_and_close(active)
-
         elapsed = time.monotonic() - active.start_time
-        url, size, metadata = store_finished_recording(active.config, active.path)
+        url, size, metadata = _finish(active)
 
         logger.info(
             "Recording stopped: %s (%d frames, %.1fs, %d bytes)",
@@ -194,10 +205,13 @@ class PyAVVideoRecorder(VideoRecorder):
         active.frame_count += 1
 
     def close(self) -> None:
+        # A recording still open is stored as configured too, or closing the
+        # recorder would leave it in the clear; one failing stops no other.
         for rec_id, active in list(self._active.items()):
-            _flush_and_close(active)
-            # A recording still open is stored as configured too, or closing
-            # the recorder would leave it in the clear.
-            store_finished_recording(active.config, active.path)
-            logger.info("Recording closed: %s", rec_id)
+            try:
+                _finish(active)
+            except Exception:
+                logger.exception("Recording %s failed to close", rec_id)
+            else:
+                logger.info("Recording closed: %s", rec_id)
         self._active.clear()

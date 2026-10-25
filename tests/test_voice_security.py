@@ -24,6 +24,7 @@ from roomkit.voice.pipeline import (
     WavFileRecorder,
 )
 from roomkit.voice.pipeline.dtmf.base import DTMFEvent
+from roomkit.voice.pipeline.recorder._wav_writer import WavWriterThread
 
 
 def _session() -> VoiceSession:
@@ -157,6 +158,28 @@ class TestRecordingEncryptionAtRest:
 
         assert result.urls == []
         assert list(tmp_path.glob("*.wav")) == []
+
+    def test_a_recording_that_fails_to_finalise_leaves_no_plaintext(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A finalisation that raises never reaches the cipher: what it left on
+        the storage is deleted rather than kept in the clear."""
+
+        def write_part_then_fail(
+            self: WavWriterThread, ws: object, data: bytes, path: Path, *, channels: int
+        ) -> None:
+            path.write_bytes(b"RIFF" + data[:64])
+            raise OSError("disk full")
+
+        monkeypatch.setattr(WavWriterThread, "_write_wav", write_part_then_fail)
+        config = RecordingConfig(storage=str(tmp_path), encryption=_ReversingEncryption())
+        recorder, handle = _record_briefly(config)
+
+        result = recorder.stop(handle)
+        recorder.close()
+
+        assert result.urls == []
+        assert list(tmp_path.iterdir()) == []
 
     def test_without_encryption_or_encrypted_storage_is_refused(self, tmp_path: Path) -> None:
         config = RecordingConfig(storage=str(tmp_path))

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from roomkit.video.recorder import (
     VideoRecordingConfig,
 )
 from roomkit.video.recorder import opencv as opencv_recorder
+from roomkit.video.recorder import pyav as pyav_recorder
 from roomkit.video.recorder.opencv import OpenCVVideoRecorder
 from roomkit.video.recorder.pyav import PyAVVideoRecorder
 from roomkit.video.video_frame import VideoFrame
@@ -208,11 +211,24 @@ class _XorEncryption(RecordingEncryption):
         return str(target)
 
 
+class _Faults:
+    """How many of the next files fail as they are closed, once written."""
+
+    def __init__(self) -> None:
+        self.remaining = 0
+
+    def after_close(self) -> None:
+        if self.remaining:
+            self.remaining -= 1
+            raise OSError("disk full")
+
+
 class _FileVideoWriter:
     """``cv2.VideoWriter`` as the recorder drives it: each frame's bytes go to the file."""
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, faults: _Faults) -> None:
         self._file = open(path, "wb")  # noqa: SIM115 - released by release()
+        self._faults = faults
 
     def isOpened(self) -> bool:  # noqa: N802
         return not self._file.closed
@@ -222,6 +238,7 @@ class _FileVideoWriter:
 
     def release(self) -> None:
         self._file.close()
+        self._faults.after_close()
 
 
 class _FileWritingCV2:
@@ -229,28 +246,50 @@ class _FileWritingCV2:
 
     COLOR_RGB2BGR = 4
 
+    def __init__(self, faults: _Faults) -> None:
+        self._faults = faults
+
     def VideoWriter_fourcc(self, *args: str) -> int:  # noqa: N802
         return 0
 
     def VideoWriter(  # noqa: N802
         self, path: str, fourcc: int, fps: float, size: tuple[int, int]
     ) -> _FileVideoWriter:
-        return _FileVideoWriter(path)
+        return _FileVideoWriter(path, self._faults)
 
     def cvtColor(self, src: Any, code: int) -> Any:  # noqa: N802
         return src
 
 
+@dataclass
+class _FileRecorder:
+    recorder: VideoRecorder
+    codec: str
+    faults: _Faults
+
+    def fail_closing(self, count: int) -> None:
+        """Make the next *count* files raise as they are closed."""
+        self.faults.remaining = count
+
+
 @pytest.fixture(params=["opencv", "pyav"])
 def file_recorder(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> tuple[VideoRecorder, str]:
-    """A recorder that writes files, and the codec to ask it for."""
+) -> _FileRecorder:
+    """A recorder that writes files, the codec to ask it for, and its faults."""
+    faults = _Faults()
     if request.param == "pyav":
         pytest.importorskip("av", reason="av (PyAV) not installed")
-        return PyAVVideoRecorder(), "libx264"
-    monkeypatch.setattr(opencv_recorder, "_import_cv2", _FileWritingCV2)
-    return OpenCVVideoRecorder(), "mp4v"
+        flush_and_close: Callable[[Any], None] = pyav_recorder._flush_and_close
+
+        def failing_flush_and_close(active: Any) -> None:
+            flush_and_close(active)
+            faults.after_close()
+
+        monkeypatch.setattr(pyav_recorder, "_flush_and_close", failing_flush_and_close)
+        return _FileRecorder(PyAVVideoRecorder(), "libx264", faults)
+    monkeypatch.setattr(opencv_recorder, "_import_cv2", lambda: _FileWritingCV2(faults))
+    return _FileRecorder(OpenCVVideoRecorder(), "mp4v", faults)
 
 
 def _raw_frame(value: int) -> VideoFrame:
@@ -263,11 +302,11 @@ def _video_session(sid: str) -> VideoSession:
 
 class TestRecordingEncryptionAtRest:
     async def test_session_video_configured_for_encryption_is_stored_as_ciphertext(
-        self, file_recorder: tuple[VideoRecorder, str], tmp_path: Path
+        self, file_recorder: _FileRecorder, tmp_path: Path
     ) -> None:
         """A video channel's recording is handed to ``encryption`` when it ends,
         and only the cipher's artifact stays on the storage (RFC §17.6)."""
-        recorder, codec = file_recorder
+        recorder, codec = file_recorder.recorder, file_recorder.codec
         cipher = _XorEncryption()
         config = VideoRecordingConfig(storage=str(tmp_path), codec=codec, encryption=cipher)
         kit, backend = RoomKit(), MockVideoBackend()
@@ -294,11 +333,11 @@ class TestRecordingEncryptionAtRest:
         assert stored[0].read_bytes() == _CIPHER_HEADER + bytes(b ^ 0x5A for b in plaintext)
 
     def test_result_names_the_ciphertext_and_close_encrypts_an_open_recording(
-        self, file_recorder: tuple[VideoRecorder, str], tmp_path: Path
+        self, file_recorder: _FileRecorder, tmp_path: Path
     ) -> None:
         """``stop()`` reports the encrypted artifact; ``close()`` encrypts a
         recording still open, which would otherwise stay in the clear."""
-        recorder, codec = file_recorder
+        recorder, codec = file_recorder.recorder, file_recorder.codec
         config = VideoRecordingConfig(
             storage=str(tmp_path), codec=codec, encryption=_XorEncryption()
         )
@@ -323,14 +362,14 @@ class TestRecordingEncryptionAtRest:
     )
     def test_without_encryption_the_file_stays_as_written(
         self,
-        file_recorder: tuple[VideoRecorder, str],
+        file_recorder: _FileRecorder,
         tmp_path: Path,
         storage_encrypted_at_rest: bool,
         metadata: dict[str, object],
     ) -> None:
         """No ``encryption``: the recording is stored as it was written, and the
         result claims encryption only when the storage was declared to apply it."""
-        recorder, codec = file_recorder
+        recorder, codec = file_recorder.recorder, file_recorder.codec
         config = VideoRecordingConfig(
             storage=str(tmp_path), codec=codec, storage_encrypted_at_rest=storage_encrypted_at_rest
         )
@@ -344,3 +383,45 @@ class TestRecordingEncryptionAtRest:
         assert [str(p) for p in tmp_path.iterdir()] == [handle.path]
         assert result.size_bytes == Path(handle.path).stat().st_size > 0
         assert result.metadata == metadata
+
+    def test_a_file_that_fails_to_close_is_still_encrypted(
+        self, file_recorder: _FileRecorder, tmp_path: Path
+    ) -> None:
+        """A recording whose file raises as it is closed still goes through the
+        cipher: ``stop()`` raises, and no plaintext stays on the storage."""
+        recorder, codec = file_recorder.recorder, file_recorder.codec
+        config = VideoRecordingConfig(
+            storage=str(tmp_path), codec=codec, encryption=_XorEncryption()
+        )
+        handle = recorder.start(_video_session("s1"), config)
+        recorder.tap_frame(handle, _raw_frame(7))
+        file_recorder.fail_closing(1)
+
+        with pytest.raises(OSError, match="disk full"):
+            recorder.stop(handle)
+
+        assert [p.name for p in tmp_path.iterdir()] == [Path(handle.path).name + ".enc"]
+
+    def test_close_goes_on_past_a_recording_that_fails(
+        self,
+        file_recorder: _FileRecorder,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """``close()`` stores each open recording: the first one failing to close
+        is logged, encrypted all the same, and the next one is encrypted too."""
+        recorder, codec = file_recorder.recorder, file_recorder.codec
+        config = VideoRecordingConfig(
+            storage=str(tmp_path), codec=codec, encryption=_XorEncryption()
+        )
+        handles = [recorder.start(_video_session(sid), config) for sid in ("first", "second")]
+        for handle in handles:
+            recorder.tap_frame(handle, _raw_frame(7))
+        file_recorder.fail_closing(1)
+
+        recorder.close()
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            Path(h.path).name + ".enc" for h in handles
+        )
+        assert "disk full" in caplog.text

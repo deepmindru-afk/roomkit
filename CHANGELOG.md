@@ -563,11 +563,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   goes through `encrypt_file()` at `stop()`, and at `close()` for a
   recording still open: the result's `url` and `size_bytes` are the
   encrypted artifact's and `metadata["encryption"]` names the cipher, and a
-  file the cipher cannot encrypt is deleted. With
+  file the cipher cannot encrypt is deleted. A file whose flush or close
+  raises is encrypted all the same before the error propagates, and
+  `close()` logs a recording that fails and goes on with the next. With
   `storage_encrypted_at_rest=True` the file stays as written and
   `metadata["encryption"]` is `"storage"`. With neither, the recording is
   written unencrypted, as before: unlike the audio and room recorders, the
   video recorders do not refuse to start.
+
+- A WAV recording whose finalisation fails leaves no plaintext behind when
+  `encryption` is configured (RFC §17.6, RMK-569). The files it had written
+  never reached the cipher and stayed on the storage in the clear, while the
+  result listed none. They are now deleted, as a file the cipher refuses
+  is.
 
 ## [0.108.0] — 2026-10-24
 
