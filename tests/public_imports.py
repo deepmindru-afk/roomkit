@@ -35,7 +35,7 @@ import importlib
 import re
 import sys
 import textwrap
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -69,16 +69,24 @@ class Finding:
 
 
 def check(
-    paths: Iterable[Path], *, root: Path | None = None, docstrings: bool = False
+    paths: Iterable[Path],
+    *,
+    root: Path | None = None,
+    docstrings: bool = False,
+    resolve: bool = True,
 ) -> list[Finding]:
     """The imports in ``paths`` (files, or directories read recursively) that
     break the rule or do not resolve; ``root`` shortens the paths reported, and
-    ``docstrings`` reads a Python file's triple-quoted strings only."""
+    ``docstrings`` reads a Python file's triple-quoted strings only. Without
+    ``resolve`` the rule is read from the ``__all__`` tables alone and nothing
+    is imported: a name its package lists is taken to resolve, as the API
+    guards check it does."""
     found: list[Finding] = []
+    unresolved = _unresolved if resolve else _resolved
     for path in _files(paths):
         shown = str(path.relative_to(root)) if root else str(path)
         for line, module, name in _imports(path, docstrings=docstrings):
-            problem = _problem(module, name)
+            problem = _problem(module, name, unresolved)
             if problem:
                 statement = f"from {module} import {name}" if name else f"import {module}"
                 found.append(Finding(shown, line, statement, problem))
@@ -159,22 +167,29 @@ def _is_roomkit(module: str | None) -> bool:
     return module is not None and (module == "roomkit" or module.startswith("roomkit."))
 
 
-def _problem(module: str, name: str | None) -> str | None:
+def _problem(
+    module: str, name: str | None, unresolved: Callable[[str, str | None], str | None]
+) -> str | None:
     """What is wrong with importing ``name`` from ``module``, or None."""
     if name is None:
         if not _is_package(module):
             return "a module path is internal; import the names its package exports"
-        return _unresolved(module, None)
+        return unresolved(module, None)
     if _is_package(f"{module}.{name}") or (name == "*" and _is_package(module)):
-        return _unresolved(module, None)
+        return unresolved(module, None)
     if name in exported(module):
-        return _unresolved(module, name)
+        return unresolved(module, name)
     if name.startswith("_"):
         return "an underscore name is internal"
     elsewhere = public_paths(name)
     hint = f"; public as {', '.join(elsewhere)}" if elsewhere else "; exported nowhere"
-    unresolved = _unresolved(module, name)
-    return f"{unresolved}{hint}" if unresolved else f"not public at {module}{hint}"
+    why = unresolved(module, name)
+    return f"{why}{hint}" if why else f"not public at {module}{hint}"
+
+
+def _resolved(module: str, name: str | None) -> str | None:
+    """Nothing is imported: a package or a name its ``__all__`` lists resolves."""
+    return None
 
 
 def _unresolved(module: str, name: str | None) -> str | None:

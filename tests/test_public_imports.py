@@ -30,7 +30,9 @@ def test_documents_and_examples_import_from_public_paths() -> None:
 
 
 def test_docstrings_import_from_public_paths() -> None:
-    found = check([_ROOT / "src" / "roomkit"], root=_ROOT, docstrings=True)
+    # Read from the __all__ tables, importing nothing: the API guards check
+    # that each name a package lists resolves.
+    found = check([_ROOT / "src" / "roomkit"], root=_ROOT, docstrings=True, resolve=False)
 
     assert [str(finding) for finding in found] == []
 
