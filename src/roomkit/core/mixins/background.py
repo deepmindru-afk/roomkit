@@ -31,6 +31,9 @@ class BackgroundMixin:
     _background_setups: dict[str, BackgroundSetup]
     _owner_tools: OwnerToolStore
 
+    # Cross-mixin method — attribute annotation avoids MRO shadowing
+    get_room: Any  # RoomLifecycleMixin
+
     def setup_background(
         self,
         agent: AIChannel | DeclaredChannel | str,
@@ -99,7 +102,13 @@ class BackgroundMixin:
         registry.register_all(entries, owner=self)
 
     async def start_task(
-        self, room_id: str, agent_id: str, task: str, *, hand_back: str | None = None
+        self,
+        room_id: str,
+        agent_id: str,
+        task: str,
+        *,
+        hand_back: str | None = None,
+        organization_id: str | None = None,
     ) -> DelegatedTask:
         """Start *task* for *agent_id*, an agent of *room_id*, as its
         ``work_in_background`` call would (RFC §23.4): on its worker, handed
@@ -114,11 +123,17 @@ class BackgroundMixin:
                 attached to the room, an external agent included.
             task: What to do and report.
             hand_back: ``"relay"`` or ``"post"``; the agent's setup's when None.
+            organization_id: The organization the caller acts for (RFC
+                §17.2): the room is read with it before anything is started.
 
         Raises:
+            RoomNotFoundError: *organization_id* is set and the room is
+                missing or another organization's; nothing is started.
             ValueError: *agent_id* is no agent of the room, *task* is blank,
                 or *hand_back* is unknown.
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         setup = self._background_setups.get(agent_id) or BackgroundSetup()
         return await start_background_task(
             self,  # ty: ignore[invalid-argument-type]

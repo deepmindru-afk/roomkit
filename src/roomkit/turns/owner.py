@@ -371,11 +371,14 @@ class TurnClient(RoomOwner):
         *,
         room_id: str | None = None,
         turn_id: str | None = None,
+        organization_id: str | None = None,
     ) -> int:
         """Steer the running turns of *channel_id* this client started (RFC
         §21.3, §10.6.8): the turn *turn_id*; else the turns of *room_id*, all
         of them for a ``Cancel`` and the most recent for any other directive;
         else the most recent turn of the channel. How many loops it reached.
+        With *organization_id*, only the turns of that organization's rooms
+        (RFC §17.2).
 
         Raises:
             ValueError: both *room_id* and *turn_id* given.
@@ -383,7 +386,16 @@ class TurnClient(RoomOwner):
         if room_id is not None and turn_id is not None:
             raise ValueError("steer() addresses a room_id or a turn_id, not both")
         await self._handed_over(channel_id, room_id, turn_id)
-        running = [t for t in self._started if not t.over and t.request.channel_id == channel_id]
+        running = [
+            t
+            for t in self._started
+            if not t.over
+            and t.request.channel_id == channel_id
+            and (
+                organization_id is None
+                or t.request.context.room.organization_id == organization_id
+            )
+        ]
         if turn_id is not None:
             targets = [t for t in running if t.request.turn_id == turn_id]
         elif room_id is not None:

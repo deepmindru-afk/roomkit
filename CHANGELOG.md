@@ -669,6 +669,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unsubscribe removes only a subscription made for its organization. The
   subscription itself is not refused.
 
+- `start_task()`, `submit_feedback()` and `steer()` take the organization
+  the caller acts for (RFC §17.2, RMK-487). A tenant's host could start a
+  background task in another tenant's room, which hands the worker the
+  room's last messages, store a feedback on it, or steer its agents' turns.
+  With `organization_id=`, another organization's room raises
+  `RoomNotFoundError` before any task, observation, hook or steer;
+  `steer()` without a `room_id` reaches only the turns of that
+  organization's rooms (`TurnClient.steer()` takes it too). Unset, no room
+  is read for the scope, as before.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

@@ -653,6 +653,7 @@ class RoomKit(
         *,
         room_id: str | None = None,
         turn_id: str | None = None,
+        organization_id: str | None = None,
     ) -> int:
         """Steer the running turns of an intelligence channel (RFC §21.3,
         §10.6.8), wherever they run: the turn *turn_id*; else the turns of
@@ -664,10 +665,26 @@ class RoomKit(
         Only the turns this kit started are reached: with several kits owning
         rooms, steer from the one delivering the room.
 
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): a *room_id* is read with it first, and only the turns of
+        that organization's rooms are reached, a turn of another
+        organization's room no more than a turn that does not run.
+
         Raises:
+            RoomNotFoundError: *organization_id* and *room_id* are set and
+                the room is missing or another organization's; nothing is
+                steered.
             ValueError: both *room_id* and *turn_id* given.
         """
-        return await self._turns.steer(directive, channel_id, room_id=room_id, turn_id=turn_id)
+        if organization_id is not None and room_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
+        return await self._turns.steer(
+            directive,
+            channel_id,
+            room_id=room_id,
+            turn_id=turn_id,
+            organization_id=organization_id,
+        )
 
     async def answer_input(self, request_id: str, value: str) -> bool:
         """Answer the human-input request *request_id* of a turn this kit

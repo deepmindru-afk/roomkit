@@ -7,6 +7,7 @@ when given one, refuse a room belonging to anyone else.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -25,6 +26,8 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.event import TextContent
 from roomkit.models.identity import Identity
+from roomkit.models.steering import Cancel, InjectMessage
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.sms.mock import MockSMSProvider
 from roomkit.realtime.base import EphemeralCallback, EphemeralEvent
@@ -498,10 +501,12 @@ async def _globex_with_agents(**options: Any) -> tuple[RoomKit, list[MockAIProvi
 
 
 async def _globex_state(kit: RoomKit, providers: list[MockAIProvider]) -> tuple[Any, ...]:
-    """What a turn or a delivery may leave: events, rooms, model calls."""
+    """What a turn, a delivery or a host call may leave: events, rooms,
+    observations, model calls."""
     return (
         await kit.store.list_events("globex-room"),
         [room.id for room in await kit.store.list_rooms()],
+        await kit.store.list_observations("globex-room"),
         [len(provider.calls) for provider in providers],
     )
 
@@ -569,6 +574,107 @@ class TestScopedTurnsAndDeliveries:
             "globex-room", "worker", "Summarize.", wait=True, organization_id=organization_id
         )
         assert task.parent_room_id == "globex-room" and len(worker.calls) == 1
+        await kit.close()
+
+
+_HOST_DOORS: dict[str, Callable[[RoomKit, str | None], Awaitable[Any]]] = {
+    "start_task": lambda kit, org: kit.start_task(
+        "globex-room", "ai", "Summarize the room.", organization_id=org
+    ),
+    "submit_feedback": lambda kit, org: kit.submit_feedback(
+        "globex-room", 0.9, comment="great", organization_id=org
+    ),
+    "steer": lambda kit, org: kit.steer(
+        InjectMessage(content="Mind the budget."), "ai", room_id="globex-room", organization_id=org
+    ),
+}
+
+
+class _Paused:
+    """A host tool that holds its turn until released."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __call__(self, name: str, arguments: dict[str, Any]) -> str:
+        self.started.set()
+        await self.release.wait()
+        return "waited"
+
+
+async def _globex_turn_held(tool: _Paused) -> tuple[RoomKit, MockAIProvider]:
+    """Globex's room, its agent's turn held in a tool call."""
+    call = AIResponse(content="", tool_calls=[AIToolCall(id="c1", name="wait_here", arguments={})])
+    provider = MockAIProvider(ai_responses=[call, AIResponse(content="done")])
+    wait = AITool(name="wait_here", description="Wait.", parameters={"type": "object"})
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(
+        Agent("ai", provider=provider, role="agent", tools=[wait], tool_handler=tool)
+    )
+    await kit.create_room(room_id="globex-room", organization_id="globex")
+    await kit.attach_channel("globex-room", "sms1")
+    await kit.attach_channel("globex-room", "ai", category=ChannelCategory.INTELLIGENCE)
+    return kit, provider
+
+
+class TestScopedHostDoors:
+    """A background task, a feedback and a steer reach no room of another
+    organization (RFC §17.2, RMK-487)."""
+
+    @pytest.mark.parametrize("verb", sorted(_HOST_DOORS))
+    async def test_another_organizations_room_is_not_found_and_nothing_runs(
+        self, verb: str
+    ) -> None:
+        kit, providers = await _globex_with_agents()
+        before = await _globex_state(kit, providers)
+
+        with pytest.raises(RoomNotFoundError):
+            await _HOST_DOORS[verb](kit, "acme")
+
+        assert await _globex_state(kit, providers) == before
+        await kit.close()
+
+    @pytest.mark.parametrize("organization_id", ["globex", None], ids=["own", "unscoped"])
+    async def test_the_rooms_own_organization_or_none_runs_each_verb(
+        self, organization_id: str | None
+    ) -> None:
+        kit, (agent, _) = await _globex_with_agents()
+
+        task = await kit.start_task(
+            "globex-room", "ai", "Summarize.", organization_id=organization_id
+        )
+        await asyncio.wait_for(task.wait(), 5)
+        assert len(agent.calls) > 1  # the task ran on the room's agent
+        await kit.submit_feedback("globex-room", 0.9, organization_id=organization_id)
+        assert len(await kit.store.list_observations("globex-room")) == 1
+        steered = await kit.steer(
+            Cancel(), "ai", room_id="globex-room", organization_id=organization_id
+        )
+        assert steered == 0  # no turn runs
+        await kit.close()
+
+    @pytest.mark.parametrize(
+        ("organization_id", "reached"), [("globex", 1), (None, 1), ("acme", 0)]
+    )
+    async def test_a_steer_naming_no_room_reaches_only_its_organizations_turns(
+        self, organization_id: str | None, reached: int
+    ) -> None:
+        tool = _Paused()
+        kit, provider = await _globex_turn_held(tool)
+        turn = asyncio.create_task(kit.process_inbound(_message(), room_id="globex-room"))
+        await asyncio.wait_for(tool.started.wait(), 2)
+
+        count = await kit.steer(
+            InjectMessage(content="Mind the budget."), "ai", organization_id=organization_id
+        )
+        tool.release.set()
+        await asyncio.wait_for(turn, 5)
+
+        assert count == reached
+        injected = any("Mind the budget." in str(m.content) for m in provider.calls[1].messages)
+        assert injected is bool(reached)
         await kit.close()
 
 

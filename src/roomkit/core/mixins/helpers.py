@@ -192,6 +192,7 @@ class HelpersMixin:
     _room_timers: TimerTransitions  # the rooms' due timer transitions — set by RoomKit.__init__
     _process_timeout: float  # the pre-commit bound (RFC §13.6) — set by RoomKit.__init__
     turn_executor: Any  # RoomKit's own TurnExecutor, whose wiring the turn triggers run on
+    get_room: Any  # RoomLifecycleMixin's, the room read with the caller's scope (RFC §17.2)
 
     # -- Persistence helpers (policy-aware) --
     #
@@ -1162,6 +1163,7 @@ class HelpersMixin:
         comment: str = "",
         dimension: str = "overall",
         metadata: dict[str, Any] | None = None,
+        organization_id: str | None = None,
     ) -> None:
         """Submit user feedback for a conversation or specific response.
 
@@ -1176,7 +1178,12 @@ class HelpersMixin:
             comment: Optional free-text comment.
             dimension: What is being rated (default "overall").
             metadata: Arbitrary metadata to attach.
+            organization_id: The organization the caller acts for (RFC
+                §17.2): another organization's room raises
+                :class:`RoomNotFoundError`, nothing stored or fired.
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         from roomkit.models.enums import HookTrigger
         from roomkit.models.task import Observation
 
