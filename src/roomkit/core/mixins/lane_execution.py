@@ -872,8 +872,8 @@ class LaneExecutionMixin(HelpersMixin):
         (RFC §10.1 step 16, §10.3), each body as *cascade*'s delivery work:
         what it sends into the room while it runs draws on the cascade's
         hook calls, kept apart from its passes, so a hook that posts after
-        every event stops at the cap (§9.5.1); a task it starts calls as
-        work of its own."""
+        every event stops at the cap (§9.5.1), and is one deeper than the
+        hook's event (§8.3); a task it starts calls as work of its own."""
         await self._hook_engine.run_async_hooks(
             room_id, trigger, payload, context, budget=cascade.budget
         )

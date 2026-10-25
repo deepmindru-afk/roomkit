@@ -29,7 +29,8 @@ draws a hook call too, refused with ``ReentryLoopCapError`` past the cap,
 and a direct change's triggers run on the budget of the work it is made in
 (:meth:`RoomWork.direct_change`). A call made while a turn or a tool call
 runs, into whatever room, is at least as deep as the turn's response or the
-call's (§8.3, §10.6); only the budget is the room's.
+call's (§8.3, §10.6), and one made while an ASYNC hook's body runs at least
+one deeper than the event the hook runs for; only the budget is the room's.
 
 A frame stands for its work only while that work runs: a task the work
 spawns inherits the frame and finds it inactive once the work is over, as a
