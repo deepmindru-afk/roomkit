@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.109.0] — 2026-10-25
+
 ### Added
 
 - `MCPToolProvider(label=...)`, also on `from_url` and `from_command`: the
@@ -18888,7 +18890,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.108.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.109.0...HEAD
+[0.109.0]: https://github.com/roomkit-live/roomkit/compare/v0.108.0...v0.109.0
 [0.108.0]: https://github.com/roomkit-live/roomkit/compare/v0.107.0...v0.108.0
 [0.107.0]: https://github.com/roomkit-live/roomkit/compare/v0.106.0...v0.107.0
 [0.106.0]: https://github.com/roomkit-live/roomkit/compare/v0.105.0...v0.106.0
