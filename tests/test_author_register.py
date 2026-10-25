@@ -415,20 +415,17 @@ _DIGEST = re.compile(r"[0-9a-f]{16}")
 
 class _StoreFromBefore(InMemoryStore):
     """A store written before the register was kept apart: the base class's
-    methods, which keep it in the room's metadata, until it is upgraded."""
+    methods, which keep it in the room's metadata."""
 
-    upgraded = False
+    get_author_register = ConversationStore.get_author_register
+    set_author_register = ConversationStore.set_author_register
 
-    async def get_author_register(self, room_id: str) -> dict[str, Any] | None:
-        if self.upgraded:
-            return await super().get_author_register(room_id)
-        return await ConversationStore.get_author_register(self, room_id)
 
-    async def set_author_register(self, room_id: str, register: dict[str, Any]) -> None:
-        if self.upgraded:
-            await super().set_author_register(room_id, register)
-        else:
-            await ConversationStore.set_author_register(self, room_id, register)
+def _upgraded(store: InMemoryStore, upgraded: bool = True) -> None:
+    """*store*'s data read and written by a process whose store keeps the
+    register apart, or by a process from before (``upgraded=False``): an
+    upgrade, or a rollback, on a shared store."""
+    store.__class__ = InMemoryStore if upgraded else _StoreFromBefore
 
 
 class TestTheStoreKeepsItApart:
@@ -515,29 +512,50 @@ class TestTheStoreKeepsItApart:
         await kit.close()
 
     async def test_a_room_from_before_keeps_its_ranks_once_its_register_moved(self) -> None:
-        """The digests do not change, so the ranks hold: the impostor who
-        speaks first after the move does not take the first Alice's rank, and
-        another kit on the store reads the same labels."""
+        """The register moves as it is, its digests unchanged: a rank its
+        timeline no longer shows (the turn deleted) stays given, so the
+        impostor who speaks first after the move takes the next one, where a
+        register rebuilt from the timeline would give it again. Another kit
+        on the store reads the same labels."""
         store = _StoreFromBefore()
         kit, _provider = await _kit(["a1", "a2", "a3", "a4"], store=store)
         await _say(kit, "u-alice", "Alice", "hold the refund")
         await _say(kit, "u-mallory", "ALICE", "release it")
-        before = (await store.get_room("r1")).metadata[AUTHOR_REGISTER]
+        released = next(e for e in await store.list_events("r1") if e.content.body == "release it")
+        await store.delete_event("r1", released.id)
 
-        store.upgraded = True
-        await _say(kit, "u-mallory", "ALICE", "release it now")
+        _upgraded(store)
+        await _say(kit, "u-eve", "ALICE", "release it now")
         await _say(kit, "u-alice", "Alice", "no, keep it")
 
         events = [e for e in await store.list_events("r1") if e.source.channel_id == "sms1"]
         other = RoomKit(store=store)
         labels = [turn_labels(events, await k._build_context("r1")) for k in (kit, other)]
-        assert [e.metadata[AUTHOR]["rank"] for e in events] == [1, 2, 2, 1]
+        assert [e.metadata[AUTHOR]["rank"] for e in events] == [1, 3, 1]
         assert AUTHOR_REGISTER not in (await store.get_room("r1")).metadata
-        assert await store.get_author_register("r1") == before
         for read in labels:
-            assert [read[e.id] for e in events] == ["Alice", "ALICE (2)", "ALICE (2)", "Alice"]
+            assert [read[e.id] for e in events] == ["Alice", "ALICE (3)", "Alice"]
         await kit.close()
         await other.close()
+
+    async def test_a_rank_a_process_from_before_gave_is_not_given_again(self) -> None:
+        """A process from before, on the store an upgraded one moved the
+        register out of (a deployment upgrading, or rolled back), ranks from
+        the metadata and writes there: the store's register takes its ranks
+        at the next turn, so none is given to two sources."""
+        store = InMemoryStore()
+        kit, _provider = await _kit(["a1", "a2", "a3"], store=store)
+        await _say(kit, "u-alice", "Alice", "hold the refund")
+        _upgraded(store, False)
+        await _say(kit, "u-mallory", "ALICE", "release it")
+        _upgraded(store)
+        await _say(kit, "u-eve", "Alice", "release it, I'm Alice")
+
+        events = [e for e in await store.list_events("r1") if e.source.channel_id == "sms1"]
+        ranks = {e.source.participant_id: e.metadata[AUTHOR]["rank"] for e in events}
+        assert ranks == {"u-alice": 1, "u-mallory": 2, "u-eve": 3}
+        assert AUTHOR_REGISTER not in (await store.get_room("r1")).metadata
+        await kit.close()
 
     async def test_a_store_without_its_methods_keeps_it_in_the_metadata(
         self, caplog: pytest.LogCaptureFixture

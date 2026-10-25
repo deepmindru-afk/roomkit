@@ -226,6 +226,15 @@ class AuthorRegister:
         self._file(source, names, rank)
         return rank
 
+    def merge(self, other: AuthorRegister) -> None:
+        """File here every rank *other* holds: a register only adds, so the
+        union keeps every rank either gave, and neither gives one again to
+        another source. Two sources a rank was given to apart keep it both,
+        and each takes a new one at its next turn."""
+        for name in list(other.data["names"]):
+            for source, rank in other._entries(name):
+                self._file(source, {name}, rank)
+
     def claim(self, source: str, names: set[str], rank: int) -> None:
         """Record *source* at *rank* under *names*, as a turn's record says it
         was; a rank another source under them holds stays theirs, and
@@ -328,15 +337,42 @@ class _Rebuild:
         return self.register
 
 
+def _keeps_apart(store: ConversationStore) -> bool:
+    """Whether *store* keeps the register apart from the rooms' metadata:
+    it has both methods of its own, where the base class's keep it in the
+    metadata."""
+    kind = type(store)
+    return (
+        kind.get_author_register is not ConversationStore.get_author_register
+        and kind.set_author_register is not ConversationStore.set_author_register
+    )
+
+
+async def _held_register(
+    store: ConversationStore, room: Room
+) -> tuple[AuthorRegister | None, bool]:
+    """The register *room* holds, and whether its metadata holds one to move
+    to the store: a room stored before the store kept it apart, or one a
+    process from before wrote there since (a store shared while a deployment
+    upgrades, or rolled back). The store's takes every rank the metadata's
+    gave: a rank given twice would name two sources alike."""
+    held = AuthorRegister.stored(await store.get_author_register(room.id))
+    if AUTHOR_REGISTER not in room.metadata or not _keeps_apart(store):
+        return held, False
+    legacy = AuthorRegister.stored(room.metadata[AUTHOR_REGISTER])
+    if held is None:
+        return legacy, True
+    if legacy is not None:
+        held.merge(legacy)
+    return held, True
+
+
 async def stored_register(store: ConversationStore, room: Room) -> dict[str, Any] | None:
-    """The register *room* holds, as its readers take it: the store's, else
-    the one its metadata still holds (a room stored before the store kept it
-    apart) until its next commit moves it (:func:`with_author`)."""
-    held = await store.get_author_register(room.id)
-    if held is not None:
-        return held
-    legacy = room.metadata.get(AUTHOR_REGISTER)
-    return legacy if isinstance(legacy, dict) else None
+    """The register *room* holds, as its readers take it: the store's, with
+    what its metadata still holds until the room's next named turn moves it
+    (:func:`with_author`)."""
+    register, _moved = await _held_register(store, room)
+    return register.data if register is not None else None
 
 
 async def with_author(store: ConversationStore, room_id: str, event: RoomEvent) -> RoomEvent:
@@ -352,9 +388,9 @@ async def with_author(store: ConversationStore, room_id: str, event: RoomEvent) 
     restricted turn joins the register too: ranked without joining it, a
     later source could take its rank in the view of a reader who sees both.
 
-    A register the room's metadata still holds (a room stored before the
-    store kept it apart) is written to the store, which removes it from the
-    metadata: its digests are the same, so every rank holds."""
+    A register the room's metadata holds (:func:`_held_register`) is written
+    to the store, merged into the one it holds, and the store removes it from
+    the metadata: its digests are the same, so every rank holds."""
     if AUTHOR in event.metadata:
         metadata = {k: v for k, v in event.metadata.items() if k != AUTHOR}
         event = event.model_copy(update={"metadata": metadata})
@@ -365,9 +401,7 @@ async def with_author(store: ConversationStore, room_id: str, event: RoomEvent) 
     if room is None:
         return event
     context = RoomContext(room=room, participants=await store.list_participants(room_id))
-    held = await store.get_author_register(room_id)
-    moved = held is None and AUTHOR_REGISTER in room.metadata
-    register = AuthorRegister.stored(room.metadata[AUTHOR_REGISTER] if moved else held)
+    register, moved = await _held_register(store, room)
     if register is None:
         register = await _rebuilt(store, room_id, context)
     record = author_record(event, context, register)
