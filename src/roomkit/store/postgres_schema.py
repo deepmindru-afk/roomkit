@@ -653,8 +653,8 @@ END $$;
 -- A room's register of authors leaves its metadata for its private state, once;
 -- one that is not an object is dropped, as its readers read it absent. The
 -- metadata loses only the copy the table now holds: one a process from
--- before writes meanwhile, or wrote since a move, stays for the room's next
--- turn whose author is recorded to merge (a register only adds), never
+-- before writes meanwhile, or wrote since a move, stays to be merged at the
+-- room's next turn that names its sender (a register only adds), never
 -- dropped with the ranks it gave. Version 4 records the move as done.
 DO $$
 BEGIN

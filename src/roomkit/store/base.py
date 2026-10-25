@@ -288,6 +288,12 @@ class ConversationStore(ABC):
         reads it from the metadata, where it was kept before, and warns once:
         override this method and :meth:`set_private_state` to keep it
         private.
+
+        The keys are the implementation's (``author_register``; a later one
+        takes a ``_`` prefix), and each reserves the same key in the room's
+        metadata: this default keeps the value there, and
+        :meth:`set_private_state` removes the copy there, so an application
+        must not keep its own metadata under one.
         """
         _warn_private_state_in_metadata(self)
         room = await self.get_room(room_id)
@@ -304,8 +310,9 @@ class ConversationStore(ABC):
         not hold. The caller holds the room lock (RFC §13.5), and the room's
         deletion takes its private state.
 
-        This default writes the key in the room's metadata, where it was kept
-        before (:meth:`get_private_state`).
+        *key* reserves the same key in the room's metadata
+        (:meth:`get_private_state`). This default writes the key in the
+        room's metadata, where it was kept before.
         """
         _warn_private_state_in_metadata(self)
         if value is None:

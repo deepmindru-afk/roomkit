@@ -27,10 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lock the caller holds, writes nothing for a room the store lacks, removes
   the key when the value is `None`, and removes the copy the room's metadata
   may still hold under the key in the same write, so a key moves out of the
-  metadata in one step; the room's deletion takes its private state.
-  `InMemoryStore`, `SQLiteStore` (table `private_state`, schema 12) and
-  `PostgresStore` (table `private_state`, rows of a room deleted with it)
-  keep it apart. The room's register of authors is its first key (see
+  metadata in one step; the room's deletion takes its private state. The
+  keys are the implementation's, and each reserves the same key in the
+  room's metadata, where the base class keeps it and from which `set`
+  removes the copy. `InMemoryStore`, `SQLiteStore` (table `private_state`,
+  schema 12) and `PostgresStore` (table `private_state`, rows of a room
+  deleted with it) keep it apart. The room's register of authors is its first key (see
   Security). A custom store keeps working: the base class keeps each key in
   the room's metadata, as before, and warns once per store that it is
   readable there.
@@ -618,8 +620,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SQLiteStore` (schema 12) and `PostgresStore` (`schema_version` 4) move each
   room's register out of its metadata when they open, once. A register the
   metadata holds afterwards (one a process from before wrote there, during
-  the move or since) is merged into the store's by the room's next turn
-  whose author is recorded, under the room lock, and that write removes the
+  the move or since) is merged into the store's at the room's next turn
+  that names its sender, under the room lock, and that write removes the
   metadata's copy; a register only adds, so the merge gives none of its ranks
   again. A process from before writes the register where clients read it:
   SQLite refuses to open a schema 12 file from an older RoomKit, PostgreSQL

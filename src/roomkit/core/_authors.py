@@ -375,8 +375,8 @@ async def _held_register(
 
 async def stored_register(store: ConversationStore, room: Room) -> dict[str, Any] | None:
     """The register *room* holds, as its readers take it: the store's, with
-    what its metadata still holds until the room's next turn whose author is
-    recorded moves it (:func:`with_author`)."""
+    what its metadata still holds until it moves at the room's next turn
+    that names its sender (:func:`with_author`)."""
     register, _moved = await _held_register(store, room)
     return register.data if register is not None else None
 
