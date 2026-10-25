@@ -2101,10 +2101,12 @@ reached = await kit.steer(Cancel(reason="stop pressed"), "agent", room_id="room-
 `kit.steer(directive, channel_id, room_id=..., turn_id=...)` follows the same
 rules (a `Cancel` reaches every turn of the room, another directive the most
 recent one) and answers the loops reached. A channel without steering (an ACP
-agent) takes a `Cancel` as its turn's cancel, counted as one. `agent.steer()`
-reaches the loops of the process it is called in. With `organization_id=`
-(RFC §17.2), a `room_id` of another organization raises `RoomNotFoundError`,
-and only the turns of that organization's rooms are reached.
+agent) takes a `Cancel` as its turn's cancel, counted as one. With
+`kit.steer(..., organization_id=...)` (RFC §17.2), a `room_id` of another
+organization raises `RoomNotFoundError`, and only the turns of that
+organization's rooms are reached. `agent.steer()` reaches the loops of the
+process it is called in, whatever room's: the channel holds no store, and
+the kit's `steer()` is the door that reads the room.
 
 ## Tool Calling
 
@@ -5211,6 +5213,10 @@ await kit.cancel_task(task.id)
   starts the same task from the host, for any agent of the room, an
   `ACPChannel` included; another organization's room raises
   `RoomNotFoundError`, nothing started (RFC §17.2).
+- `cancel_task(task_id, organization_id=None)` cancels a task the kit runs
+  in the background; with `organization_id=`, only one running for a room
+  of that organization: another organization's task answers `False`, as one
+  the kit does not hold, and keeps running.
 - `hand_back="relay"`: the agent is told the result and says it in a turn of
   its own, at the front of the queue. `"post"`: the result is posted as the
   agent's message, as it is, with no generation; it waits at the front of the

@@ -216,6 +216,10 @@ await kit.cancel_task(task.id)
   starts the same task from the host, for any agent of the room, an
   `ACPChannel` included; another organization's room raises
   `RoomNotFoundError`, nothing started (RFC §17.2).
+- `cancel_task(task_id, organization_id=None)` cancels a task the kit runs
+  in the background; with `organization_id=`, only one running for a room
+  of that organization: another organization's task answers `False`, as one
+  the kit does not hold, and keeps running.
 - `hand_back="relay"`: the agent is told the result and says it in a turn of
   its own, at the front of the queue. `"post"`: the result is posted as the
   agent's message, as it is, with no generation; it waits at the front of the

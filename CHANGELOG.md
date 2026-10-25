@@ -388,6 +388,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A WebSocket connection evicted after repeated send failures is
+  forgotten with its rooms** (RMK-491). The eviction dropped only the
+  connection's sender: the id kept its subscriptions (and, scoped, its
+  organization), and a registration of the same id, by any host, inherited
+  the rooms the evicted socket followed. It is now forgotten as
+  `unregister_connection()` forgets it: an id registered again after an
+  eviction receives only the room it registers for. A host that registered
+  an evicted id again and relied on its old rooms subscribes them again.
+
 - An agent's answer is narrowed only by the transports that send (RFC §6.7,
   §10.5, RMK-947). The media types and capabilities a turn is given
   intersected every transport of the room, one never delivered to included:
@@ -695,21 +704,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes nothing, so another tenant can neither take a socket over nor
   disconnect it. A subscription to another organization's room is not refused: it
   delivers nothing. A registration that changes an id's organization, to
-  none included, drops the rooms the id followed, and a connection evicted
-  after repeated send failures is forgotten, rooms and organization, as
-  `unregister_connection()` forgets it (it kept its rooms, which an id
-  registered again inherited). Connection ids are one namespace for every
-  organization: the host server generates them, never a client.
+  none included, drops the rooms the id followed, and a stream under way
+  sends nothing to an id unregistered or registered again since it started.
+  Connection ids are one namespace for every organization: the host server
+  generates them, never a client.
 
-- `start_task()`, `submit_feedback()` and `steer()` take the organization
-  the caller acts for (RFC §17.2, RMK-487). A tenant's host could start a
-  background task in another tenant's room, which hands the worker the
-  room's last messages, store a feedback on it, or steer its agents' turns.
-  With `organization_id=`, another organization's room raises
-  `RoomNotFoundError` before any task, observation, hook or steer;
-  `steer()` without a `room_id` reaches only the turns of that
-  organization's rooms (`TurnClient.steer()` takes it too). Unset, no room
-  is read for the scope, as before.
+- `start_task()`, `cancel_task()`, `submit_feedback()` and `steer()` take
+  the organization the caller acts for (RFC §17.2, RMK-487). A tenant's
+  host could start a background task in another tenant's room, which hands
+  the worker the room's last messages, cancel its tasks, store a feedback
+  on it, or steer its agents' turns. With `organization_id=`, another
+  organization's room raises `RoomNotFoundError` before any task,
+  observation, hook or steer; `cancel_task()` answers `False` for a task of
+  another organization's room, which keeps running; `steer()` without a
+  `room_id` reaches only the turns of that organization's rooms
+  (`TurnClient.steer()` takes it too). Unset, no room is read for the
+  scope, as before.
 
 ## [0.108.0] — 2026-10-24
 

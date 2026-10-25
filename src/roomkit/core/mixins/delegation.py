@@ -12,7 +12,7 @@ from roomkit._text import bounded_text, identifier, one_line, quoted
 from roomkit.channels._discussion_turn import agent_handle
 from roomkit.channels._realtime_context import get_current_voice_session
 from roomkit.core._failure_log import log_failure
-from roomkit.core.exceptions import ChannelNotRegisteredError
+from roomkit.core.exceptions import ChannelNotRegisteredError, RoomNotFoundError
 
 # _persist_child_stream and _run_with_structured_result are re-exported (self-
 # aliased) for the test suite, which imports them from this module.
@@ -858,7 +858,7 @@ class DelegationMixin(HelpersMixin):
         )
         return handle
 
-    async def cancel_task(self, task_id: str) -> bool:
+    async def cancel_task(self, task_id: str, *, organization_id: str | None = None) -> bool:
         """Cancel a delegated task still running in the background (RFC §23.3).
 
         The task ends ``cancelled``, as any task cancelled from outside:
@@ -868,10 +868,28 @@ class DelegationMixin(HelpersMixin):
         inline delegation), is left as it stands. Calls cancelling it at once,
         this one and an agent's ``cancel_task`` among them, cancel it once.
 
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): only a task running for one of its rooms is cancelled;
+        another organization's, as a task the runner does not hold, is left
+        as it stands.
+
         Returns:
             ``True`` when the task was running and is now cancelled.
         """
+        if organization_id is not None and not await self._task_in_scope(task_id, organization_id):
+            return False
         return await self._cancel_joined(task_id, None)
+
+    async def _task_in_scope(self, task_id: str, organization_id: str) -> bool:
+        """Whether *task_id* runs for a room of *organization_id* (RFC §17.2)."""
+        room_id = self._room_tasks.room_of(task_id)
+        if room_id is None:
+            return False
+        try:
+            await self.get_room(room_id, organization_id=organization_id)
+        except RoomNotFoundError:
+            return False
+        return True
 
     async def _cancel_task_for(
         self,

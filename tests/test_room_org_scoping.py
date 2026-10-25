@@ -718,6 +718,26 @@ class TestScopedHostDoors:
         await kit.close()
 
 
+@pytest.mark.parametrize(
+    ("organization_id", "cancelled"), [("acme", False), ("globex", True), (None, True)]
+)
+async def test_a_task_of_another_organizations_room_is_not_cancelled(
+    organization_id: str | None, cancelled: bool
+) -> None:
+    """``cancel_task(task_id, organization_id=...)`` cancels only a task of
+    that organization's rooms (RFC §17.2): another's is a task it does not
+    hold, ``False`` and left running."""
+    tool = _Paused()
+    kit, _ = await _globex_turn_held(tool)
+    task = await kit.delegate("globex-room", "ai", "Wait here.", notify="ai")
+    await asyncio.wait_for(tool.started.wait(), 2)
+
+    assert await kit.cancel_task(task.id, organization_id=organization_id) is cancelled
+    assert task.status.value == ("cancelled" if cancelled else "in_progress")
+    tool.release.set()
+    await kit.close()
+
+
 class _RoomHooks:
     """Globex's room with a room hook reading its messages and an executor
     room hook enabled for it; what acme's host tries on it."""

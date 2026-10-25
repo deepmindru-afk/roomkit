@@ -66,6 +66,11 @@ class RoomTaskRecord:
         if len(self._ended) > ENDED_ROOM_TASKS_KEPT:
             del self._ended[next(iter(self._ended))]
 
+    def room_of(self, task_id: str) -> str | None:
+        """The room *task_id* runs for; ``None`` for a task not running."""
+        task = self._running.get(task_id)
+        return task.room_id if task is not None else None
+
     def reach(self, task_id: str, room_id: str) -> TaskReach | None:
         """How *task_id*, running for *room_id*, can end; ``None`` for any
         other task: another room's, one ended, one the framework never ran."""

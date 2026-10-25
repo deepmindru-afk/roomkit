@@ -211,10 +211,12 @@ reached = await kit.steer(Cancel(reason="stop pressed"), "agent", room_id="room-
 `kit.steer(directive, channel_id, room_id=..., turn_id=...)` follows the same
 rules (a `Cancel` reaches every turn of the room, another directive the most
 recent one) and answers the loops reached. A channel without steering (an ACP
-agent) takes a `Cancel` as its turn's cancel, counted as one. `agent.steer()`
-reaches the loops of the process it is called in. With `organization_id=`
-(RFC §17.2), a `room_id` of another organization raises `RoomNotFoundError`,
-and only the turns of that organization's rooms are reached.
+agent) takes a `Cancel` as its turn's cancel, counted as one. With
+`kit.steer(..., organization_id=...)` (RFC §17.2), a `room_id` of another
+organization raises `RoomNotFoundError`, and only the turns of that
+organization's rooms are reached. `agent.steer()` reaches the loops of the
+process it is called in, whatever room's: the channel holds no store, and
+the kit's `steer()` is the door that reads the room.
 
 ## Tool Calling
 
