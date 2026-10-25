@@ -991,7 +991,7 @@
     "remove_room_hook": ["def", "room_id", "name"],
     "replace_room_hook": ["def", "room_id", "hook"],
     "room_hook_names": ["def", "room_id"],
-    "run_async_hooks": ["async def", "room_id", "trigger", "event", "context", "*", "skip_event_filter=False", "name_prefix=None", "exclude_name_prefix=None"],
+    "run_async_hooks": ["async def", "room_id", "trigger", "event", "context", "*", "skip_event_filter=False", "name_prefix=None", "exclude_name_prefix=None", "budget=None"],
     "run_observers": ["async def", "room_id", "trigger", "event", "context", "*", "skip_event_filter=False"],
     "run_sync_hooks": ["async def", "room_id", "trigger", "event", "context", "*", "skip_event_filter=False", "needs_lock=None", "fold=None", "fire_observers=True"],
     "running_observers": ["def"],
