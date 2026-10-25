@@ -648,9 +648,11 @@ BEGIN
 END $$;
 
 -- A room's register of authors leaves its metadata for its own table, once;
--- one that is not an object is dropped, as its readers read it absent. A
--- room whose metadata holds one later while this table holds none for it
--- has it moved by its next commit. Version 4 records the move as done.
+-- one that is not an object is dropped, as its readers read it absent. The
+-- metadata loses only the copy the table now holds: one a process from
+-- before writes meanwhile, or wrote since a move, stays for the room's next
+-- named turn to merge (a register only adds), never dropped with the ranks
+-- it gave. Version 4 records the move as done.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version >= 4) THEN
@@ -658,8 +660,11 @@ BEGIN
             SELECT id, metadata -> 'author_register' FROM rooms
             WHERE jsonb_typeof(metadata -> 'author_register') = 'object'
             ON CONFLICT (room_id) DO NOTHING;
+        UPDATE rooms r SET metadata = r.metadata - 'author_register'
+            FROM author_registers a
+            WHERE a.room_id = r.id AND r.metadata -> 'author_register' = a.data;
         UPDATE rooms SET metadata = metadata - 'author_register'
-            WHERE metadata ? 'author_register';
+            WHERE jsonb_typeof(metadata -> 'author_register') <> 'object';
         INSERT INTO schema_version (version) VALUES (4);
     END IF;
 END $$;
