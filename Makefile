@@ -12,7 +12,7 @@ format:
 
 typecheck:
 	uv run ty check src/roomkit/
-	uv run pytest -m typing -q tests/test_typing_subclasses.py
+	uv run pytest -m typing -q tests/test_typing_subclasses.py tests/test_typing_lazy_exports.py
 
 security:
 	uv run bandit -r src/ -c pyproject.toml

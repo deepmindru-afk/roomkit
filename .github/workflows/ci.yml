@@ -126,7 +126,7 @@ jobs:
         run: uv run ty check src/roomkit/
 
       - name: mypy on two-base subclasses of the public classes
-        run: uv run pytest -m typing -q tests/test_typing_subclasses.py
+        run: uv run pytest -m typing -q tests/test_typing_subclasses.py tests/test_typing_lazy_exports.py
 
   smoke:
     name: Smoke test (quickstart)
