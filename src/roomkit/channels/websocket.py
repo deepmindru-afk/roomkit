@@ -97,6 +97,11 @@ class WebSocketChannel(Channel):
         # an unscoped connection has no entry. The registry reads no room, so
         # the room's organization is matched at delivery.
         self._organization_of: dict[str, str] = {}
+        # One token per registration of an id: a stream sends to an id only
+        # while it holds the token the stream started with, whatever send
+        # function a registration again passes (one shared by every socket
+        # included).
+        self._registrations: dict[str, object] = {}
 
     @property
     def info(self) -> dict[str, Any]:
@@ -183,6 +188,7 @@ class WebSocketChannel(Channel):
             for subscribed in self.rooms_for(connection_id):
                 self.unsubscribe(connection_id, subscribed)
         self._connections[connection_id] = send_fn
+        self._registrations[connection_id] = object()
         if stream_send_fn is not None:
             self._stream_send_fns[connection_id] = stream_send_fn
         else:
@@ -278,6 +284,7 @@ class WebSocketChannel(Channel):
         if organization_id is not None:
             self._refuse_another(connection_id, organization_id)
         self._connections.pop(connection_id, None)
+        self._registrations.pop(connection_id, None)
         self._stream_send_fns.pop(connection_id, None)
         self._error_counts.pop(connection_id, None)
         self._organization_of.pop(connection_id, None)
@@ -413,11 +420,17 @@ class WebSocketChannel(Channel):
         source = event.source
 
         # Every fan-out below is scoped to the room being delivered, not to
-        # every socket the channel holds.
+        # every socket the channel holds, and to the registrations it started
+        # with: each send goes to the function captured here, and to none once
+        # its id is unregistered or registered again, for another
+        # organization included (RFC §17.2).
         organization_id = context.room.organization_id
-        room_conns = self._connections_in(binding.room_id, organization_id)
+        room_conns = [
+            (conn_id, send_fn, self._registrations.get(conn_id))
+            for conn_id, send_fn in self._connections_in(binding.room_id, organization_id)
+        ]
         streaming_conns = [
-            conn_id
+            (conn_id, self._stream_send_fns[conn_id], self._registrations.get(conn_id))
             for conn_id in self._streaming_connections_in(binding.room_id)
             if self._reaches(conn_id, organization_id)
         ]
@@ -457,7 +470,8 @@ class WebSocketChannel(Channel):
                     await asyncio.gather(
                         *(
                             self._send_one(conn_id, send_fn, delta)
-                            for conn_id, send_fn in room_conns
+                            for conn_id, send_fn, token in room_conns
+                            if self._registrations.get(conn_id) is token
                         )
                     )
         except Exception as exc:
@@ -486,28 +500,37 @@ class WebSocketChannel(Channel):
         await asyncio.gather(
             *(
                 self._send_one(conn_id, send_fn, final_event)
-                for conn_id, send_fn in room_conns
-                if conn_id not in self._stream_send_fns
+                for conn_id, send_fn, token in room_conns
+                if self._registrations.get(conn_id) is token
+                and conn_id not in self._stream_send_fns
             )
         )
 
         return ChannelOutput.empty()
 
-    async def _fan_out_stream(self, conn_ids: list[str], msg: StreamMessage) -> None:
-        """Send one streaming message to every connection at once.
+    async def _fan_out_stream(
+        self, conns: list[tuple[str, StreamSendFn, object]], msg: StreamMessage
+    ) -> None:
+        """Send one streaming message to every connection at once, each through
+        the function the stream started with, while its id still holds the
+        registration the stream started with.
 
         Ordering across deltas is preserved because each fan-out is awaited
         before the next delta is produced; within a delta the connections are
         independent, so a slow one must not pace the others.
         """
-        await asyncio.gather(*(self._send_stream_message(c, msg) for c in conn_ids))
+        await asyncio.gather(
+            *(
+                self._send_stream_message(conn_id, stream_send_fn, msg)
+                for conn_id, stream_send_fn, token in conns
+                if self._registrations.get(conn_id) is token
+            )
+        )
 
-    async def _send_stream_message(self, conn_id: str, msg: StreamMessage) -> None:
+    async def _send_stream_message(
+        self, conn_id: str, stream_send_fn: StreamSendFn, msg: StreamMessage
+    ) -> None:
         """Send a streaming protocol message, tracking errors."""
-        stream_send_fn = self._stream_send_fns.get(conn_id)
-        if stream_send_fn is None:
-            logger.warning("_send_stream_message: no stream_send_fn for %s", conn_id)
-            return
         try:
             await asyncio.wait_for(stream_send_fn(conn_id, msg), timeout=self._send_timeout)
             self._error_counts.pop(conn_id, None)

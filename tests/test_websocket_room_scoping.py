@@ -10,7 +10,8 @@ client saw them, and so did anything reading that socket.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 import pytest
 
@@ -536,3 +537,71 @@ class TestOrganizationScope:
 
         assert (acme.seen, ws.connection_count, ws.rooms_for("acme-socket")) == ([], 0, set())
         await kit.close()
+
+    async def test_a_stream_under_way_never_reaches_an_id_registered_again(self) -> None:
+        """The stream's connections are the ones registered when it started:
+        an id unregistered and registered again for globex meanwhile
+        receives nothing of acme's stream, and neither does the socket that
+        left (review probe P1)."""
+        ws = WebSocketChannel("ws")
+        got: dict[str, list[str]] = {"acme": [], "globex": []}
+
+        def stream_to(who: str) -> Callable[[str, Any], Awaitable[None]]:
+            async def send(conn_id: str, msg: Any) -> None:
+                got[who].append(msg.type)
+
+            return send
+
+        async def plain(conn_id: str, event: RoomEvent) -> None:
+            got["acme" if event.room_id == "acme-room" else "globex"].append("event")
+
+        ws.register_connection(
+            "c1",
+            plain,
+            room_id="acme-room",
+            stream_send_fn=stream_to("acme"),
+            organization_id="acme",
+        )
+        started = asyncio.Event()
+        resume = asyncio.Event()
+
+        async def text() -> AsyncIterator[Any]:
+            yield "secret-1 "
+            started.set()
+            await resume.wait()
+            yield "secret-2"
+            yield _event("acme-room", "a segment")
+
+        context = RoomContext(room=Room(id="acme-room", organization_id="acme"))
+        streaming = asyncio.create_task(
+            ws.deliver_stream(text(), _event("acme-room", ""), _binding("acme-room"), context)
+        )
+        await asyncio.wait_for(started.wait(), 1)
+        ws.unregister_connection("c1")
+        ws.register_connection(
+            "c1",
+            plain,
+            room_id="globex-room",
+            stream_send_fn=stream_to("globex"),
+            organization_id="globex",
+        )
+        resume.set()
+        await asyncio.wait_for(streaming, 1)
+
+        assert got == {"acme": ["stream_start", "stream_chunk"], "globex": []}
+
+    async def test_a_room_of_no_organization_reaches_only_unscoped_connections(self) -> None:
+        """A room of none is no organization's (RFC §17.2): a connection
+        registered for one receives nothing from it, an unscoped one does."""
+        ws = WebSocketChannel("ws")
+        seen: list[str] = []
+
+        async def send(conn_id: str, event: RoomEvent) -> None:
+            seen.append(conn_id)
+
+        ws.register_connection("acme-socket", send, room_id="room-a", organization_id="acme")
+        ws.register_connection("any", send, room_id="room-a")
+
+        await ws.deliver(_event("room-a", "hi"), _binding("room-a"), _context("room-a"))
+
+        assert seen == ["any"]
