@@ -59,11 +59,12 @@ await store.init(min_size=5, max_size=20)  # Pool sizing via init()
 
 ### Schema
 
-PostgresStore creates 11 tables:
+PostgresStore creates these tables, among others:
 
 | Table | Purpose |
 |-------|---------|
 | `rooms` | Room records with status, metadata, timers |
+| `author_registers` | Each room's register of authors, apart from its metadata |
 | `events` | Event timeline with sequential indexing |
 | `event_sequences` | Per-room monotonic event-index high-water marks |
 | `participants` | Room participants with roles and status |
@@ -172,6 +173,15 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
 - `create_room()` refuses an id it holds with `RoomAlreadyExistsError`, nothing
   written: replacing the room would re-home its conversation, another
   organization's included.
+- `get_author_register(room_id)` and `set_author_register(room_id, register)`
+  keep the room's register of authors (RFC §6.4, §10.1 step 12) apart from
+  its metadata, which clients may read: its digests hash the room's id with
+  each sender's id and name, and trying every phone number or name finds the
+  senders. `get` returns the caller's own copy, `None` for none;
+  `set` writes nothing for a room the store lacks and removes the copy the
+  metadata may still hold, in one write. The base class keeps the register in
+  the room's metadata, as before, and warns once: implement both to keep it
+  private.
 - `commit_event(room_id, event, *, target=None, activity=True)` stores the
   event and bumps the room's counters in one transaction. An activity commit
   (an event the pipeline stores DELIVERED) also moves `last_activity_at` and

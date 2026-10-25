@@ -1156,6 +1156,31 @@ async def test_init_records_when_a_room_stored_paused_before_paused_at_paused(st
     assert active.paused_at is None
 
 
+async def test_init_moves_the_author_registers_out_of_the_metadata(store) -> None:
+    """RMK-631: a store from before keeps a room's register of authors in
+    its metadata, which clients may read; init() moves it to the store's own
+    table, once, and drops a malformed one."""
+    from roomkit.store.postgres import PostgresStore
+
+    register = {"version": 3, "names": {"a" * 16: "b" * 16 + ":1"}}
+    await store.create_room(Room(id="r1", metadata={"topic": "x", "author_register": register}))
+    await store.create_room(Room(id="r2", metadata={"author_register": "junk"}))
+    async with store._pool.acquire() as conn:
+        await conn.execute("DELETE FROM schema_version WHERE version >= 4")
+
+    upgraded = PostgresStore(dsn=POSTGRES_DSN)
+    await upgraded.init(min_size=1, max_size=2)
+    try:
+        moved, kept = await upgraded.get_author_register("r1"), await upgraded.get_room("r1")
+        junk, emptied = await upgraded.get_author_register("r2"), await upgraded.get_room("r2")
+    finally:
+        await upgraded.close()
+    assert moved == register
+    assert kept is not None and kept.metadata == {"topic": "x"}
+    assert junk is None
+    assert emptied is not None and emptied.metadata == {}
+
+
 @pytest.mark.parametrize("write", ["commit_event", "add_event", "add_event_auto_index"])
 async def test_a_held_id_is_the_driver_s_refusal_whatever_the_index_order(
     store, write: str

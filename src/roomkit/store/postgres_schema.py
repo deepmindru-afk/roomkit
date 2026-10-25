@@ -604,6 +604,14 @@ CREATE TABLE IF NOT EXISTS voice_deliveries (
     PRIMARY KEY (room_id, key_hash)
 );
 
+-- A room's register of authors (RFC §10.1 step 12), apart from its metadata,
+-- which clients may read: its digests name the room's senders to whoever
+-- tries every phone number or name.
+CREATE TABLE IF NOT EXISTS author_registers (
+    room_id TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
+    data    JSONB NOT NULL
+);
+
 -- schema version
 CREATE TABLE IF NOT EXISTS schema_version (
     version INT NOT NULL,
@@ -636,6 +644,23 @@ BEGIN
           AND e.metadata -> 'roomkit:verification_held' ->> 'visibility' = 'all'
           AND COALESCE(b.visibility, 'all') <> 'all';
         INSERT INTO schema_version (version) VALUES (3);
+    END IF;
+END $$;
+
+-- A room's register of authors leaves its metadata for its own table, once;
+-- one that is not an object is dropped, as its readers read it absent. A
+-- room whose metadata holds one later while this table holds none for it
+-- has it moved by its next commit. Version 4 records the move as done.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version >= 4) THEN
+        INSERT INTO author_registers (room_id, data)
+            SELECT id, metadata -> 'author_register' FROM rooms
+            WHERE jsonb_typeof(metadata -> 'author_register') = 'object'
+            ON CONFLICT (room_id) DO NOTHING;
+        UPDATE rooms SET metadata = metadata - 'author_register'
+            WHERE metadata ? 'author_register';
+        INSERT INTO schema_version (version) VALUES (4);
     END IF;
 END $$;
 """,

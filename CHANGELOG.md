@@ -585,6 +585,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is. A `stop()` that times out still leaves its files to be finished later
   in the clear.
 
+- **The room's register of authors leaves the room's metadata** (RFC §10.1
+  step 12, RMK-631). The register (`room.metadata["author_register"]`, which
+  ranks the senders whose names read alike) held digests of the room's id
+  with each sender's id and name. The room's id is not secret and a phone
+  number or a name is a small space: from the metadata alone, trying every
+  number of one exchange found a sender in 11 ms (1.8 million tries a
+  second, 5 s for an area code), the sender of a turn hidden from the reader
+  included, and a short list of names found their names. The store now keeps
+  the register apart, through the new `ConversationStore.get_author_register()`
+  and `set_author_register()`, and every reader of the labels takes it from
+  the new `RoomContext.author_register`, which a remote turn executor receives
+  in its request as it received the metadata. A hook no longer sees it in
+  `room.metadata`. The digests do not change, so every rank holds:
+  `SQLiteStore` (schema 12) and `PostgresStore` (`schema_version` 4) move each
+  room's register out of its metadata when they open, once, and a room whose
+  metadata still holds one has it moved by its next commit, under the room
+  lock. Upgrade every process sharing a store together: one from before keeps
+  writing the register to the metadata. A custom store keeps working
+  unchanged, the base class keeping the register in the room's metadata as
+  before and warning once that it is readable there: implement the two
+  methods to keep it private.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

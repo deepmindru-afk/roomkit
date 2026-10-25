@@ -62,7 +62,7 @@ from roomkit.store.base import (
     without_address,
 )
 
-_SCHEMA_VERSION = 11
+_SCHEMA_VERSION = 12
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rooms(
@@ -175,6 +175,10 @@ CREATE TABLE IF NOT EXISTS idempotency(
     PRIMARY KEY(room_id, channel_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_idempotency_room_key ON idempotency(room_id, key);
+CREATE TABLE IF NOT EXISTS author_registers(
+    room_id TEXT PRIMARY KEY,
+    data TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_events_room_idempotency
     ON events(room_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts
@@ -601,6 +605,37 @@ def _migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
         raise
 
 
+def _migrate_v11_to_v12(conn: sqlite3.Connection) -> None:
+    """A room's register of authors leaves its metadata, which clients may
+    read, for a table of its own (RFC §10.1 step 12): its digests name the
+    room's senders to whoever tries every phone number or name. One that is
+    not a map is dropped, as its readers read it absent."""
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 12:
+            conn.execute("COMMIT")
+            return
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS author_registers(
+                   room_id TEXT PRIMARY KEY, data TEXT NOT NULL)"""
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO author_registers(room_id, data)
+               SELECT id, json_extract(data, '$.metadata.author_register') FROM rooms
+               WHERE json_type(data, '$.metadata.author_register') = 'object'"""
+        )
+        conn.execute(
+            """UPDATE rooms SET data = json_remove(data, '$.metadata.author_register')
+               WHERE json_type(data, '$.metadata.author_register') IS NOT NULL"""
+        )
+        conn.execute("PRAGMA user_version=12")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
@@ -612,6 +647,7 @@ _MIGRATIONS = {
     8: _migrate_v8_to_v9,
     9: _migrate_v9_to_v10,
     10: _migrate_v10_to_v11,
+    11: _migrate_v11_to_v12,
 }
 """Each step takes a file from its version to the next."""
 
@@ -1013,6 +1049,35 @@ class SQLiteStore(ConversationStore):
             )
         return cur.rowcount > 0
 
+    async def get_author_register(self, room_id: str) -> dict[str, Any] | None:
+        return await self._run(self._x_get_author_register, room_id)
+
+    def _x_get_author_register(self, room_id: str) -> dict[str, Any] | None:
+        row = (
+            self._db()
+            .execute("SELECT data FROM author_registers WHERE room_id = ?", (room_id,))
+            .fetchone()
+        )
+        return json.loads(row["data"]) if row is not None else None
+
+    async def set_author_register(self, room_id: str, register: dict[str, Any]) -> None:
+        await self._run(self._x_set_author_register, room_id, json.dumps(register))
+
+    def _x_set_author_register(self, room_id: str, data: str) -> None:
+        conn = self._db()
+        with _write_transaction(conn):
+            conn.execute(
+                """INSERT INTO author_registers(room_id, data)
+                   SELECT id, ? FROM rooms WHERE id = ?
+                   ON CONFLICT(room_id) DO UPDATE SET data = excluded.data""",
+                (data, room_id),
+            )
+            conn.execute(
+                """UPDATE rooms SET data = json_remove(data, '$.metadata.author_register')
+                   WHERE id = ? AND json_type(data, '$.metadata.author_register') IS NOT NULL""",
+                (room_id,),
+            )
+
     async def patch_room_metadata(
         self,
         room_id: str,
@@ -1056,6 +1121,7 @@ class SQLiteStore(ConversationStore):
                 "voice_deliveries",
                 "event_sequences",
                 "events_fts",
+                "author_registers",
             ):
                 conn.execute(f"DELETE FROM {table} WHERE room_id = ?", (room_id,))  # nosec B608  # fragments are internal, values parameterised
         return existed

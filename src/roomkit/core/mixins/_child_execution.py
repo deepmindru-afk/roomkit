@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.channels.base import Channel
+from roomkit.core._authors import stored_register
 from roomkit.core._failure_log import log_failure, mark_reported
 from roomkit.core._publication_keys import without_reserved_key
 from roomkit.core.event_router import responder_turn_entries, stream_record
@@ -266,7 +267,10 @@ async def _child_context(kit: RoomKit, room: Room, bindings: list[ChannelBinding
         newest_first=True,
         event_filter=EventFilter(include_blocked=True),
     )
-    return RoomContext(room=room, bindings=bindings, recent_events=recent)
+    register = await stored_register(kit.store, room)
+    return RoomContext(
+        room=room, bindings=bindings, recent_events=recent, author_register=register
+    )
 
 
 async def _broadcast_and_collect(

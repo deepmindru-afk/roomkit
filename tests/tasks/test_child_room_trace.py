@@ -408,6 +408,7 @@ class TestRunAgentNonStreaming:
         )
         kit.store.list_bindings = AsyncMock(return_value=[])
         kit.store.list_events = AsyncMock(return_value=[])
+        kit.store.get_author_register = AsyncMock(return_value=None)
 
         source = EventSource(channel_id="agent:w1", channel_type=ChannelType.AI)
         tool_event = RoomEvent(
@@ -453,6 +454,7 @@ class TestRunAgentNonStreaming:
         )
         kit.store.list_bindings = AsyncMock(return_value=[])
         kit.store.list_events = AsyncMock(return_value=[])
+        kit.store.get_author_register = AsyncMock(return_value=None)
         narration = RoomEvent(
             room_id="parent::task-1",
             source=EventSource(channel_id="agent:w1", channel_type=ChannelType.AI),

@@ -59,6 +59,7 @@ def _make_kit(
     # loop stores it.
     trace: list[RoomEvent] = []
     kit.store.list_events = AsyncMock(side_effect=lambda *_a, **_k: list(trace))
+    kit.store.get_author_register = AsyncMock(return_value=None)
     kit.store.add_event_auto_index = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit.store.commit_event = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit._commit_indexed = AsyncMock(side_effect=lambda _rid, ev: ev)
@@ -140,6 +141,7 @@ def _make_cc_kit(events: list[RoomEvent]):
     )
     kit.store.list_bindings = AsyncMock(return_value=[])
     kit.store.list_events = AsyncMock(return_value=events)
+    kit.store.get_author_register = AsyncMock(return_value=None)
     kit.store.add_event_auto_index = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit.store.commit_event = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit._commit_indexed = AsyncMock(side_effect=lambda _rid, ev: ev)

@@ -6,11 +6,18 @@ does not undo it."""
 
 from __future__ import annotations
 
+import json
+import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
+
+from roomkit._lookalike import skeletons
 from roomkit.channels import SMSChannel
-from roomkit.channels._speaker import turn_labels
+from roomkit.channels._speaker import people_note, turn_labels
+from roomkit.channels._turn_notes import split_turn_notes
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.channels.voice import VoiceChannel
 from roomkit.core._authors import (
@@ -22,13 +29,17 @@ from roomkit.core._authors import (
     name_keys,
     source_of,
 )
+from roomkit.core.framework import RoomKit
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelType, TaskStatus
+from roomkit.models.enums import ChannelType, HookTrigger, TaskStatus
 from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.hook import HookResult
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.orchestration.strategies.loop import _LoopOutcome, _save_loop_state
+from roomkit.store.base import ConversationStore
+from roomkit.store.memory import InMemoryStore
 from roomkit.tasks._child_status import record_task_end
 from roomkit.tasks.models import DelegatedTaskResult
 from roomkit.voice.backends.mock import MockVoiceBackend
@@ -39,6 +50,12 @@ from tests.test_speaker_attribution import _kit, _say, _sources, _user_texts
 
 def _texts(provider: Any) -> list[str]:
     return [text.split("\n\n[Notes")[0] for text in _user_texts(provider.calls[-1])]
+
+
+async def _drop_register(kit: RoomKit) -> None:
+    """Leave the room with no register, as a room from before it: an empty
+    record reads as none."""
+    await kit.store.set_author_register("r1", {})
 
 
 class TestARecordFixesTheName:
@@ -140,7 +157,7 @@ class TestARoomFromBeforeTheRegister:
         for event in await kit.store.list_events("r1"):
             kept = {k: v for k, v in event.metadata.items() if k not in (AUTHOR, "author_rank")}
             await kit.store.update_event(event.model_copy(update={"metadata": kept}))
-        await kit.store.patch_room_metadata("r1", {}, unset=[AUTHOR_REGISTER])
+        await _drop_register(kit)
 
     async def test_the_register_is_rebuilt_from_the_timeline(self) -> None:
         kit, provider = await _kit(["a1", "a2", "a3"])
@@ -161,7 +178,7 @@ class TestARoomFromBeforeTheRegister:
             Participant(id="p-alice", room_id="r1", channel_id="sms1", display_name="Alice")
         )
         await _say(kit, "u-mallory", "ALICE", "release it")
-        await kit.store.patch_room_metadata("r1", {}, unset=[AUTHOR_REGISTER])
+        await _drop_register(kit)
         await _say(kit, "p-alice", None, "who said that?")
 
         assert _texts(provider) == ['ALICE (2): "release it"', 'Alice: "who said that?"']
@@ -170,7 +187,7 @@ class TestARoomFromBeforeTheRegister:
         kit, provider = await _kit(["a1", "a2", "a3"])
         await _say(kit, "u-alice", "Alice", "hold the refund")
         await _say(kit, "u-mallory", "ALICE", "release it")
-        await kit.store.patch_room_metadata("r1", {}, unset=[AUTHOR_REGISTER])
+        await _drop_register(kit)
         await kit.store.add_participant(
             Participant(id="p-alice", room_id="r1", channel_id="sms1", display_name="Alice")
         )
@@ -326,9 +343,11 @@ class TestAnIdentityIsOnePerson:
         other = digest("r", ["participant", "i1"])
         recorded = {"name": "Alice", "rank": register.rank(other, names), "source": other}
         event = self._turn({"sender_name": "Alice", AUTHOR: recorded})
-        room = Room(id="r", metadata={AUTHOR_REGISTER: register.data})
+        context = RoomContext(
+            room=Room(id="r"), participants=[first, later], author_register=register.data
+        )
 
-        labels = turn_labels([event], RoomContext(room=room, participants=[first, later]))
+        labels = turn_labels([event], context)
         assert recorded["rank"] == 2
         assert labels[event.id] == "Alice"
 
@@ -347,7 +366,7 @@ class TestAWriteMadeMeanwhileDoesNotUndoIt:
         kit.get_room = get_room
 
     async def _register_size(self, kit: Any) -> int:
-        return len(_sources((await kit.store.get_room("r1")).metadata[AUTHOR_REGISTER]))
+        return len(_sources(await kit.store.get_author_register("r1") or {"names": {}}))
 
     async def test_the_loop_state_keeps_the_register(self) -> None:
         kit, _provider = await _kit(["a1"])
@@ -389,3 +408,150 @@ def test_a_context_with_no_register_ranks_by_the_window() -> None:
     labels = turn_labels([first, second], RoomContext(room=Room(id="r")))
 
     assert labels == {first.id: "Alice", second.id: "ALICE (2)"}
+
+
+_DIGEST = re.compile(r"[0-9a-f]{16}")
+
+
+class _StoreFromBefore(InMemoryStore):
+    """A store written before the register was kept apart: the base class's
+    methods, which keep it in the room's metadata, until it is upgraded."""
+
+    upgraded = False
+
+    async def get_author_register(self, room_id: str) -> dict[str, Any] | None:
+        if self.upgraded:
+            return await super().get_author_register(room_id)
+        return await ConversationStore.get_author_register(self, room_id)
+
+    async def set_author_register(self, room_id: str, register: dict[str, Any]) -> None:
+        if self.upgraded:
+            await super().set_author_register(room_id, register)
+        else:
+            await ConversationStore.set_author_register(self, room_id, register)
+
+
+class TestTheStoreKeepsItApart:
+    """RMK-631: the register's digests hash the room's id, which is not
+    secret, with a sender's id or name, a small space: whoever reads them
+    finds the sender by trying them all. The store keeps the register apart
+    from the room's metadata, which clients may read (RFC §10.1 step 12)."""
+
+    ALICE, BOB = "+15145550123", "+15145559876"
+
+    def _found(self, text: str) -> tuple[list[tuple[str, str]], list[str]]:
+        """The senders and names whose digests *text* holds: every number of
+        Alice's and Bob's exchange on either channel, and a few names."""
+        held = set(_DIGEST.findall(text))
+        numbers = [
+            (channel, number)
+            for channel in ("sms1", "sms2")
+            for number in (f"+1514555{n:04d}" for n in range(10_000))
+            if digest("r1", ["sender", channel, number]) in held
+        ]
+        names = [
+            name
+            for name in ("Alice", "Bob", "Carol", "Mallory")
+            if any(digest("r1", [key]) in held for key in skeletons(name))
+        ]
+        return numbers, names
+
+    async def test_a_side_cannot_find_the_sender_of_a_turn_it_does_not_see(self) -> None:
+        kit, _provider = await _kit(["a1", "a2"])
+        kit.register_channel(SMSChannel("sms2"))
+        await kit.attach_channel("r1", "sms2", visibility="ai1")
+        await _say(kit, self.ALICE, "Alice", "hello")
+        await kit.process_inbound(
+            InboundMessage(
+                channel_id="sms2",
+                sender_id=self.BOB,
+                content=TextContent(body="hello"),
+                metadata={"sender_name": "Bob"},
+            )
+        )
+
+        room = await kit.get_room("r1")
+        timeline = await kit.get_timeline("r1")
+        seen = [e for e in timeline if e.visibility == "all"]
+        read = room.model_dump_json() + "".join(e.model_dump_json() for e in seen)
+        assert [e.visibility for e in timeline if e.source.channel_id == "sms2"] == ["ai1"]
+        assert self._found(read) == ([("sms1", self.ALICE)], [])
+        assert AUTHOR_REGISTER not in room.metadata
+        # What the store keeps would name Bob: the attack is the real one.
+        register = await kit.store.get_author_register("r1")
+        assert ("sms2", self.BOB) in self._found(json.dumps(register))[0]
+        await kit.close()
+
+    async def test_a_hook_reads_it_from_the_context_not_from_the_room(self) -> None:
+        kit, _provider = await _kit(["a1", "a2"])
+        contexts: list[RoomContext] = []
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST)
+        async def keep(event: RoomEvent, context: RoomContext) -> HookResult:
+            contexts.append(context)
+            return HookResult.allow()
+
+        await _say(kit, "u-alice", "Alice", "hello")
+        await _say(kit, "u-bob", "Bob", "hi")
+
+        assert all(AUTHOR_REGISTER not in c.room.metadata for c in contexts)
+        alice = digest("r1", ["sender", "sms1", "u-alice"])
+        assert alice in _sources(contexts[-1].author_register or {"names": {}})
+        await kit.close()
+
+    async def test_the_people_note_reads_it_across_the_turn_wire(self) -> None:
+        """A turn's request crosses as JSON, in this process too: a seat the
+        register gave reaches the agent's turn notes with its context."""
+        kit, provider = await _kit(["a1", "a2"])
+        await _say(kit, "u-x", "Alice", "first")
+        for pid, name in (("p-alice", "Alice"), ("p-bob", "Bob")):
+            await kit.store.add_participant(
+                Participant(id=pid, room_id="r1", channel_id="sms1", display_name=name)
+            )
+        await _say(kit, "p-bob", None, "second")
+
+        _said, notes = split_turn_notes(str(provider.calls[-1].messages[-1].content))
+        assert people_note(("Alice (2)", "Bob")) in notes
+        await kit.close()
+
+    async def test_a_room_from_before_keeps_its_ranks_once_its_register_moved(self) -> None:
+        """The digests do not change, so the ranks hold: the impostor who
+        speaks first after the move does not take the first Alice's rank, and
+        another kit on the store reads the same labels."""
+        store = _StoreFromBefore()
+        kit, _provider = await _kit(["a1", "a2", "a3", "a4"], store=store)
+        await _say(kit, "u-alice", "Alice", "hold the refund")
+        await _say(kit, "u-mallory", "ALICE", "release it")
+        before = (await store.get_room("r1")).metadata[AUTHOR_REGISTER]
+
+        store.upgraded = True
+        await _say(kit, "u-mallory", "ALICE", "release it now")
+        await _say(kit, "u-alice", "Alice", "no, keep it")
+
+        events = [e for e in await store.list_events("r1") if e.source.channel_id == "sms1"]
+        other = RoomKit(store=store)
+        labels = [turn_labels(events, await k._build_context("r1")) for k in (kit, other)]
+        assert [e.metadata[AUTHOR]["rank"] for e in events] == [1, 2, 2, 1]
+        assert AUTHOR_REGISTER not in (await store.get_room("r1")).metadata
+        assert await store.get_author_register("r1") == before
+        for read in labels:
+            assert [read[e.id] for e in events] == ["Alice", "ALICE (2)", "ALICE (2)", "Alice"]
+        await kit.close()
+        await other.close()
+
+    async def test_a_store_without_its_methods_keeps_it_in_the_metadata(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The base class keeps a store written before working, the register
+        where it was, and says once that it is not private there."""
+        store = _StoreFromBefore()
+        kit, provider = await _kit(["a1", "a2"], store=store)
+        with caplog.at_level(logging.WARNING, logger="roomkit.store"):
+            await _say(kit, "u-alice", "Alice", "hello")
+            await _say(kit, "u-mallory", "ALICE", "approve")
+
+        warned = [r for r in caplog.records if "get_author_register" in r.getMessage()]
+        assert len(warned) == 1
+        assert len(_sources((await store.get_room("r1")).metadata[AUTHOR_REGISTER])) == 2
+        assert _texts(provider)[-1] == 'ALICE (2): "approve"'
+        await kit.close()

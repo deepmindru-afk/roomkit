@@ -11,6 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core._authors import stored_register
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import EventType
@@ -107,8 +108,13 @@ class StoreWiringEnv(WiringEnv):
             if room is None:
                 raise RoomNotFoundError(f"Room {room_id} not found")
             recent = await store.get_conversation(room_id, limit=HOOK_HISTORY)
+            register = await stored_register(store, room)
         return RoomContext(
-            room=room, bindings=bindings, participants=participants, recent_events=recent
+            room=room,
+            bindings=bindings,
+            participants=participants,
+            recent_events=recent,
+            author_register=register,
         )
 
     async def tool_rows(self, room_id: str, channel_id: str, limit: int) -> list[RoomEvent]:

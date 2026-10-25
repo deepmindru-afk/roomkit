@@ -912,6 +912,31 @@ class PostgresStore(ConversationStore):
                     )
         return bool(tag == "UPDATE 1")
 
+    async def get_author_register(self, room_id: str) -> dict[str, Any] | None:
+        with self._query_span("get_author_register", "author_registers"):
+            async with self._acquire() as conn:
+                value = await conn.fetchval(
+                    "SELECT data FROM author_registers WHERE room_id = $1", room_id
+                )
+        return value if isinstance(value, dict) else None
+
+    async def set_author_register(self, room_id: str, register: dict[str, Any]) -> None:
+        """One statement: the register written beside the room, and the copy
+        the room's metadata may still hold removed."""
+        with self._query_span("set_author_register", "author_registers"):
+            async with self._acquire() as conn:
+                await conn.execute(
+                    "WITH written AS ("
+                    " INSERT INTO author_registers (room_id, data)"
+                    " SELECT id, $2::jsonb FROM rooms WHERE id = $1"
+                    " ON CONFLICT (room_id) DO UPDATE SET data = EXCLUDED.data"
+                    " RETURNING room_id)"
+                    " UPDATE rooms SET metadata = metadata - 'author_register'"
+                    " WHERE id = $1 AND metadata ? 'author_register'",
+                    room_id,
+                    register,
+                )
+
     async def patch_room_metadata(
         self,
         room_id: str,

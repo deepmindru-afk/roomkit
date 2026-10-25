@@ -39,10 +39,13 @@ from roomkit.providers.ai.base import AIImagePart, AIMessage, AITextPart
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.speaking.thinker import thinker_input, transcript_line
 from roomkit.speaking.thought import Thought
+from roomkit.store.base import ConversationStore
 
 
-async def _kit(responses: list[str]) -> tuple[RoomKit, MockAIProvider]:
-    kit = RoomKit()
+async def _kit(
+    responses: list[str], *, store: ConversationStore | None = None
+) -> tuple[RoomKit, MockAIProvider]:
+    kit = RoomKit(store=store)
     provider = MockAIProvider(responses=responses)
     kit.register_channel(SMSChannel("sms1"))
     kit.register_channel(AIChannel("ai1", provider=provider))
@@ -317,9 +320,8 @@ class TestTheRoomFixesARank:
 
         stored = await kit.store.list_events("r1")
         ranks = [_rank(e) for e in stored if e.source.channel_id == "sms1"]
-        room = await kit.get_room("r1")
         assert ranks == [1, 2]
-        assert len(_sources(room.metadata[AUTHOR_REGISTER])) == 2
+        assert len(_sources(await kit.store.get_author_register("r1") or {"names": {}})) == 2
 
     async def test_a_registered_name_holds_against_an_impostor_who_speaks_first(self) -> None:
         kit, provider = await _kit(["a1", "a2", "a3"])
@@ -376,7 +378,7 @@ class TestTheRoomFixesARank:
             'Alice (2): "hold the refund"',
             'Bob: "which one?"',
         ]
-        assert len(_sources((await kit.get_room("r1")).metadata[AUTHOR_REGISTER])) == 3
+        assert len(_sources(await kit.store.get_author_register("r1") or {"names": {}})) == 3
 
     async def test_a_rank_a_sender_supplies_is_not_kept(self) -> None:
         kit, _provider = await _kit(["a1", "a2"])
@@ -436,7 +438,8 @@ class TestTheRoomFixesARank:
         await _say(kit, "+15551234567", "Alice", "hello")
 
         stored = await kit.store.list_events("r1")
-        register = (await kit.get_room("r1")).metadata[AUTHOR_REGISTER]
+        register = await kit.store.get_author_register("r1")
+        assert AUTHOR_REGISTER not in (await kit.get_room("r1")).metadata
         assert [_rank(e) for e in stored if e.source.channel_id == "sms1"] == [1]
         assert "15551234567" not in str(register) and "alice" not in str(register)
 

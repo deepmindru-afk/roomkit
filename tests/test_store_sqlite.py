@@ -416,6 +416,35 @@ class TestPersistence:
         assert [e.content.body for e in hits] == ["zebra fresh"]
         assert kept is not None and kept.content == secret.content
 
+    async def test_a_v11_file_moves_its_author_registers_out_of_the_metadata(
+        self, tmp_path
+    ) -> None:
+        """RMK-631: a room's register of authors leaves its metadata, which
+        clients may read, for the store's own table; a malformed one is
+        dropped, as a reader reads it absent."""
+        path = tmp_path / "v11.db"
+        register = {"version": 3, "names": {"a" * 16: "b" * 16 + ":1"}}
+        store = SQLiteStore(path)
+        await store.create_room(
+            Room(id="r1", metadata={"topic": "x", "author_register": register})
+        )
+        await store.create_room(Room(id="r2", metadata={"author_register": "junk"}))
+        await store.close()
+        conn = sqlite3.connect(path)
+        conn.executescript("DROP TABLE author_registers; PRAGMA user_version=11;")
+        conn.close()
+
+        store = SQLiteStore(path)
+        try:
+            moved, kept = await store.get_author_register("r1"), await store.get_room("r1")
+            junk, emptied = await store.get_author_register("r2"), await store.get_room("r2")
+        finally:
+            await store.close()
+        assert moved == register
+        assert kept is not None and kept.metadata == {"topic": "x"}
+        assert junk is None
+        assert emptied is not None and emptied.metadata == {}
+
     async def test_two_connections_allocate_one_monotonic_sequence(self, tmp_path) -> None:
         path = tmp_path / "shared.db"
         first = SQLiteStore(path)

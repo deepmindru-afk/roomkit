@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from roomkit.models.channel import ChannelBinding
@@ -26,6 +28,13 @@ class RoomContext(BaseModel):
     bindings: list[ChannelBinding] = Field(default_factory=list)
     participants: list[Participant] = Field(default_factory=list)
     recent_events: list[RoomEvent] = Field(default_factory=list)
+    author_register: dict[str, Any] | None = None
+    """The room's register of authors (RFC §6.4, §10.1 step 12), which the
+    labels of its turns read their ranks from, as the store keeps it apart
+    from the room's metadata: its digests name the room's senders to whoever
+    tries every phone number or name, so it reaches the runtime's readers and
+    a remote executor here, never a client through ``room.metadata``.
+    ``None`` when the room holds none or the context was built without it."""
 
     def other_channels(self, exclude_channel_id: str) -> list[ChannelBinding]:
         """Get all bindings except the specified channel."""

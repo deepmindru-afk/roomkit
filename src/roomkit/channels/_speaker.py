@@ -19,7 +19,6 @@ from roomkit._lookalike import skeletons
 from roomkit._text import identifier, json_text_line, person_name, quoted
 from roomkit.channels._discussion_turn import discussion_handles
 from roomkit.core._authors import (
-    AUTHOR_REGISTER,
     AuthorRegister,
     People,
     digest,
@@ -233,7 +232,7 @@ class _Unrecorded:
         self.salt = context.room.id
         self.handles = discussion_handles(context.room.metadata)
         """The handle each agent of the room's discussion is addressed by."""
-        self._stored = context.room.metadata.get(AUTHOR_REGISTER)
+        self._stored = context.author_register
         self._register: AuthorRegister | None = None
 
     def rank(self, source: str, names: set[str]) -> int:

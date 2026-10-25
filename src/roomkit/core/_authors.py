@@ -5,12 +5,16 @@ A turn's author is the name a transport, a host or a diarized voice stamps on
 it (``metadata["sender_name"]``), else the room's participant record. Two
 sources whose names read alike (``Alice``, ``ALICE``, ``Аlice``) are told
 apart by a rank the room fixes when a turn is committed: the room keeps a
-register (:data:`AUTHOR_REGISTER`) of the names it has seen, grouped by what
-they read as, and of each source's rank in each group; the turn carries its
-author's name, rank and source (:data:`AUTHOR`), so a reader names it as it
-was named then. The register holds digests salted with the room's id: it
-compares, it never needs to show a sender's id or name, and the room's
-metadata may reach clients.
+register of the names it has seen, grouped by what they read as, and of each
+source's rank in each group; the turn carries its author's name, rank and
+source (:data:`AUTHOR`), so a reader names it as it was named then. The
+register holds digests salted with the room's id: it compares, it never
+needs to show a sender's id or name. The room's id is not secret and a phone
+number or a name is a small space, so whoever reads the digests finds the
+senders by trying them all: the store keeps the register apart from the
+room's metadata, which may reach clients
+(:meth:`~roomkit.store.base.ConversationStore.get_author_register`), and a
+reader takes it from the room's context (``RoomContext.author_register``).
 """
 
 from __future__ import annotations
@@ -27,14 +31,12 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, EventStatus
 from roomkit.models.event import RoomEvent
 from roomkit.models.participant import Participant
-from roomkit.store.base import ConversationStore
+from roomkit.models.room import Room
+from roomkit.store.base import AUTHOR_REGISTER, ConversationStore
 
 AUTHOR = "author"
 """The event metadata key holding the record of its author, fixed when the
 event is committed: ``{"name": "Alice", "rank": 2, "source": "<digest>"}``."""
-
-AUTHOR_REGISTER = "author_register"
-"""The room metadata key holding the room's register of authors."""
 
 _VERSION = 3
 _PAGE = 500
@@ -179,10 +181,11 @@ class AuthorRegister:
     two others ranks after both and renumbers neither; a rank once given is
     never given to another source, since a turn was recorded with it.
 
-    Kept as JSON in the room's metadata, which every read of the room copies
-    or parses, so its values are strings: ``names`` maps each hashed
-    skeleton to its ``"source:rank"`` pairs. The application may write the
-    metadata too: what is malformed in it is read as absent."""
+    Kept as JSON by the store, apart from the room's metadata, and copied or
+    parsed for every context of the room, so its values are strings:
+    ``names`` maps each hashed skeleton to its ``"source:rank"`` pairs. What
+    is malformed in it (a room's metadata from before, which the application
+    may write) is read as absent."""
 
     def __init__(self, data: dict[str, Any] | None = None) -> None:
         self.data: dict[str, Any] = data or {"version": _VERSION, "names": {}}
@@ -190,7 +193,7 @@ class AuthorRegister:
 
     @classmethod
     def stored(cls, value: object) -> AuthorRegister | None:
-        """The register *value* (a room's :data:`AUTHOR_REGISTER`) holds, or
+        """The register *value* (a room's, as the store keeps it) holds, or
         ``None`` when it holds none of this version."""
         if not isinstance(value, dict) or type(value.get("version")) is not int:
             return None
@@ -325,6 +328,17 @@ class _Rebuild:
         return self.register
 
 
+async def stored_register(store: ConversationStore, room: Room) -> dict[str, Any] | None:
+    """The register *room* holds, as its readers take it: the store's, else
+    the one its metadata still holds (a room stored before the store kept it
+    apart) until its next commit moves it (:func:`with_author`)."""
+    held = await store.get_author_register(room.id)
+    if held is not None:
+        return held
+    legacy = room.metadata.get(AUTHOR_REGISTER)
+    return legacy if isinstance(legacy, dict) else None
+
+
 async def with_author(store: ConversationStore, room_id: str, event: RoomEvent) -> RoomEvent:
     """*event* carrying the record of its author (:data:`AUTHOR`), the room's
     register extended first when the source or its name is new, or rebuilt
@@ -336,7 +350,11 @@ async def with_author(store: ConversationStore, room_id: str, event: RoomEvent) 
     it leaves a rank unused, never one held twice. A record the event came
     with is dropped, the runtime's alone; a BLOCKED record takes none. A
     restricted turn joins the register too: ranked without joining it, a
-    later source could take its rank in the view of a reader who sees both."""
+    later source could take its rank in the view of a reader who sees both.
+
+    A register the room's metadata still holds (a room stored before the
+    store kept it apart) is written to the store, which removes it from the
+    metadata: its digests are the same, so every rank holds."""
     if AUTHOR in event.metadata:
         metadata = {k: v for k, v in event.metadata.items() if k != AUTHOR}
         event = event.model_copy(update={"metadata": metadata})
@@ -347,12 +365,14 @@ async def with_author(store: ConversationStore, room_id: str, event: RoomEvent) 
     if room is None:
         return event
     context = RoomContext(room=room, participants=await store.list_participants(room_id))
-    register = AuthorRegister.stored(room.metadata.get(AUTHOR_REGISTER))
+    held = await store.get_author_register(room_id)
+    moved = held is None and AUTHOR_REGISTER in room.metadata
+    register = AuthorRegister.stored(room.metadata[AUTHOR_REGISTER] if moved else held)
     if register is None:
         register = await _rebuilt(store, room_id, context)
     record = author_record(event, context, register)
-    if register.changed:
-        await store.patch_room_metadata(room_id, {AUTHOR_REGISTER: register.data})
+    if register.changed or moved:
+        await store.set_author_register(room_id, register.data)
     if record is None:
         return event
     return event.model_copy(update={"metadata": {**event.metadata, AUTHOR: record}})

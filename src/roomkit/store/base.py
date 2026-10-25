@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Sequence
@@ -28,8 +29,25 @@ from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 
+logger = logging.getLogger("roomkit.store")
+
 # Page size of the fallback scan over rooms (find_room_id_by_participant).
 _ROOM_PAGE = 100
+
+AUTHOR_REGISTER = "author_register"
+"""The room metadata key the room's register of authors was kept under
+before the stores kept it apart (RFC §10.1 step 12): a store without
+:meth:`ConversationStore.get_author_register` of its own keeps it there
+still, and the shipped stores move it out."""
+
+
+def author_register_copy(register: dict[str, Any]) -> dict[str, Any]:
+    """A copy of *register* its reader may extend without touching the
+    stored one: its values are strings or maps of strings, so a copy of each
+    map suffices, where a deep copy would cost a room's every source."""
+    return {
+        key: dict(value) if isinstance(value, dict) else value for key, value in register.items()
+    }
 
 
 def link_target(
@@ -265,6 +283,39 @@ class ConversationStore(ABC):
         business; callers keep calling the store's ordinary methods.
         """
         yield
+
+    # The room's register of authors (RFC §6.4, §10.1 step 12). Not abstract:
+    # a store written before it keeps the register where it was.
+
+    _register_warned: bool = False
+
+    async def get_author_register(self, room_id: str) -> dict[str, Any] | None:
+        """The room's register of authors, or ``None`` when it holds none or
+        the room does not exist; the caller's own copy.
+
+        The register hashes the room's id, which is not secret, with its
+        senders' ids and names: whoever reads it finds a sender by trying
+        every phone number or name. A store keeps it apart from the room's
+        metadata, which clients may read. This default reads it from the
+        metadata, where it was kept before, and warns once: override this
+        method and :meth:`set_author_register` to keep it private.
+        """
+        _warn_register_in_metadata(self)
+        room = await self.get_room(room_id)
+        value = None if room is None else room.metadata.get(AUTHOR_REGISTER)
+        return value if isinstance(value, dict) else None
+
+    async def set_author_register(self, room_id: str, register: dict[str, Any]) -> None:
+        """Write the room's register of authors apart from its metadata, and
+        remove the copy the metadata may still hold (a room stored before it
+        moved), in one write. Writes nothing for a room the store does not
+        hold. Called under the room lock (RFC §13.5).
+
+        This default writes it to the room's metadata, where it was kept
+        before (:meth:`get_author_register`).
+        """
+        _warn_register_in_metadata(self)
+        await self.patch_room_metadata(room_id, {AUTHOR_REGISTER: register})
 
     # Room operations
 
@@ -1365,6 +1416,21 @@ class ConversationStore(ABC):
         idempotent and MUST NOT close resources they do not own.
         """
         return None
+
+
+def _warn_register_in_metadata(store: ConversationStore) -> None:
+    """Say once per store that it keeps the register of authors in the rooms'
+    metadata, where its digests name the senders to whoever reads them."""
+    if store._register_warned:
+        return
+    store._register_warned = True
+    logger.warning(
+        "%s keeps each room's register of authors in the room's metadata, which "
+        "clients may read: its digests name the room's senders to whoever tries "
+        "every phone number or name. Implement get_author_register() and "
+        "set_author_register() to keep it apart.",
+        type(store).__name__,
+    )
 
 
 def _verification_unsupported(store: ConversationStore) -> NotImplementedError:

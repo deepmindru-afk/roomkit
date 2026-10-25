@@ -27,7 +27,7 @@ from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
-from roomkit.core._authors import own_record_id, reached, with_author
+from roomkit.core._authors import own_record_id, reached, stored_register, with_author
 from roomkit.core._participant_channels import channels_reached, warn_cross_channel
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.hooks import SyncPipelineResult
@@ -849,11 +849,13 @@ class HelpersMixin:
                     if carried is None:
                         carried = await self._store.get_conversation(room_id, limit=recent_limit)
                     recent = carried
+                register = await stored_register(self._store, room)
         return RoomContext(
             room=room,
             bindings=bindings,
             participants=participants,
             recent_events=recent,
+            author_register=register,
         )
 
     def _carried_history(

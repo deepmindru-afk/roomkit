@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 
+from roomkit.core._authors import AUTHOR_REGISTER
 from roomkit.core.exceptions import RoomAlreadyExistsError, RoomNotFoundError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelType, RoomStatus
@@ -67,6 +68,36 @@ async def test_a_room_is_created_once(contract_store: ConversationStore) -> None
         assert len(await contract_store.list_events(room.id)) == 1
     finally:
         await contract_store.delete_room(room.id)
+
+
+async def test_the_author_register_is_kept_apart_from_the_room(
+    contract_store: ConversationStore,
+) -> None:
+    """RMK-631: the room's register of authors (RFC §10.1 step 12) is the
+    store's, apart from the room's metadata, which clients may read; writing
+    it moves the one the metadata still holds, and the room's deletion takes
+    it."""
+    legacy = {"version": 3, "names": {"a" * 16: "b" * 16 + ":1"}}
+    room = await contract_store.create_room(
+        Room(id=uuid4().hex, metadata={"topic": "billing", AUTHOR_REGISTER: legacy})
+    )
+    register = {"version": 3, "names": {"c" * 16: "d" * 16 + ":1 e" + "e" * 15 + ":2"}}
+    try:
+        assert await contract_store.get_author_register(room.id) is None
+        await contract_store.set_author_register(room.id, register)
+        held = await contract_store.get_author_register(room.id)
+        assert held == register
+        assert held is not None
+        held["names"]["f" * 16] = "x"  # a reader extends its own copy
+
+        assert await contract_store.get_author_register(room.id) == register
+        kept = await contract_store.get_room(room.id)
+        assert kept is not None and kept.metadata == {"topic": "billing"}
+    finally:
+        await contract_store.delete_room(room.id)
+    assert await contract_store.get_author_register(room.id) is None
+    await contract_store.set_author_register(room.id, register)
+    assert await contract_store.get_author_register(room.id) is None
 
 
 async def test_update_room_refuses_a_room_the_store_lacks(
