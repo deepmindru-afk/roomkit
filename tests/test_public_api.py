@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pydantic
 import pytest
 
 import roomkit
@@ -273,3 +274,31 @@ def test_the_snapshot_reads_a_dependency_s_own_import_error_as_a_missing_extra(
         monkeypatch.delitem(sys.modules, module, raising=False)
 
     assert api_signatures._resolve(voice_tts, "FishAudioTTSProvider") is api_signatures._OPTIONAL
+
+
+class _Hooked(pydantic.BaseModel):
+    __module__ = "roomkit.models"  # read as one of roomkit's own models
+
+    size: int = 0
+
+    def model_post_init(self, context: object, /) -> None: ...
+
+
+class _HookOffered(_Hooked):
+    """Subclasses extend ``model_post_init`` to finish their setup."""
+
+
+@pytest.mark.parametrize(
+    ("model", "pinned"),
+    [(_Hooked, False), (_HookOffered, True)],
+    ids=["an override", "named by the docstring"],
+)
+def test_a_pydantic_hook_is_pinned_only_where_the_model_offers_it(
+    model: type[pydantic.BaseModel], pinned: bool
+) -> None:
+    """No caller calls model_post_init: an override is pinned only when the
+    model's docstring names it, and the model's constructor still is."""
+    members = api_signatures.describe(model)
+
+    assert ("model_post_init" in members) is pinned
+    assert members["__init__"] == ["def", "*", "size=0"]

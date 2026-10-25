@@ -53,7 +53,7 @@
     "provides_usage_metadata": ["property"]
   },
   "roomkit.AIChannel": {
-    "__init__": ["def", "channel_id", "provider", "system_prompt=None", "temperature=0.7", "max_tokens=None", "max_context_events=50", "tool_handler=None", "tools=None", "max_tool_rounds=50", "tool_loop_timeout_seconds=300.0", "tool_loop_warn_after=25", "max_empty_retries=1", "continuation=None", "thinking_coalesce_ms=80.0", "thinking_coalesce_chars=256", "retry_policy=None", "fallback_provider=None", "skills=None", "skills_in_prompt=True", "script_executor=None", "sandbox=None", "external_tool_handler=None", "human_input_handler=None", "memory=None", "tool_policy=None", "thinking_budget=None", "enable_thinking=None", "reasoning_effort=None", "response_schema=None", "evict_threshold_tokens=5000", "enable_planning=False", "config_provider=None", "tool_search=None", "tool_search_pinned=None", "tool_search_threshold=20", "tool_search_threshold_pct=10.0", "tool_search_miss_hint=None", "turn_budget_tokens=None", "turn_budget_usd=None", "tool_search_threshold_tokens=8000", "tool_timeout_seconds=30.0", "tool_timeouts=None", "describe_empty_event=None", "max_author_images=4", "speak_policy=None", "speak_timeout=2.0", "thinker=None", "think_wait=1.5", "server_instructions=None", "text_coalesce_ms=80.0", "text_coalesce_chars=256"],
+    "__init__": ["def", "channel_id", "provider", "system_prompt=None", "temperature=0.7", "max_tokens=None", "max_context_events=50", "tool_handler=None", "tools=None", "max_tool_rounds=50", "tool_loop_timeout_seconds=300.0", "tool_loop_warn_after=25", "max_empty_retries=1", "continuation=None", "thinking_coalesce_ms=80.0", "thinking_coalesce_chars=256", "retry_policy=None", "fallback_provider=None", "skills=None", "skills_in_prompt=True", "script_executor=None", "sandbox=None", "external_tool_handler=None", "human_input_handler=None", "memory=None", "tool_policy=None", "thinking_budget=None", "enable_thinking=None", "reasoning_effort=None", "response_schema=None", "evict_threshold_tokens=5000", "enable_planning=False", "config_provider=None", "tool_search=None", "tool_search_pinned=None", "tool_search_threshold=20", "tool_search_threshold_pct=10.0", "tool_search_miss_hint=None", "turn_budget_tokens=None", "turn_budget_usd=None", "tool_search_threshold_tokens=8000", "tool_timeout_seconds=30.0", "tool_timeouts=None", "describe_empty_event=None", "max_author_images=4", "speak_policy=None", "speak_timeout=2.0", "thinker=None", "think_wait=1.5", "server_instructions=None", "text_coalesce_ms=80.0", "text_coalesce_chars=256", "*", "publish_text_deltas=False"],
     "active_skill_names": ["def", "room_id"],
     "active_turns": ["property"],
     "capabilities": ["def"],
@@ -328,8 +328,7 @@
     "supports_vision": ["property"]
   },
   "roomkit.CerebrasConfig": {
-    "__init__": ["def", "*", "api_key", "base_url='https://api.cerebras.ai/v1'", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=False", "use_max_completion_tokens=True", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None", "reasoning_format='parsed'", "clear_thinking=None"],
-    "model_post_init": ["def", "_OpenAIConfig__context"]
+    "__init__": ["def", "*", "api_key", "base_url='https://api.cerebras.ai/v1'", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=False", "use_max_completion_tokens=True", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None", "reasoning_format='parsed'", "clear_thinking=None"]
   },
   "roomkit.ChangeRefusedError": {
     "__init__": ["def", "reason"]
@@ -385,7 +384,6 @@
     "__init__": ["def", "*", "type='channel_call'", "call_id=<factory>", "channel_id", "room_id", "verb", "arguments=<factory>", "room_state=<factory>", "previous_turn=None"],
     "hand_over": ["def"],
     "handed": ["property"],
-    "model_post_init": ["def", "context", "/"],
     "refused": ["def"]
   },
   "roomkit.ChannelCapabilities": {
@@ -1574,8 +1572,7 @@
     "__init__": ["def", "room_id", "channel_id", "tasks=<factory>", "timestamp=<factory>"]
   },
   "roomkit.PreviousTurn": {
-    "__init__": ["def", "*", "turn_id", "executor_id=None"],
-    "model_post_init": ["def", "context", "/"]
+    "__init__": ["def", "*", "turn_id", "executor_id=None"]
   },
   "roomkit.ProcessTimeoutError": {},
   "roomkit.ProviderDeliveryError": {
@@ -2291,7 +2288,6 @@
     "__init__": ["def", "*", "allow=<factory>", "deny=<factory>", "role_overrides=<factory>"],
     "as_filter": ["def"],
     "is_allowed": ["def", "tool_name"],
-    "model_post_init": ["def", "context", "/"],
     "resolve": ["def", "role=None"]
   },
   "roomkit.ToolRefusedError": {
@@ -2428,7 +2424,6 @@
     "__init__": ["def", "*", "turn_id", "room_id", "channel_id", "event", "binding", "context", "strategy_turn=False", "notes=<factory>", "in_place=False", "owner_tools=<factory>", "room_hooks=<factory>", "previous_turn=None", "trace=None"],
     "hand_over": ["def"],
     "handed": ["property"],
-    "model_post_init": ["def", "context", "/"],
     "refused": ["def"]
   },
   "roomkit.TurnTimeouts": {
@@ -3310,8 +3305,7 @@
   },
   "roomkit.providers.ai.AIContext": {
     "__init__": ["def", "*", "messages=<factory>", "system_prompt=None", "temperature=0.7", "max_tokens=None", "thinking_budget=None", "enable_thinking=None", "reasoning_effort=None", "tools=<factory>", "response_schema=None", "room=None", "target_capabilities=None", "target_media_types=<factory>", "metadata=<factory>", "response_metadata=<factory>"],
-    "model_copy": ["def", "*", "update=None", "deep=False"],
-    "model_post_init": ["def", "_AIContext__context"]
+    "model_copy": ["def", "*", "update=None", "deep=False"]
   },
   "roomkit.providers.ai.AIImagePart": {
     "__init__": ["def", "*", "type='image'", "url", "mime_type=None"]
@@ -3591,8 +3585,7 @@
     "supports_vision": ["property"]
   },
   "roomkit.providers.anthropic.AnthropicConfig": {
-    "__init__": ["def", "*", "api_key", "model", "max_tokens=1024", "timeout=60.0", "connect_timeout=5.0", "max_retries=0", "base_url=None", "extra_headers=None", "enable_prompt_caching=True", "use_adaptive_thinking=False", "supports_custom_temperature=True"],
-    "model_post_init": ["def", "_AnthropicConfig__context"]
+    "__init__": ["def", "*", "api_key", "model", "max_tokens=1024", "timeout=60.0", "connect_timeout=5.0", "max_retries=0", "base_url=None", "extra_headers=None", "enable_prompt_caching=True", "use_adaptive_thinking=False", "supports_custom_temperature=True"]
   },
   "roomkit.providers.azure.AzureAIConfig": {
     "__init__": ["def", "*", "api_key", "azure_endpoint", "api_version='2024-12-01-preview'", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=False", "supports_custom_temperature=True", "reasoning_effort=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None"]
@@ -3729,8 +3722,7 @@
     "supports_vision": ["property"]
   },
   "roomkit.providers.deepseek.DeepSeekConfig": {
-    "__init__": ["def", "*", "api_key", "base_url='https://api.deepseek.com/v1'", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=False", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None", "enable_thinking=None"],
-    "model_post_init": ["def", "_OpenAIConfig__context"]
+    "__init__": ["def", "*", "api_key", "base_url='https://api.deepseek.com/v1'", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=False", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None", "enable_thinking=None"]
   },
   "roomkit.providers.discord.DiscordBotProvider": {
     "__init__": ["def", "source"],
@@ -3982,8 +3974,7 @@
     "supports_vision": ["property"]
   },
   "roomkit.providers.litellm.LiteLLMConfig": {
-    "__init__": ["def", "*", "api_key", "base_url='http://localhost:4000'", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=False", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None"],
-    "model_post_init": ["def", "_OpenAIConfig__context"]
+    "__init__": ["def", "*", "api_key", "base_url='http://localhost:4000'", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=False", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None"]
   },
   "roomkit.providers.llamacpp.LlamaCppAIProvider": {
     "__init__": ["def", "config"],
@@ -4056,8 +4047,7 @@
     "supports_vision": ["property"]
   },
   "roomkit.providers.meta.MetaConfig": {
-    "__init__": ["def", "*", "api_key", "base_url='https://api.meta.ai/v1'", "model='muse-spark-1.3'", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=True", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None"],
-    "model_post_init": ["def", "_OpenAIConfig__context"]
+    "__init__": ["def", "*", "api_key", "base_url='https://api.meta.ai/v1'", "model='muse-spark-1.3'", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=True", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None"]
   },
   "roomkit.providers.meta.MetaImageConfig": {
     "__init__": ["def", "*", "api_key", "base_url='https://api.meta.ai/v1'", "model='muse-image-1.0'", "tools=[]", "reasoning_strength=None", "moderation=None", "output_format=None", "timeout=120.0", "connect_timeout=5.0", "max_retries=0"]
@@ -4145,8 +4135,7 @@
     "supports_vision": ["property"]
   },
   "roomkit.providers.openai.OpenAIConfig": {
-    "__init__": ["def", "*", "api_key", "base_url=None", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=False", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None"],
-    "model_post_init": ["def", "_OpenAIConfig__context"]
+    "__init__": ["def", "*", "api_key", "base_url=None", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=False", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None"]
   },
   "roomkit.providers.openai.OpenAIImageConfig": {
     "__init__": ["def", "*", "api_key", "base_url=None", "model", "quality=None", "background=None", "output_format=None", "timeout=120.0", "connect_timeout=5.0", "max_retries=0", "default_headers=None"]
@@ -4263,8 +4252,7 @@
     "supports_vision": ["property"]
   },
   "roomkit.providers.openrouter.OpenRouterConfig": {
-    "__init__": ["def", "*", "api_key", "base_url='https://openrouter.ai/api/v1'", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=False", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None", "site_url=None", "app_name=None"],
-    "model_post_init": ["def", "_OpenAIConfig__context"]
+    "__init__": ["def", "*", "api_key", "base_url='https://openrouter.ai/api/v1'", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=False", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None", "site_url=None", "app_name=None"]
   },
   "roomkit.providers.openrouter.OpenRouterImageConfig": {
     "__init__": ["def", "*", "api_key", "base_url='https://openrouter.ai/api/v1'", "model", "quality=None", "background=None", "output_format=None", "timeout=120.0", "connect_timeout=5.0", "max_retries=0", "default_headers=None", "site_url=None", "app_name=None"]
@@ -4370,8 +4358,7 @@
     "supports_vision": ["property"]
   },
   "roomkit.providers.qwen.QwenConfig": {
-    "__init__": ["def", "*", "api_key", "base_url='https://dashscope-intl.aliyuncs.com/compatible-mode/v1'", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=False", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None", "enable_thinking=None"],
-    "model_post_init": ["def", "_OpenAIConfig__context"]
+    "__init__": ["def", "*", "api_key", "base_url='https://dashscope-intl.aliyuncs.com/compatible-mode/v1'", "model", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=False", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None", "enable_thinking=None"]
   },
   "roomkit.providers.rcs.MockRCSProvider": {
     "__init__": ["def", "sender_id='mock_rcs_agent'", "*", "simulate_fallback=False", "simulate_failure=False"],
@@ -4763,8 +4750,7 @@
     "supports_vision": ["property"]
   },
   "roomkit.providers.xai.XAIConfig": {
-    "__init__": ["def", "*", "api_key", "base_url='https://api.x.ai/v1'", "model='grok-4.7'", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=True", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None"],
-    "model_post_init": ["def", "_OpenAIConfig__context"]
+    "__init__": ["def", "*", "api_key", "base_url='https://api.x.ai/v1'", "model='grok-4.7'", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "use_max_completion_tokens=True", "supports_custom_temperature=True", "reasoning_effort=None", "default_headers=None", "extra_body=None", "supports_response_schema=None", "supports_response_schema_with_tools=None", "supports_reasoning_effort_with_tools=None"]
   },
   "roomkit.providers.xai.XAIImageConfig": {
     "__init__": ["def", "*", "api_key", "base_url='https://api.x.ai/v1'", "model='grok-imagine-image-2.0'", "quality=None", "resolution=None", "timeout=120.0", "connect_timeout=5.0", "max_retries=0"]

@@ -29,6 +29,11 @@ others) are not installed there. Written elsewhere, a package or a name whose
 optional dependency the environment lacks keeps what the files hold for it,
 and the guard leaves it out; a roomkit module that is gone drops its names.
 
+A hook pydantic calls on a model (``model_post_init``,
+``model_parametrized_name``) is left out too: no caller calls it, so an
+override is the model's own business, unless the model's docstring names the
+hook as part of what it offers.
+
 Annotations are left out: whether a type widens or narrows is not read
 mechanically. What a call does is not here either; a change of meaning under
 the same signature is the conformance scenarios' to catch.
@@ -60,6 +65,8 @@ _POSITIONAL = (_P.POSITIONAL_ONLY, _P.POSITIONAL_OR_KEYWORD)
 _VARIADIC = (_P.VAR_POSITIONAL, _P.VAR_KEYWORD)
 _ADDRESS = re.compile(r" at 0x[0-9a-fA-F]+")
 _ABSENT = object()  # the name is not there
+# The methods pydantic calls on a model itself, never a caller.
+_PYDANTIC_HOOKS = frozenset({"model_post_init", "model_parametrized_name"})
 _OPTIONAL = object()  # the name needs an optional dependency the environment lacks
 
 Spec = list[str]
@@ -125,7 +132,7 @@ def describe(obj: Any) -> dict[str, Spec]:
         if not _is_roomkit(klass):
             continue
         for name, value in vars(klass).items():
-            if name.startswith("_") or name in members:
+            if name.startswith("_") or name in members or _private_hook(obj, name):
                 continue
             spec = _member_spec(value)
             if spec is not None:
@@ -328,6 +335,14 @@ def _cached_spec(fn: Any, binding: str, drop_first: bool) -> tuple[str, ...] | N
         else ""
     )
     return (flavour + binding, *_tokens(signature, drop_first=drop_first))
+
+
+def _private_hook(cls: type, name: str) -> bool:
+    """Whether ``name`` is a hook pydantic calls on the model ``cls`` that
+    the model's docstring does not name as public."""
+    if name not in _PYDANTIC_HOOKS or not issubclass(cls, pydantic.BaseModel):
+        return False
+    return name not in (cls.__doc__ or "")
 
 
 def _builds_itself(cls: type) -> bool:
