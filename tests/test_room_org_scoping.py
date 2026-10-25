@@ -585,6 +585,38 @@ class TestScopedTurnsAndDeliveries:
         await kit.close()
 
 
+async def test_a_refused_regeneration_draws_nothing_from_the_hooks_budget() -> None:
+    """The scope is read before the call draws on the budget of the ASYNC
+    hook's body it is made from (RFC §9.5.1, §17.2): eleven refused calls,
+    past the cascade's ten hook calls (depth limit 1), leave the budget
+    whole, and the body's direct change still writes."""
+    kit = RoomKit(max_chain_depth=1)
+    kit.register_channel(SimpleChannel("sms1"))
+    await kit.create_room(room_id="globex-room", organization_id="globex")
+    await kit.attach_channel("globex-room", "sms1")
+    outcomes: list[str] = []
+    done = asyncio.Event()
+
+    @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="probe")
+    async def probe(event: Any, context: Any) -> None:
+        if done.is_set():
+            return
+        for _ in range(11):
+            try:
+                await kit.regenerate_response("globex-room", organization_id="acme")
+            except Exception as error:  # the type is the assertion
+                outcomes.append(type(error).__name__)
+        updated = await kit.update_event("globex-room", event.id, metadata={"seen": True})
+        outcomes.append("updated" if updated is not None else "not updated")
+        done.set()
+
+    await kit.process_inbound(_message(), room_id="globex-room")
+    await asyncio.wait_for(done.wait(), 2)
+
+    assert outcomes == ["RoomNotFoundError"] * 11 + ["updated"]
+    await kit.close()
+
+
 _HOST_DOORS: dict[str, Callable[[RoomKit, str | None], Awaitable[Any]]] = {
     "start_task": lambda kit, org: kit.start_task(
         "globex-room", "ai", "Summarize the room.", organization_id=org
