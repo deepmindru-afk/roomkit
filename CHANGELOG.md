@@ -530,11 +530,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A room's private state is written for no room deleted meanwhile, on
   Postgres too (RFC §14.1, RMK-631). `PostgresStore.set_private_state()`
   raised `ForeignKeyViolationError` when the room's deletion committed while
-  it wrote (129 of 200 races in a probe); the in-memory and SQLite stores
-  wrote nothing, as for any room the store lacks. Its statement now holds
-  the room's row as it reads it: a deletion that commits first leaves
-  nothing written, and one that comes after waits for the write and takes
-  the state with the room.
+  it wrote (about half of 200 races, in two probes); the in-memory and
+  SQLite stores wrote nothing, as for any room the store lacks. Its
+  statement now holds the room's row as it reads it: a deletion that
+  commits first leaves nothing written, and one that comes after waits for
+  the write and takes the state with the room.
 
 - Work the kit holds, started late in its `close()` or after it, is cut as
   the close cuts the rest (RFC §19.7.3, §23.3, RMK-943). A delegation's
