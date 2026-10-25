@@ -328,7 +328,8 @@ host's own strategy gets the same treatment through `install_strategy`. If it is
 calling its `install()` directly, it should call
 `await kit.claim_room_strategy(room_id, self)` first, as the built-in ones
 do; with `organization_id=` (RFC §17.2), another organization's room is not
-found.
+found. The claim reads the room as an install does: a discussion another
+process stored refuses another strategy in a process that never saw it.
 Example: `examples/strategy_on_the_fly.py`.
 
 ## Using Orchestration

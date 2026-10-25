@@ -195,11 +195,13 @@ class StrategyMixin(HelpersMixin):
         calls this first, as the built-in ones do.
 
         A Discussion may claim a room holding a discussion no install of this
-        kit recorded, to take its place (RFC §19.7.5 rule 1).
+        kit recorded, to take its place (RFC §19.7.5 rule 1). The room is
+        read first, as an install reads it: a discussion another process
+        stored is this room's here too (rule 16).
 
         *organization_id* is the organization the caller acts for (RFC
-        §17.2): the room is read with it first, and another organization's
-        room is not found, whatever strategy it holds.
+        §17.2): the room is read with it, and another organization's room is
+        not found, whatever strategy it holds.
 
         Raises:
             RoomNotFoundError: *organization_id* is set and the room is
@@ -207,7 +209,11 @@ class StrategyMixin(HelpersMixin):
             ValueError: the room holds another strategy or a discussion.
         """
         if organization_id is not None:
-            await self.get_room(room_id, organization_id=organization_id)
+            room = await self.get_room(room_id, organization_id=organization_id)
+        else:
+            room = await self._store.get_room(room_id)
+        if room is not None:
+            self._follow_discussion(room)
         self._check_claim(room_id, strategy)
 
     def _check_claim(self, room_id: str, strategy: Orchestration) -> None:

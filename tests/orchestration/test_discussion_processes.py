@@ -587,6 +587,26 @@ async def test_a_direct_install_in_a_process_that_follows_takes_the_turns() -> N
     await cluster.close()
 
 
+@pytest.mark.parametrize("organization_id", ["org-a", None], ids=["scoped", "unscoped"])
+async def test_a_process_that_never_read_the_room_claims_it_for_no_other_strategy(
+    organization_id: str | None,
+) -> None:
+    """A claim reads the room as an install does: a discussion another
+    process stored is this room's here too, and another strategy is refused
+    (RFC §19.7, §19.7.5 rule 16)."""
+    cluster = _Cluster()
+    a = cluster.kit()
+    await a.create_room(room_id="r1", organization_id="org-a")
+    await a.install_strategy("r1", cluster.strategy(), organization_id="org-a")
+    b = cluster.kit()
+
+    swarm = Swarm(agents=["sales", "billing"], entry="sales")
+
+    with pytest.raises(ValueError, match="holds a discussion"):
+        await b.claim_room_strategy("r1", swarm, organization_id=organization_id)
+    await cluster.close()
+
+
 async def test_removing_the_agent_whose_turn_runs_cuts_it_in_the_process_giving_it() -> None:
     cluster = _Cluster()
     a = await cluster.process(install=True, create=True, delay=2.0)

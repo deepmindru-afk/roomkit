@@ -445,6 +445,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   takes after another process uninstalled it, whose agent is gone (logged
   `task result <id> for <agent> in <room> not posted: agent detached`).
 
+- `claim_room_strategy()` sees a discussion another process stored (RFC
+  §19.7, §19.7.5 rule 16, RMK-487, RMK-780). A process that never read the
+  room let another strategy claim it, with or without `organization_id=`,
+  as 0.108.0 did, while `install_strategy()` refused it: a strategy
+  installed by calling its own `install()` (a Loop, a Swarm) went in beside
+  the discussion. The claim now reads the room, scoped when the caller acts
+  for an organization, and follows its stored discussion before it decides;
+  unscoped, a room the store does not hold is claimed as before.
+
 - An agent's answer is narrowed only by the transports that send (RFC §6.7,
   §10.5, RMK-947). The media types and capabilities a turn is given
   intersected every transport of the room, one never delivered to included:
