@@ -15,10 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on macOS. A wider margin stops the underflows, heard as clicks, that a
   stalled Python callback causes: with an AEC, a C call holding the GIL for
   50 ms every 400 ms gave 84 underflows over three responses at "low" and
-  none at 100 ms. The AEC's echo delay can still drift under such stalls,
-  and more with the wider margin (RMK-973). A value that is not positive
-  raises `ValueError`. The `Speaker stream:` log line names the latency
-  asked for (`latency=100ms`).
+  none at 100 ms. It costs latency: a wider margin delays each response and
+  each cut by as much. With an `aec`, the margin adds about as much to the
+  echo delay (100 ms asked: echo at about 149 ms instead of 38); keep it
+  inside the canceller's range: WebRTC about 500 ms in all, Speex its
+  `filter_length` (200 ms by default). The AEC's echo delay can still drift
+  under such stalls, more with the wider margin, and can let more echo
+  through (RMK-973). A value that is not positive and finite raises
+  `ValueError`. The `Speaker stream:` log line names the latency asked for
+  (`latency=100ms`), and an echo delay past WebRTC's 500 ms, which the
+  backend tells the AEC as 500, is now logged as a warning once per session.
 
 ### Security
 

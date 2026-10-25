@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import threading
 import time
 import uuid
@@ -181,8 +182,14 @@ class LocalAudioBackend(VoiceBackend):
             macOS.  A wider margin stops the underflows, heard as clicks, that
             a stalled callback causes: with an AEC, a C call holding the GIL
             for 50 ms every 400 ms gave 84 underflows over three responses at
-            "low" and none at 100 ms.  The AEC's echo delay can still drift
-            under such stalls, and more with the wider margin (RMK-973).
+            "low" and none at 100 ms.  It costs latency: a wider margin
+            delays each response and each cut by as much.  With an ``aec``,
+            the margin adds about as much to the echo delay (100 ms asked:
+            echo at about 149 ms instead of 38); keep it inside the
+            canceller's range: WebRTC about 500 ms in all, Speex its
+            ``filter_length`` (200 ms by default).  The AEC's echo delay can
+            still drift under such stalls, more with the wider margin, and
+            can let more echo through (RMK-973).
     """
 
     def __init__(
@@ -213,8 +220,10 @@ class LocalAudioBackend(VoiceBackend):
             raise ValueError("block_duration_ms must be positive")
         if rt_prebuffer_ms < 0:
             raise ValueError("rt_prebuffer_ms must be non-negative")
-        if output_latency_ms is not None and not output_latency_ms > 0:  # NaN too
-            raise ValueError("output_latency_ms must be positive")
+        if output_latency_ms is not None and not (
+            math.isfinite(output_latency_ms) and output_latency_ms > 0
+        ):
+            raise ValueError("output_latency_ms must be positive and finite")
         self._sd = import_sounddevice("LocalAudioBackend")
 
         # A shared source owns the input device; this backend only subscribes.
@@ -297,6 +306,8 @@ class LocalAudioBackend(VoiceBackend):
         self._aec_delay_follows_clocks = getattr(aec, "stream_delay_ms", None) == 0
         self._playout_delay: float | None = None
         self._aec_clock_delay_ms: int | None = None
+        # A delay past WebRTC's limit is logged once per session's capture.
+        self._aec_delay_cap_warned = False
         # Debug taps of this transport's AEC (RFC §12.3.15): the reference fed
         # since the last captured frame, by stream, for ``aec_reference``.
         self._aec_tap_callbacks: list[AECTapCallback] = []
@@ -503,6 +514,7 @@ class LocalAudioBackend(VoiceBackend):
             self._loop = None
 
         handler = self._make_frame_handler(session)
+        self._aec_delay_cap_warned = False  # this session may warn of it once
 
         source = self._source
         if source is not None:
@@ -1076,11 +1088,10 @@ class LocalAudioBackend(VoiceBackend):
         if output_latency_ms <= 0:
             return  # the speaker reports none: nothing to seed from
 
-        # WebRTC clamps reported stream delay at 500 ms. A first guess only:
-        # the devices' clocks replace it from the first captured frame where
-        # the host API reports them (_follow_aec_delay).
-        delay_ms = min(
-            _WEBRTC_MAX_DELAY_MS, max(0, round(self._input_latency_ms + output_latency_ms))
+        # A first guess only: the devices' clocks replace it from the first
+        # captured frame where the host API reports them (_follow_aec_delay).
+        delay_ms = self._capped_aec_delay(
+            max(0, round(self._input_latency_ms + output_latency_ms))
         )
         if delay_ms == 0:
             return
@@ -1121,7 +1132,7 @@ class LocalAudioBackend(VoiceBackend):
         capture = time.monotonic() - captured_at
         if not 0 <= capture < _MAX_CAPTURE_AGE_S:
             return
-        delay_ms = min(_WEBRTC_MAX_DELAY_MS, round((playout + capture) * 1000))
+        delay_ms = self._capped_aec_delay(round((playout + capture) * 1000))
         last = self._aec_clock_delay_ms
         if last is not None and abs(delay_ms - last) < _AEC_DELAY_STEP_MS:
             return
@@ -1131,6 +1142,27 @@ class LocalAudioBackend(VoiceBackend):
         except Exception:
             logger.warning("AEC delay from the device clocks failed", exc_info=True)
             self._aec_delay_follows_clocks = False
+
+    def _capped_aec_delay(self, delay_ms: int) -> int:
+        """*delay_ms* within the 500 ms WebRTC clamps a stream delay at.
+
+        Past it, AEC3 lets the echo beyond its window through: said once per
+        session's capture, since a wide ``output_latency_ms`` adds about as
+        much to the delay.
+        """
+        if delay_ms <= _WEBRTC_MAX_DELAY_MS:
+            return delay_ms
+        if not self._aec_delay_cap_warned:
+            self._aec_delay_cap_warned = True
+            logger.warning(
+                "AEC echo delay %d ms is past WebRTC's %d ms limit: told %d ms, the "
+                "canceller lets the echo beyond it through. The speaker's output "
+                "latency (output_latency_ms) adds to this delay.",
+                delay_ms,
+                _WEBRTC_MAX_DELAY_MS,
+                _WEBRTC_MAX_DELAY_MS,
+            )
+        return _WEBRTC_MAX_DELAY_MS
 
     def _capture_paused(self, stream: str) -> bool:
         """Whether captured frames are dropped (muted, gated, half-duplex):

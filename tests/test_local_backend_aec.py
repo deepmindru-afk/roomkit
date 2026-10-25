@@ -164,16 +164,6 @@ class TestAECDelayAutoConfiguration:
 
         aec.set_stream_delay_ms.assert_not_called()
 
-    def test_caps_portaudio_delay_at_webrtc_limit(self):
-        aec = MagicMock()
-        aec.stream_delay_ms = 0
-        backend = LocalAudioBackend(aec=aec)
-        backend._speaker._stream = SimpleNamespace(latency=0.3)
-
-        backend._note_input_latency(400)
-
-        aec.set_stream_delay_ms.assert_called_once_with(500)
-
 
 class TestAECDelayFromDeviceClocks:
     """As browsers do: the render-to-capture delay from the devices' clocks, every

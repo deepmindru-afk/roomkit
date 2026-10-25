@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -74,6 +75,7 @@ class TestLocalAudioBackendProperties:
             ("output_latency_ms", 0),
             ("output_latency_ms", -20.0),
             ("output_latency_ms", float("nan")),
+            ("output_latency_ms", float("inf")),
         ],
     )
     def test_invalid_audio_geometry_fails_fast(self, name: str, value: float) -> None:
@@ -584,6 +586,40 @@ class TestLocalAudioSpeakerPlayback:
         await backend.start_listening(session)  # the speaker opens with capture
 
         aec.set_stream_delay_ms.assert_called_once_with(56)
+
+    async def test_an_echo_delay_past_webrtc_s_limit_is_capped_and_warned_once_per_session(
+        self, caplog
+    ) -> None:
+        """The output margin adds to the echo delay; past 500 ms, AEC3 is told
+        500 and lets the rest of the echo through, which the log says (RMK-554)."""
+        aec = MagicMock()
+        aec.stream_delay_ms = 0
+        aec.process.side_effect = lambda frame, stream: frame
+        backend, _ = _speaker_backend(latency=0.32, aec=aec, output_latency_ms=300)
+        mics: list = []
+
+        def raw_input_stream(**kwargs):
+            mics.append(kwargs["callback"])
+            return MagicMock(latency=0.25)
+
+        backend._sd.RawInputStream = raw_input_stream
+        backend.on_audio_received(lambda _s, _f: None)
+        clock = SimpleNamespace(
+            currentTime=10.0, inputBufferAdcTime=9.9, outputBufferDacTime=10.45
+        )
+
+        with caplog.at_level(logging.WARNING, logger="roomkit.voice.local"):
+            for user in ("user-1", "user-2"):
+                session = await backend.connect("room-1", user, "voice-1")
+                await backend.start_listening(session)  # PortAudio's seed: 570 ms
+                backend._speaker._callback(bytearray(_BLOCK), _BLOCK // 2, clock, None)
+                mics[-1](_PCM * 320, 320, clock, None)  # the devices' clocks: 550 ms
+                await backend.stop_listening(session)
+
+        # PortAudio's seed, then the clocks; the second session's clocks, the same
+        # delay, are not told again, but warned.
+        assert [c.args for c in aec.set_stream_delay_ms.call_args_list] == [(500,), (500,)]
+        assert caplog.text.count("past WebRTC's 500 ms limit") == 2
 
     def test_with_an_aec_the_mic_stays_open_by_default(self) -> None:
         def mutes(**kwargs) -> bool:
