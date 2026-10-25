@@ -30,6 +30,7 @@ from roomkit.core._authors import (
     source_of,
 )
 from roomkit.core.framework import RoomKit
+from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelType, HookTrigger, TaskStatus
@@ -496,10 +497,15 @@ class TestTheStoreKeepsItApart:
         assert alice in _sources(contexts[-1].author_register or {"names": {}})
         await kit.close()
 
-    async def test_the_people_note_reads_it_across_the_turn_wire(self) -> None:
+    @pytest.mark.parametrize("window", [None, 0], ids=["history", "no-history"])
+    async def test_the_people_note_reads_it_across_the_turn_wire(self, window: int | None) -> None:
         """A turn's request crosses as JSON, in this process too: a seat the
-        register gave reaches the agent's turn notes with its context."""
-        kit, provider = await _kit(["a1", "a2"])
+        register gave reaches the agent's turn notes with its context, an
+        agent whose memory reads no history included (its context loads no
+        event, and still the register): read without it, the note would name
+        the seated Alice as the sender who took the name first."""
+        memory = SlidingWindowMemory(window) if window is not None else None
+        kit, provider = await _kit(["a1", "a2"], memory=memory)
         await _say(kit, "u-x", "Alice", "first")
         for pid, name in (("p-alice", "Alice"), ("p-bob", "Bob")):
             await kit.store.add_participant(

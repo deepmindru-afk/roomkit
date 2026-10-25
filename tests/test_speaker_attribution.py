@@ -28,6 +28,7 @@ from roomkit.channels._speaker import (
 from roomkit.channels.ai import AIChannel
 from roomkit.core._authors import AUTHOR, AUTHOR_REGISTER
 from roomkit.core.framework import RoomKit
+from roomkit.memory.base import MemoryProvider
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType, EventType, HookTrigger
@@ -43,12 +44,15 @@ from roomkit.store.base import ConversationStore
 
 
 async def _kit(
-    responses: list[str], *, store: ConversationStore | None = None
+    responses: list[str],
+    *,
+    store: ConversationStore | None = None,
+    memory: MemoryProvider | None = None,
 ) -> tuple[RoomKit, MockAIProvider]:
     kit = RoomKit(store=store)
     provider = MockAIProvider(responses=responses)
     kit.register_channel(SMSChannel("sms1"))
-    kit.register_channel(AIChannel("ai1", provider=provider))
+    kit.register_channel(AIChannel("ai1", provider=provider, memory=memory))
     await kit.create_room(room_id="r1")
     # Several people on one channel of the room: a group binding (RFC §10.4).
     await kit.attach_channel("r1", "sms1", group=True)

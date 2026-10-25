@@ -801,9 +801,12 @@ class HelpersMixin:
         transport-only room (e.g. realtime voice) whose channels read no history
         loads just the floor instead of deserialising the whole ceiling per
         turn, and nothing at all when nothing will read it: the read is
-        skipped, not merely emptied, and so is the read of the room's register
-        of authors (``RoomContext.author_register``), which only labels the
-        history. ``reads_history`` says the caller itself
+        skipped, not merely emptied. The room's register of authors
+        (``RoomContext.author_register``) is read whatever the history: an
+        agent whose memory reads none still names the people taking part with
+        their ranks, a realtime session labels what is broadcast to it, and
+        read as empty the register would give a seated participant the label
+        of the sender who took the name first. ``reads_history`` says the caller itself
         scans ``recent_events`` — ``regenerate_response`` looking for its
         trigger — so the floor applies whether or not a hook is registered.
 
@@ -844,16 +847,14 @@ class HelpersMixin:
                     )
                 if recent_limit <= 0:
                     # Nothing bound reads history and no hook is registered:
-                    # no query, no deserialisation, nor the register of
-                    # authors that labels the history.
+                    # no query, no deserialisation.
                     recent: list[RoomEvent] = []
-                    register = None
                 else:
                     carried = self._carried_history(carrying, room, recent_limit)
                     if carried is None:
                         carried = await self._store.get_conversation(room_id, limit=recent_limit)
                     recent = carried
-                    register = await stored_register(self._store, room)
+                register = await stored_register(self._store, room)
         return RoomContext(
             room=room,
             bindings=bindings,
