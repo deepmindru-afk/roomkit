@@ -728,6 +728,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is. A `stop()` that times out still leaves its files to be finished later
   in the clear.
 
+- **BREAKING — `PipelineDebugTaps` refuses an `output_dir` containing `..`**
+  (RFC §12.3.15, RMK-569). It logged a warning and wrote the taps, the
+  call's audio at every stage in the clear, into the working directory
+  instead. `PipelineDebugTaps(output_dir=...)` now raises `ValueError`, as
+  `WavFileRecorder` refuses such a `storage`. An `output_dir` set to one
+  after the config was built is refused when a session starts: the refusal
+  is logged and the session goes on without taps, as it goes on unrecorded.
+  A name that only contains two dots (`taps..old`) is no longer refused.
+  Migrate: pass a path without `..`, e.g. `str(Path(output_dir).resolve())`.
+
 - **BREAKING — the room's register of authors leaves the room's metadata**
   (RFC §10.1 step 12, RMK-631). The register
   (`room.metadata["author_register"]`, which ranks the senders whose names

@@ -7,6 +7,8 @@ import wave
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from roomkit.channels.voice import VoiceChannel
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
@@ -48,6 +50,12 @@ class TestPipelineDebugTapsConfig:
         assert cfg.output_dir == ""
         assert cfg.stages == ["all"]
         assert cfg.session_scoped is True
+
+    def test_an_output_dir_with_a_parent_component_is_refused(self, tmp_path: Path) -> None:
+        """A configuration error, as for the recorders' storage (RMK-569):
+        the taps used to write the call's audio in the clear in '.' instead."""
+        with pytest.raises(ValueError, match=r"must not contain '\.\.'"):
+            PipelineDebugTaps(output_dir=str(tmp_path / "taps" / ".." / "taps"))
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +293,23 @@ class TestDebugTapsEngineIntegration:
         assert wav_path.exists()
         with wave.open(str(wav_path), "rb") as f:
             assert f.getnframes() == 160
+
+    def test_taps_set_to_a_parent_path_afterwards_write_nothing_and_the_session_goes_on(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The config is mutable: the session refuses it too, the refusal is
+        logged and the session runs without taps, as it runs unrecorded."""
+        monkeypatch.chdir(tmp_path)
+        taps = PipelineDebugTaps(output_dir=str(tmp_path / "taps"), stages=["raw"])
+        pipeline = AudioPipeline(AudioPipelineConfig(debug_taps=taps))
+        taps.output_dir = str(tmp_path / "taps" / ".." / "elsewhere")
+        session = self._mock_session()
+
+        pipeline.on_session_active(session)
+        pipeline.process_inbound(session, _make_frame(n_samples=160))
+        pipeline.on_session_ended(session)
+
+        assert sorted(tmp_path.rglob("*.wav")) == []
 
     def test_outbound_creates_files(self, tmp_path: Path) -> None:
         pipeline = self._make_pipeline(tmp_path, stages=["outbound_raw", "outbound_final"])

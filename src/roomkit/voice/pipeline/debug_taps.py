@@ -32,7 +32,7 @@ import logging
 import re
 import wave
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -64,7 +64,8 @@ class PipelineDebugTaps:
     """Configuration for pipeline debug audio capture.
 
     Attributes:
-        output_dir: Directory for debug WAV files.
+        output_dir: Directory for debug WAV files. A path with a ``..``
+            component raises ``ValueError``.
         stages: Which stages to capture — a list of stage names, or
             ``["all"]`` to capture every stage boundary. Valid names:
             ``raw``, ``post_aec``, ``post_agc``, ``post_denoiser``,
@@ -82,6 +83,19 @@ class PipelineDebugTaps:
 
     session_scoped: bool = True
     """Prefix files with session ID."""
+
+    def __post_init__(self) -> None:
+        _check_output_dir(self.output_dir)
+
+
+def _check_output_dir(output_dir: str) -> str:
+    """*output_dir*, refused with ``ValueError`` when it has a ``..``
+    component. The taps write the call's audio in the clear: a traversal is a
+    configuration error, never swapped for another place, as the recorders
+    refuse such a storage."""
+    if ".." in PurePath(output_dir).parts:
+        raise ValueError(f"Debug taps output_dir must not contain '..': {output_dir}")
+    return output_dir
 
 
 class _DebugWavWriter:
@@ -142,15 +156,8 @@ class DebugTapSession:
         self._config = config
         # Sanitize session_id to prevent path traversal in filenames
         self._session_id = _SAFE_FILENAME_RE.sub("_", session_id)
-        # Validate output_dir: reject paths with traversal components
-        raw_dir = config.output_dir
-        if ".." in raw_dir:
-            logger.warning(
-                "Suspicious output_dir %r contains '..'; falling back to '.'",
-                raw_dir,
-            )
-            raw_dir = "."
-        self._output_dir = Path(raw_dir).resolve()
+        # Checked again: the config is mutable after it was built.
+        self._output_dir = Path(_check_output_dir(config.output_dir)).resolve()
         self._enabled_stages = self._resolve_stages(config.stages)
         self._writers: dict[str, _DebugWavWriter] = {}
         self._vad_segment_count: int = 0

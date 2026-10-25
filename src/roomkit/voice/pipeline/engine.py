@@ -992,13 +992,17 @@ class AudioPipeline:
         self._cleanup_session_state(session.id)
         self._outbound_locks[session.id] = threading.Lock()
 
-        # Start debug taps if configured
+        # Start debug taps if configured. Refused (an output_dir with '..'),
+        # the session goes on without them, as it goes on unrecorded.
         if self._config.debug_taps is not None and self._config.debug_taps.output_dir:
             from roomkit.voice.pipeline.debug_taps import DebugTapSession
 
-            self._debug_tap_sessions[session.id] = DebugTapSession(
-                self._config.debug_taps, session.id
-            )
+            try:
+                self._debug_tap_sessions[session.id] = DebugTapSession(
+                    self._config.debug_taps, session.id
+                )
+            except ValueError:
+                logger.exception("Failed to start debug taps for session %s", session.id)
 
         # Start recording if configured.
         #
