@@ -18,6 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   labelled servers, their tools declared under their aliases, under a policy
   that keeps one out.
 
+- **A room's private state in the store** (RFC §14.1, RMK-631):
+  `ConversationStore.get_private_state(room_id, key)` and
+  `set_private_state(room_id, key, value)` keep what a room holds for the
+  runtime alone, a JSON object per key, apart from the room's metadata,
+  which `get_room()` returns and clients may read. A read is the caller's own
+  copy, `None` for an unknown room or key; a write is made under the room
+  lock the caller holds, writes nothing for a room the store lacks, removes
+  the key when the value is `None`, and removes the copy the room's metadata
+  may still hold under the key in the same write, so a key moves out of the
+  metadata in one step; the room's deletion takes its private state.
+  `InMemoryStore`, `SQLiteStore` (table `private_state`, schema 12) and
+  `PostgresStore` (table `private_state`, rows of a room deleted with it)
+  keep it apart. The room's register of authors is its first key (see
+  Security). A custom store keeps working: the base class keeps each key in
+  the room's metadata, as before, and warns once per store that it is
+  readable there.
+
 - **An agent's answer text, published live as `TEXT_DELTA`** (RFC §6.4,
   RMK-951). The live pipe reaches only a room's streaming transports, and a
   delegated turn's text, collected for its result, reached no one until the
@@ -593,26 +610,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   number of one exchange found a sender in 11 ms (1.8 million tries a
   second, 5 s for an area code), the sender of a turn hidden from the reader
   included, and a short list of names found their names. The store now keeps
-  the register apart, through the new `ConversationStore.get_author_register()`
-  and `set_author_register()`, and every reader of the labels takes it from
-  the new `RoomContext.author_register`, which a remote turn executor receives
-  in its request as it received the metadata. A hook no longer sees it in
+  the register in the room's private state (see Added), under the key
+  `author_register`, and every reader of the labels takes it from the new
+  `RoomContext.author_register`, which a remote turn executor receives in its
+  request as it received the metadata. A hook no longer sees it in
   `room.metadata`. The digests do not change, so every rank holds:
   `SQLiteStore` (schema 12) and `PostgresStore` (`schema_version` 4) move each
   room's register out of its metadata when they open, once. A register the
   metadata holds afterwards (one a process from before wrote there, during
-  the move or since) is merged into the store's by the room's next turn with
-  a named author, under the room lock, and that write removes the metadata's
-  copy; a register only adds, so the merge gives no rank twice. A process
-  from before writes the register where clients read it: SQLite refuses to
-  open a schema 12 file from an older RoomKit, PostgreSQL lets one start, so
-  upgrade every process sharing a Postgres store together. A rollback ranks
-  as a room from before the register did, from the timeline: a rank only the
-  store holds (a participant's seat, a deleted turn's) may be given again
-  until the upgrade comes back and merges both. A custom store keeps working
-  unchanged, the base class keeping the register in the room's metadata as
-  before and warning once that it is readable there: implement the two
-  methods to keep it private.
+  the move or since) is merged into the store's by the room's next turn
+  whose author is recorded, under the room lock, and that write removes the
+  metadata's copy; a register only adds, so the merge gives none of its ranks
+  again. A process from before writes the register where clients read it:
+  SQLite refuses to open a schema 12 file from an older RoomKit, PostgreSQL
+  lets one start, so upgrade every process sharing a Postgres store together.
+  A rollback ranks as a room from before the register did, from the
+  timeline: a rank only the store holds (a participant's seat, a deleted
+  turn's) may be given again until the upgrade comes back and merges both,
+  where the two sources keep it. A custom store keeps working unchanged, the
+  base class keeping the register in the room's metadata as before and
+  warning once that it is readable there: implement `get_private_state()`
+  and `set_private_state()` to keep it private.
 
 ## [0.108.0] — 2026-10-24
 

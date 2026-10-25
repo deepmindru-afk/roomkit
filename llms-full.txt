@@ -6612,7 +6612,7 @@ PostgresStore creates these tables, among others:
 | Table | Purpose |
 |-------|---------|
 | `rooms` | Room records with status, metadata, timers |
-| `author_registers` | Each room's register of authors, apart from its metadata |
+| `private_state` | What each room keeps for the runtime, apart from its metadata (the register of authors) |
 | `events` | Event timeline with sequential indexing |
 | `event_sequences` | Per-room monotonic event-index high-water marks |
 | `participants` | Room participants with roles and status |
@@ -6721,18 +6721,21 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
 - `create_room()` refuses an id it holds with `RoomAlreadyExistsError`, nothing
   written: replacing the room would re-home its conversation, another
   organization's included.
-- `get_author_register(room_id)` and `set_author_register(room_id, register)`
-  keep the room's register of authors (RFC §6.4, §10.1 step 12) apart from
-  its metadata, which clients may read: its digests hash the room's id with
-  each sender's id and name, and trying every phone number or name finds the
-  senders. `get` returns the caller's own copy, `None` for none;
-  `set` writes nothing for a room the store lacks and removes the copy the
-  metadata may still hold, in one write. A register the metadata holds (a
+- `get_private_state(room_id, key)` and `set_private_state(room_id, key,
+  value)` keep what a room holds for the runtime alone (RFC §14.1), apart
+  from its metadata, which clients may read: a JSON object per key. The room's
+  register of authors (RFC §6.4, §10.1 step 12) is the key `author_register`:
+  its digests hash the room's id with each sender's id and name, and trying
+  every phone number or name finds the senders. `get` returns the caller's
+  own copy, `None` for an unknown room or key; `set` writes nothing for a
+  room the store lacks, removes the key when `value` is `None`, and removes
+  the copy the metadata may still hold under the key, in one write; the
+  room's deletion takes its private state. A register the metadata holds (a
   room stored before, or a process from an older RoomKit writing there) is
-  merged into the store's by the room's next turn with a named author: a
-  register only adds, so no rank is given twice. The base class keeps the
-  register in the room's metadata, as before, and warns once: implement both
-  to keep it private.
+  merged into the store's by the room's next turn whose author is recorded:
+  a register only adds, so the merge gives none of its ranks again. The base
+  class keeps each key in the room's metadata, as before, and warns once:
+  implement both to keep it private.
 - `commit_event(room_id, event, *, target=None, activity=True)` stores the
   event and bumps the room's counters in one transaction. An activity commit
   (an event the pipeline stores DELIVERED) also moves `last_activity_at` and
