@@ -453,6 +453,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   process uninstalls (it keeps it in memory only), and one the discussion
   takes after another process uninstalled it, whose agent is gone (logged
   `task result <id> for <agent> in <room> not posted: agent detached`).
+  Mixed versions: a result a 0.109.0 process keeps in the room's private
+  state when a 0.108.0 process uninstalls is not posted, the old process
+  never reading private state. It is lost, or posted by a later uninstall
+  after the room's later messages.
 
 - `claim_room_strategy()` sees a discussion another process stored (RFC
   §19.7, §19.7.5 rule 16, RMK-487, RMK-780). A process that never read the
@@ -852,14 +856,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disconnect it. A subscription to another organization's room is not
   refused: it delivers nothing. A registration that changes an id's
   organization, to none included, drops the rooms the id followed, and a
-  stream under way sends nothing to an id unregistered or registered again
-  since it started, a reconnection of the same organization included, which
-  gets neither the rest of the stream nor its `stream_end`: a new registration
-  never saw the stream's start. Each send checks the registration as it
-  starts, and a send failure of a registration gone no longer counts
-  against the id's new one.
+  stream under way reaches only the registrations it started with (see
+  below).
   Connection ids are one namespace for every organization: the host server
   generates them, never a client.
+
+- **BREAKING — a stream under way sends nothing to a connection id
+  registered again since it started** (RMK-491). A client that reconnects
+  under the same id, for the same room, while an answer streams to it no
+  longer receives the rest of the stream nor its `stream_end`, on a host
+  without organizations too: a new registration never saw the stream's
+  start, and 0.108.0 sent it the stream's tail as if it had. An id
+  unregistered meanwhile, or registered again for another organization,
+  gets nothing more either. Each send checks the registration as it
+  starts, and a send failure of a registration gone no longer counts
+  against the id's new one.
+  Migrate: a reconnecting client reads the final message from the room's
+  history.
 
 - `start_task()`, `cancel_task()`, `submit_feedback()` and `steer()` take
   the organization the caller acts for (RFC §17.2, RMK-487). A tenant's

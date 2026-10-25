@@ -622,6 +622,34 @@ class TestOrganizationScope:
         before_the_change = ["stream_start", "stream_chunk:secret-1 "] if streaming else []
         assert host.got == ({"acme": before_the_change} if streaming else {})
 
+    async def test_a_client_reconnecting_mid_stream_gets_nothing_more_without_organizations(
+        self,
+    ) -> None:
+        """A host that uses no organization: the same id registered again for
+        the same room while an answer streams to it gets neither the rest of
+        the stream nor its stream_end (0.108.0 sent it both). It reads the
+        stored answer from the room's history."""
+        ws = WebSocketChannel("ws")
+        host = _SharedHost(ws)
+        host.register("c1", "first", "room", None)
+        resume = asyncio.Event()
+
+        async def text() -> AsyncIterator[str]:
+            yield "part-1 "
+            await resume.wait()
+            host.register("c1", "reconnected", "room", None)
+            yield "part-2"
+
+        streamed = asyncio.create_task(
+            ws.deliver_stream(text(), _event("room", ""), _binding("room"), _context("room"))
+        )
+        while not host.got:
+            await asyncio.sleep(0)
+        resume.set()
+        await asyncio.wait_for(streamed, 1)
+
+        assert host.got == {"first": ["stream_start", "stream_chunk:part-1 "]}
+
     async def test_a_delivery_reaches_no_id_registered_again_before_its_send(self) -> None:
         """The registration is checked as each send starts: one made on the
         loop between the fan-out and the send gets nothing (review probe
