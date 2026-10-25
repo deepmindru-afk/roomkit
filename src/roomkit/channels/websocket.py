@@ -93,10 +93,10 @@ class WebSocketChannel(Channel):
         # every socket it happens to hold.
         self._connection_rooms: dict[str, set[str]] = {}
         self._room_connections: dict[str, set[str]] = {}
-        # The organization a subscription was made for (RFC §17.2), by
-        # (connection, room); an unscoped subscription has no entry. A
-        # subscription reads no room, so the room is matched at delivery.
-        self._subscribed_for: dict[tuple[str, str], str] = {}
+        # The organization each connection was registered for (RFC §17.2);
+        # an unscoped connection has no entry. The registry reads no room, so
+        # the room's organization is matched at delivery.
+        self._organization_of: dict[str, str] = {}
 
     @property
     def info(self) -> dict[str, Any]:
@@ -152,15 +152,33 @@ class WebSocketChannel(Channel):
                 When provided, this connection receives progressive text delivery
                 via the ``stream_start``/``stream_chunk``/``stream_end`` protocol.
             organization_id: The organization the connection acts for (RFC
-                §17.2), as :meth:`subscribe` takes it.
+                §17.2). The call reads no room: the connection is registered
+                for the organization, and a room of another organization, or
+                of none, delivers nothing to it, whatever rooms it is
+                subscribed to. Only that organization's calls, and unscoped
+                ones, subscribe it, unsubscribe it or register it again.
+                Unset, the connection receives its rooms' events whatever
+                their organization, as before; registering an id again
+                unscoped replaces it whoever registered it.
+
+        Raises:
+            ValueError: *organization_id* is set and *connection_id* is
+                registered for another organization, or unscoped; nothing
+                changes.
         """
+        if organization_id is not None and connection_id in self._connections:
+            self._refuse_another(connection_id, organization_id)
         self._connections[connection_id] = send_fn
         if stream_send_fn is not None:
             self._stream_send_fns[connection_id] = stream_send_fn
         else:
             self._stream_send_fns.pop(connection_id, None)
         self._error_counts.pop(connection_id, None)
-        self.subscribe(connection_id, room_id, organization_id=organization_id)
+        if organization_id is None:
+            self._organization_of.pop(connection_id, None)
+        else:
+            self._organization_of[connection_id] = organization_id
+        self._add_subscription(connection_id, room_id)
 
     def subscribe(
         self, connection_id: str, room_id: str, *, organization_id: str | None = None
@@ -169,35 +187,51 @@ class WebSocketChannel(Channel):
 
         For the client that holds several conversations open on one socket.
 
-        *organization_id* is the organization the connection acts for (RFC
-        §17.2). The call reads no room, so nothing is refused here: the
-        subscription is recorded for the organization, and a room of another
-        organization, or of none, delivers nothing to it. Unset, the
-        connection receives the room's events whatever its organization, as
-        before. The latest subscription of a connection to a room holds.
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): only a connection registered for it is subscribed. A
+        subscription never changes the connection's organization, so a room
+        of another organization, or of none, still delivers nothing to a
+        connection registered for one. Unset, the subscription is made
+        whoever registered the connection, as before.
+
+        Raises:
+            ValueError: *organization_id* is set and the connection is not
+                registered for it; nothing changes.
         """
+        if organization_id is not None:
+            self._refuse_another(connection_id, organization_id)
+        self._add_subscription(connection_id, room_id)
+
+    def _add_subscription(self, connection_id: str, room_id: str) -> None:
         self._connection_rooms.setdefault(connection_id, set()).add(room_id)
         self._room_connections.setdefault(room_id, set()).add(connection_id)
-        if organization_id is None:
-            self._subscribed_for.pop((connection_id, room_id), None)
-        else:
-            self._subscribed_for[(connection_id, room_id)] = organization_id
+
+    def _refuse_another(self, connection_id: str, organization_id: str) -> None:
+        """Refuse a connection that is not registered for *organization_id*
+        (RFC §17.2): another organization's, an unscoped one, or none, all
+        told alike, so a caller cannot tell which ids another holds."""
+        if (
+            connection_id not in self._connections
+            or self._organization_of.get(connection_id) != organization_id
+        ):
+            raise ValueError(f"No connection {connection_id} for organization {organization_id}")
 
     def unsubscribe(
         self, connection_id: str, room_id: str, *, organization_id: str | None = None
     ) -> None:
         """Stop delivering *room_id*'s events to a connection.
 
-        With *organization_id* (RFC §17.2), only a subscription made for that
-        organization is removed: one made for another, or unscoped, stays.
-        Unset, the subscription is removed whoever made it, as before.
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): only a connection registered for it is unsubscribed. Unset,
+        the subscription is removed whoever registered the connection, as
+        before.
+
+        Raises:
+            ValueError: *organization_id* is set and the connection is not
+                registered for it; nothing changes.
         """
-        if (
-            organization_id is not None
-            and self._subscribed_for.get((connection_id, room_id)) != organization_id
-        ):
-            return
-        self._subscribed_for.pop((connection_id, room_id), None)
+        if organization_id is not None:
+            self._refuse_another(connection_id, organization_id)
         rooms = self._connection_rooms.get(connection_id)
         if rooms is not None:
             rooms.discard(room_id)
@@ -218,6 +252,7 @@ class WebSocketChannel(Channel):
         self._connections.pop(connection_id, None)
         self._stream_send_fns.pop(connection_id, None)
         self._error_counts.pop(connection_id, None)
+        self._organization_of.pop(connection_id, None)
         for room_id in self.rooms_for(connection_id):
             self.unsubscribe(connection_id, room_id)
 
@@ -225,19 +260,19 @@ class WebSocketChannel(Channel):
         self, room_id: str, organization_id: str | None
     ) -> list[tuple[str, SendFn]]:
         """Live connections subscribed to *room_id*, a room of
-        *organization_id*, as (id, send_fn) pairs: none subscribed for
+        *organization_id*, as (id, send_fn) pairs: none registered for
         another organization (RFC §17.2)."""
         return [
             (conn_id, self._connections[conn_id])
             for conn_id in sorted(self._room_connections.get(room_id, ()))
-            if conn_id in self._connections and self._reaches(conn_id, room_id, organization_id)
+            if conn_id in self._connections and self._reaches(conn_id, organization_id)
         ]
 
-    def _reaches(self, conn_id: str, room_id: str, organization_id: str | None) -> bool:
-        """Whether *conn_id*'s subscription to *room_id* admits a room of
-        *organization_id*: an unscoped one admits any (RFC §17.2)."""
-        subscribed_for = self._subscribed_for.get((conn_id, room_id))
-        return subscribed_for is None or subscribed_for == organization_id
+    def _reaches(self, conn_id: str, organization_id: str | None) -> bool:
+        """Whether *conn_id* receives a room of *organization_id*: an
+        unscoped connection receives any (RFC §17.2)."""
+        registered_for = self._organization_of.get(conn_id)
+        return registered_for is None or registered_for == organization_id
 
     def _streaming_connections_in(self, room_id: str) -> list[str]:
         """Ids of connections in *room_id* that speak the streaming protocol."""
@@ -356,7 +391,7 @@ class WebSocketChannel(Channel):
         streaming_conns = [
             conn_id
             for conn_id in self._streaming_connections_in(binding.room_id)
-            if self._reaches(conn_id, binding.room_id, organization_id)
+            if self._reaches(conn_id, organization_id)
         ]
 
         logger.debug(

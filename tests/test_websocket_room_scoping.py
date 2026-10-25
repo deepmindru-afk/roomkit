@@ -267,15 +267,33 @@ class TestFanOutIsBounded:
         assert sorted(delivered) == [f"c{i}" for i in range(5)], "fan-out was sequential"
 
 
-async def _acme_room_on_a_socket_channel() -> tuple[RoomKit, WebSocketChannel]:
+async def _two_rooms_on_a_socket_channel() -> tuple[RoomKit, WebSocketChannel]:
     kit = RoomKit()
     ws = WebSocketChannel("ws")
     kit.register_channel(ws)
     kit.register_channel(SimpleChannel("sms1"))
-    await kit.create_room(room_id="acme-room", organization_id="acme")
-    await kit.attach_channel("acme-room", "ws")
-    await kit.attach_channel("acme-room", "sms1")
+    for room_id, org in (("acme-room", "acme"), ("globex-room", "globex")):
+        await kit.create_room(room_id=room_id, organization_id=org)
+        await kit.attach_channel(room_id, "ws")
+        await kit.attach_channel(room_id, "sms1")
     return kit, ws
+
+
+async def _say_in(kit: RoomKit, room_id: str) -> None:
+    message = InboundMessage(
+        channel_id="sms1", sender_id="+15550001", content=TextContent(body="hi")
+    )
+    await kit.process_inbound(message, room_id=room_id)
+
+
+class _Socket:
+    """A client socket: what it was sent."""
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    async def send(self, conn_id: str, event: RoomEvent) -> None:
+        self.seen.append(event.room_id)
 
 
 SubscribeDoor = Callable[[RoomKit, WebSocketChannel, str, SendFn, str | None], None]
@@ -290,14 +308,14 @@ def _by_register(
 def _by_subscribe(
     kit: RoomKit, ws: WebSocketChannel, conn: str, send: SendFn, org: str | None
 ) -> None:
-    ws.register_connection(conn, send, room_id="lobby")
+    ws.register_connection(conn, send, room_id="lobby", organization_id=org)
     ws.subscribe(conn, "acme-room", organization_id=org)
 
 
 def _by_kit_subscribe(
     kit: RoomKit, ws: WebSocketChannel, conn: str, send: SendFn, org: str | None
 ) -> None:
-    ws.register_connection(conn, send, room_id="lobby")
+    ws.register_connection(conn, send, room_id="lobby", organization_id=org)
     kit.subscribe_websocket("ws", conn, "acme-room", organization_id=org)
 
 
@@ -308,14 +326,45 @@ _SUBSCRIBE_DOORS: dict[str, SubscribeDoor] = {
 }
 
 
+async def _taken_over(door: str, kit: RoomKit, ws: WebSocketChannel, intruder: _Socket) -> None:
+    """Globex's host acting on the connection acme registered."""
+    if door == "register_connection":
+        ws.register_connection(
+            "acme-socket", intruder.send, room_id="acme-room", organization_id="globex"
+        )
+    elif door == "connect_websocket":
+        await kit.connect_websocket(
+            "ws", "acme-socket", intruder.send, room_id="globex-room", organization_id="globex"
+        )
+    elif door == "subscribe":
+        ws.subscribe("acme-socket", "acme-room", organization_id="globex")
+    elif door == "subscribe_websocket":
+        kit.subscribe_websocket("ws", "acme-socket", "acme-room", organization_id="globex")
+    elif door == "unsubscribe":
+        ws.unsubscribe("acme-socket", "acme-room", organization_id="globex")
+    else:
+        kit.unsubscribe_websocket("ws", "acme-socket", "acme-room", organization_id="globex")
+
+
+_TAKEOVER_DOORS = [
+    "connect_websocket",
+    "register_connection",
+    "subscribe",
+    "subscribe_websocket",
+    "unsubscribe",
+    "unsubscribe_websocket",
+]
+
+
 class TestOrganizationScope:
-    """A connection subscribed for an organization receives only the rooms
-    of that organization (RFC §17.2, RMK-491): the subscription is
-    synchronous and reads no room, so the room is matched at delivery."""
+    """A connection registered for an organization receives only the rooms
+    of that organization, and only that organization subscribes or
+    unsubscribes it (RFC §17.2, RMK-491). The registry is synchronous and
+    reads no room, so the room is matched at delivery."""
 
     @pytest.mark.parametrize("door", sorted(_SUBSCRIBE_DOORS))
     async def test_a_connection_of_another_organization_receives_nothing(self, door: str) -> None:
-        kit, ws = await _acme_room_on_a_socket_channel()
+        kit, ws = await _two_rooms_on_a_socket_channel()
         seen: list[str] = []
 
         async def send(conn_id: str, event: RoomEvent) -> None:
@@ -324,12 +373,7 @@ class TestOrganizationScope:
         for conn, org in (("acme-socket", "acme"), ("globex-socket", "globex"), ("any", None)):
             _SUBSCRIBE_DOORS[door](kit, ws, conn, send, org)
 
-        await kit.process_inbound(
-            InboundMessage(
-                channel_id="sms1", sender_id="+15550001", content=TextContent(body="hi")
-            ),
-            room_id="acme-room",
-        )
+        await _say_in(kit, "acme-room")
 
         assert sorted(seen) == ["acme-socket", "any"]
         await kit.close()
@@ -361,23 +405,65 @@ class TestOrganizationScope:
         assert set(streamed) == {"acme-live"}
         assert sent == ["acme-final"]
 
-    @pytest.mark.parametrize("door", ["unsubscribe", "unsubscribe_websocket"])
-    async def test_another_organization_does_not_unsubscribe_a_connection(self, door: str) -> None:
-        kit, ws = await _acme_room_on_a_socket_channel()
+    @pytest.mark.parametrize("door", _TAKEOVER_DOORS)
+    async def test_another_organization_cannot_take_over_a_connection(self, door: str) -> None:
+        """Refused as a connection that does not exist, nothing changed: the
+        socket keeps its sender, its organization and its rooms."""
+        kit, ws = await _two_rooms_on_a_socket_channel()
+        acme, intruder = _Socket(), _Socket()
+        ws.register_connection(
+            "acme-socket", acme.send, room_id="acme-room", organization_id="acme"
+        )
 
-        async def send(conn_id: str, event: RoomEvent) -> None:
-            return None
+        with pytest.raises(ValueError, match="No connection acme-socket for organization globex"):
+            await _taken_over(door, kit, ws, intruder)
 
-        ws.register_connection("acme-socket", send, room_id="acme-room", organization_id="acme")
-
-        def unsubscribe(org: str | None) -> None:
-            if door == "unsubscribe":
-                ws.unsubscribe("acme-socket", "acme-room", organization_id=org)
-            else:
-                kit.unsubscribe_websocket("ws", "acme-socket", "acme-room", organization_id=org)
-
-        unsubscribe("globex")
+        await _say_in(kit, "acme-room")
+        await _say_in(kit, "globex-room")
+        assert (acme.seen, intruder.seen) == (["acme-room"], [])
         assert ws.rooms_for("acme-socket") == {"acme-room"}
-        unsubscribe("acme")
-        assert ws.rooms_for("acme-socket") == set()
+        await kit.close()
+
+    @pytest.mark.parametrize("kit_door", [False, True], ids=["channel", "kit"])
+    async def test_an_unscoped_subscription_never_widens_a_scoped_connection(
+        self, kit_door: bool
+    ) -> None:
+        kit, ws = await _two_rooms_on_a_socket_channel()
+        acme = _Socket()
+        ws.register_connection(
+            "acme-socket", acme.send, room_id="acme-room", organization_id="acme"
+        )
+
+        if kit_door:
+            kit.subscribe_websocket("ws", "acme-socket", "globex-room")
+            kit.subscribe_websocket("ws", "acme-socket", "acme-room")
+        else:
+            ws.subscribe("acme-socket", "globex-room")
+            ws.subscribe("acme-socket", "acme-room")
+        await _say_in(kit, "globex-room")
+        await _say_in(kit, "acme-room")
+
+        assert acme.seen == ["acme-room"]
+        await kit.close()
+
+    @pytest.mark.parametrize("kit_door", [False, True], ids=["channel", "kit"])
+    async def test_the_connections_own_organization_subscribes_and_unsubscribes_it(
+        self, kit_door: bool
+    ) -> None:
+        kit, ws = await _two_rooms_on_a_socket_channel()
+        acme = _Socket()
+        ws.register_connection("acme-socket", acme.send, room_id="lobby", organization_id="acme")
+
+        if kit_door:
+            kit.subscribe_websocket("ws", "acme-socket", "acme-room", organization_id="acme")
+            await _say_in(kit, "acme-room")
+            kit.unsubscribe_websocket("ws", "acme-socket", "acme-room", organization_id="acme")
+        else:
+            ws.subscribe("acme-socket", "acme-room", organization_id="acme")
+            await _say_in(kit, "acme-room")
+            ws.unsubscribe("acme-socket", "acme-room", organization_id="acme")
+        await _say_in(kit, "acme-room")
+
+        assert acme.seen == ["acme-room"]
+        assert ws.rooms_for("acme-socket") == {"lobby"}
         await kit.close()

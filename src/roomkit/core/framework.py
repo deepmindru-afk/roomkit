@@ -1711,9 +1711,16 @@ class RoomKit(
         *organization_id* is the organization the caller acts for (RFC
         §17.2): the room is read with it before the socket is registered, and
         another organization's room raises :class:`RoomNotFoundError` with
-        no connection registered and no event emitted; the subscription is
-        recorded for it, as :meth:`WebSocketChannel.subscribe` records one.
-        Unset, no room is read, as before.
+        no connection registered and no event emitted; the connection is
+        registered for the organization, as
+        :meth:`WebSocketChannel.register_connection` registers one, and
+        receives no room of another. Unset, no room is read, as before.
+
+        Raises:
+            RoomNotFoundError: *organization_id* is set and the room is
+                missing or another organization's.
+            ValueError: *organization_id* is set and *connection_id* is
+                registered for another organization, or unscoped.
         """
         await self._ensure_status_bus_subscribed()
         channel = self._channels.get(channel_id)
@@ -1748,9 +1755,14 @@ class RoomKit(
         """Also deliver *room_id* to an already-connected socket.
 
         *organization_id* is the organization the caller acts for (RFC
-        §17.2): the call reads no room, and the subscription is recorded for
-        it, so a room of another organization, or of none, delivers nothing
-        to the socket (:meth:`WebSocketChannel.subscribe`).
+        §17.2): the call reads no room, and only a connection registered for
+        it is subscribed; a room of another organization, or of none,
+        delivers nothing to a connection registered for one
+        (:meth:`WebSocketChannel.subscribe`).
+
+        Raises:
+            ValueError: *organization_id* is set and the connection is not
+                registered for it; nothing changes.
         """
         channel = self._channels.get(channel_id)
         if not isinstance(channel, WebSocketChannel):
@@ -1768,8 +1780,8 @@ class RoomKit(
         organization_id: str | None = None,
     ) -> None:
         """Stop delivering *room_id* to a connected socket; with
-        *organization_id* (RFC §17.2), only a subscription made for it
-        (:meth:`WebSocketChannel.unsubscribe`)."""
+        *organization_id* (RFC §17.2), only a connection registered for it,
+        ``ValueError`` otherwise (:meth:`WebSocketChannel.unsubscribe`)."""
         channel = self._channels.get(channel_id)
         if not isinstance(channel, WebSocketChannel):
             raise ChannelNotRegisteredError(

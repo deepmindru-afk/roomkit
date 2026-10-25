@@ -663,11 +663,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WebSocketChannel.register_connection()`, `subscribe()` and
   `unsubscribe()`, and `kit.subscribe_websocket()` and
   `unsubscribe_websocket()`, are synchronous and read no room: they take
-  `organization_id=None` too, recorded for each (connection, room), and a
-  room of another organization, or of none, delivers nothing to a
-  connection subscribed for an organization, streamed or not; a scoped
-  unsubscribe removes only a subscription made for its organization. The
-  subscription itself is not refused.
+  `organization_id=None` too. A connection registered for an organization
+  receives nothing from a room of another organization, or of none,
+  streamed or not, whatever it is subscribed to; a scoped
+  `register_connection()`, `subscribe()` or `unsubscribe()` on a
+  connection registered for another organization, or unscoped, raises
+  `ValueError` and changes nothing, so another tenant cannot take a socket
+  over. A subscription to another organization's room is not refused: it
+  delivers nothing.
 
 - `start_task()`, `submit_feedback()` and `steer()` take the organization
   the caller acts for (RFC §17.2, RMK-487). A tenant's host could start a
