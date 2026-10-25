@@ -554,6 +554,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused start. An empty `storage` still records into the temp directory.
   Migration: pass a path without `..`, e.g. `str(Path(storage).resolve())`.
 
+- **A session's video recording can be encrypted at rest** (RFC §17.6,
+  RMK-568). `VideoRecordingConfig` had no encryption setting, so
+  `PyAVVideoRecorder` and `OpenCVVideoRecorder` wrote a session's video in
+  the clear with no way to configure otherwise. It now takes `encryption`
+  and `storage_encrypted_at_rest`, the fields `RecordingConfig` and
+  `MediaRecordingConfig` already carry. With `encryption`, each finished file
+  goes through `encrypt_file()` at `stop()`, and at `close()` for a
+  recording still open: the result's `url` and `size_bytes` are the
+  encrypted artifact's and `metadata["encryption"]` names the cipher, and a
+  file the cipher cannot encrypt is deleted. With
+  `storage_encrypted_at_rest=True` the file stays as written and
+  `metadata["encryption"]` is `"storage"`. With neither, the recording is
+  written unencrypted, as before: unlike the audio and room recorders, the
+  video recorders do not refuse to start.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

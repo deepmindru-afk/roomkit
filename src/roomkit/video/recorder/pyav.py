@@ -23,6 +23,7 @@ from roomkit.video.recorder.base import (
     VideoRecordingHandle,
     VideoRecordingResult,
     build_recording_path,
+    store_finished_recording,
 )
 
 if TYPE_CHECKING:
@@ -66,7 +67,7 @@ def _to_ndarray(frame: VideoFrame) -> np.ndarray[Any, Any]:
 
 
 class _ActiveRecording:
-    __slots__ = ("container", "stream", "frame_count", "start_time", "path", "av")
+    __slots__ = ("container", "stream", "frame_count", "start_time", "path", "av", "config")
 
     def __init__(
         self,
@@ -74,11 +75,13 @@ class _ActiveRecording:
         stream: Any,
         path: str,
         av_mod: Any,
+        config: VideoRecordingConfig,
     ) -> None:
         self.container = container
         self.stream = stream
         self.path = path
         self.av = av_mod
+        self.config = config
         self.frame_count = 0
         self.start_time = time.monotonic()
 
@@ -131,7 +134,7 @@ class PyAVVideoRecorder(VideoRecorder):
             path=path,
         )
         self._active[rec_id] = _ActiveRecording(
-            container=container, stream=stream, path=path, av_mod=self._av
+            container=container, stream=stream, path=path, av_mod=self._av, config=config
         )
         logger.info("Recording started: %s → %s (codec=%s)", rec_id, path, codec)
         return handle
@@ -145,7 +148,7 @@ class PyAVVideoRecorder(VideoRecorder):
         _flush_and_close(active)
 
         elapsed = time.monotonic() - active.start_time
-        size = os.path.getsize(active.path) if os.path.exists(active.path) else 0
+        url, size, metadata = store_finished_recording(active.config, active.path)
 
         logger.info(
             "Recording stopped: %s (%d frames, %.1fs, %d bytes)",
@@ -156,11 +159,12 @@ class PyAVVideoRecorder(VideoRecorder):
         )
         return VideoRecordingResult(
             id=handle.id,
-            url=active.path,
+            url=url,
             frame_count=active.frame_count,
             duration_seconds=round(elapsed, 2),
             format=os.path.splitext(active.path)[1].lstrip("."),
             size_bytes=size,
+            metadata=metadata,
         )
 
     def tap_frame(self, handle: VideoRecordingHandle, frame: VideoFrame) -> None:
@@ -192,5 +196,8 @@ class PyAVVideoRecorder(VideoRecorder):
     def close(self) -> None:
         for rec_id, active in list(self._active.items()):
             _flush_and_close(active)
+            # A recording still open is stored as configured too, or closing
+            # the recorder would leave it in the clear.
+            store_finished_recording(active.config, active.path)
             logger.info("Recording closed: %s", rec_id)
         self._active.clear()

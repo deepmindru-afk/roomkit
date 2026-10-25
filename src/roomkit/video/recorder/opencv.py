@@ -19,6 +19,7 @@ from roomkit.video.recorder.base import (
     VideoRecordingHandle,
     VideoRecordingResult,
     build_recording_path,
+    store_finished_recording,
 )
 
 if TYPE_CHECKING:
@@ -44,14 +45,17 @@ def _import_cv2() -> Any:
 class _ActiveRecording:
     """Internal state for an active recording."""
 
-    __slots__ = ("writer", "frame_count", "start_time", "path", "cv2", "fps", "codec")
+    __slots__ = ("writer", "frame_count", "start_time", "path", "cv2", "fps", "codec", "config")
 
-    def __init__(self, writer: Any, path: str, cv2_mod: Any, *, fps: float, codec: str) -> None:
+    def __init__(
+        self, writer: Any, path: str, cv2_mod: Any, *, codec: str, config: VideoRecordingConfig
+    ) -> None:
         self.writer = writer
         self.path = path
         self.cv2 = cv2_mod
-        self.fps = fps
+        self.fps = config.fps
         self.codec = codec
+        self.config = config
         self.frame_count = 0
         self.start_time = time.monotonic()
 
@@ -84,7 +88,7 @@ class OpenCVVideoRecorder(VideoRecorder):
         )
         # Writer is created lazily on first frame (need dimensions)
         self._active[rec_id] = _ActiveRecording(
-            writer=None, path=path, cv2_mod=self._cv2, fps=config.fps, codec=codec
+            writer=None, path=path, cv2_mod=self._cv2, codec=codec, config=config
         )
         logger.info("Recording started: %s → %s", rec_id, path)
         return handle
@@ -99,7 +103,7 @@ class OpenCVVideoRecorder(VideoRecorder):
             active.writer.release()
 
         elapsed = time.monotonic() - active.start_time
-        size = os.path.getsize(active.path) if os.path.exists(active.path) else 0
+        url, size, metadata = store_finished_recording(active.config, active.path)
 
         logger.info(
             "Recording stopped: %s (%d frames, %.1fs, %d bytes)",
@@ -110,11 +114,12 @@ class OpenCVVideoRecorder(VideoRecorder):
         )
         return VideoRecordingResult(
             id=handle.id,
-            url=active.path,
+            url=url,
             frame_count=active.frame_count,
             duration_seconds=round(elapsed, 2),
             format=os.path.splitext(active.path)[1].lstrip("."),
             size_bytes=size,
+            metadata=metadata,
         )
 
     def tap_frame(self, handle: VideoRecordingHandle, frame: VideoFrame) -> None:
@@ -159,5 +164,8 @@ class OpenCVVideoRecorder(VideoRecorder):
         for rec_id, active in list(self._active.items()):
             if active.writer is not None:
                 active.writer.release()
+            # A recording still open is stored as configured too, or closing
+            # the recorder would leave it in the clear.
+            store_finished_recording(active.config, active.path)
             logger.info("Recording closed: %s", rec_id)
         self._active.clear()

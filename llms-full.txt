@@ -4744,9 +4744,12 @@ pipeline = VideoPipelineConfig(
     transforms=[], filters=[], vision=vision,
     recorder=recorder,
     recording_config=VideoRecordingConfig(storage="./recordings", format="mp4",
-                                          codec="auto", fps=15.0),
+                                          codec="auto", fps=15.0,
+                                          encryption=my_cipher),
 )
 ```
+
+A session's recording is encrypted at rest (RFC §17.6) with `encryption=`, the same `RecordingEncryption` the audio and room recorders take: each finished file, at `stop()` or `close()`, goes through `encrypt_file()`, the result's `url` names the encrypted artifact and `metadata["encryption"]` the cipher; a file the cipher cannot encrypt is deleted. `storage_encrypted_at_rest=True` states that the storage encrypts: the file stays as written and `metadata["encryption"] == "storage"`. With neither, the file is stored unencrypted. A `storage` containing `..` raises `ValueError`.
 
 | Stage | Role | Implementations |
 |-------|------|-----------------|

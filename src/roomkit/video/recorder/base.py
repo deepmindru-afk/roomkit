@@ -9,10 +9,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from roomkit.recorder.base import safe_filename, validate_storage_path
+from roomkit.voice.pipeline.recorder.base import encrypt_finished_recording
 
 if TYPE_CHECKING:
     from roomkit.video.base import VideoSession
     from roomkit.video.video_frame import VideoFrame
+    from roomkit.voice.pipeline.recorder.base import RecordingEncryption
 
 
 def build_recording_path(
@@ -33,6 +35,34 @@ def build_recording_path(
     return os.path.join(resolved, f"{safe_id}_{ts}.{fmt}")
 
 
+def store_finished_recording(
+    config: VideoRecordingConfig, path: str
+) -> tuple[str, int, dict[str, object]]:
+    """Store a finished recording file at rest as configured (RFC §17.6).
+
+    Returns the stored file's path, its size and the result metadata. With
+    ``encryption`` the file goes through the cipher: the path is the
+    encrypted artifact's, and ``metadata["encryption"]`` the cipher's name. A
+    file the cipher could not encrypt is deleted, and no path is returned.
+    With ``storage_encrypted_at_rest`` the file stays as written and the
+    metadata says ``"storage"``. With neither, it stays as written, in the
+    clear, and the metadata claims nothing. A file never created is reported
+    at its path, with size 0.
+    """
+    if not os.path.exists(path):
+        return path, 0, {}
+    if config.encryption is None:
+        claim: dict[str, object] = (
+            {"encryption": "storage"} if config.storage_encrypted_at_rest else {}
+        )
+        return path, os.path.getsize(path), claim
+    stored = encrypt_finished_recording(config.encryption, path)
+    if stored is None:
+        return "", 0, {}
+    size = os.path.getsize(stored) if os.path.exists(stored) else 0
+    return stored, size, {"encryption": config.encryption.name}
+
+
 @dataclass
 class VideoRecordingConfig:
     """Configuration for video recording.
@@ -45,6 +75,17 @@ class VideoRecordingConfig:
             For OpenCV: ``mp4v``, ``XVID``.
         fps: Output frame rate.
         metadata: Provider-specific extra configuration.
+        encryption: Encryption applied to each finished recording file
+            (RFC §17.6), the same
+            :class:`~roomkit.voice.pipeline.recorder.base.RecordingEncryption`
+            the audio and room recorders take. The result then names the
+            encrypted artifact; a file the cipher cannot encrypt is deleted.
+        storage_encrypted_at_rest: Whether the configured storage encrypts
+            every byte at rest: an explicit deployment assertion, not
+            encryption performed by RoomKit. The file is stored as written
+            and the result says ``"encryption": "storage"``. With neither
+            this nor ``encryption``, the file is stored as written,
+            unencrypted.
     """
 
     storage: str = ""
@@ -52,6 +93,8 @@ class VideoRecordingConfig:
     codec: str = "auto"
     fps: float = 15.0
     metadata: dict[str, object] = field(default_factory=dict)
+    encryption: RecordingEncryption | None = None
+    storage_encrypted_at_rest: bool = False
 
 
 @dataclass
