@@ -21,10 +21,13 @@ needs no entry. The commit that breaks on purpose rewrites the snapshot with
 ``__all__``, constants and re-exports included: ``test_public_api.py`` fails
 on one dropped from its package, which a name the signatures resolve by
 import alone would not show. ``make api-snapshot`` rewrites both files in an
-environment with every extra installed, so a name only an extra resolves
-(``roomkit.webrtc``, which needs fastapi) is pinned too; written elsewhere, a
-package or a name whose optional dependency the environment lacks keeps what
-the files hold for it, and the guard leaves it out.
+environment of its own installed with ``--extra all``, so a name only an
+extra of that set resolves (``roomkit.webrtc``, which needs fastapi) is
+pinned too; the extras outside it (livekit, docs, pynacl, webtransport, the
+local model runtimes neutts, qwen-*, pocket-tts, phonon and vui, and a few
+others) are not installed there. Written elsewhere, a package or a name whose
+optional dependency the environment lacks keeps what the files hold for it,
+and the guard leaves it out; a roomkit module that is gone drops its names.
 
 Annotations are left out: whether a type widens or narrows is not read
 mechanically. What a call does is not here either; a change of meaning under
@@ -358,14 +361,18 @@ def _packages() -> list[tuple[str, Any]]:
 
 
 def _optional_here(path: str) -> bool:
-    """Whether ``path`` needs an optional dependency the environment lacks."""
+    """Whether ``path`` needs an optional dependency the environment lacks. A
+    roomkit module that is gone is no optional dependency: its names drop out
+    of the snapshot."""
     package, _, name = path.rpartition(".")
     try:
         module = importlib.import_module(package)
-    except ModuleNotFoundError as missing:
-        _raise_unless_optional(missing)
-        return True
-    return _resolve(module, name) is _OPTIONAL
+        getattr(module, name)
+    except ImportError as missing:
+        return not (missing.name or "").startswith("roomkit")
+    except AttributeError:
+        return False
+    return False
 
 
 def _resolve(module: Any, name: str) -> Any:

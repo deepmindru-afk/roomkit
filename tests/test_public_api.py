@@ -16,6 +16,7 @@ import pytest
 import roomkit
 from roomkit.voice import realtime as voice_realtime
 from roomkit.voice import tts as voice_tts
+from tests import api_signatures
 from tests.api_signatures import breaks_since_snapshot, call_breaks, object_breaks
 
 _PACKAGE_ROOT = Path(roomkit.__file__).parent
@@ -273,3 +274,30 @@ def _set_aside_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
     for module in list(sys.modules):
         if module.startswith(("roomkit.webrtc", "roomkit.voice.realtime.fastrtc")):
             monkeypatch.delitem(sys.modules, module)
+
+
+def test_a_snapshot_rewrite_keeps_a_missing_extra_and_drops_a_gone_roomkit_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Written without fastapi, the snapshot keeps the FastRTC transport it
+    pinned; a roomkit module removed on purpose drops out of it."""
+    snapshot = tmp_path / "signatures.json"
+    pinned = "roomkit.voice.realtime.FastRTCRealtimeTransport"
+    snapshot.write_text(json.dumps({"roomkit.gone.Thing": {}, pinned: {}}))
+    monkeypatch.setattr(api_signatures, "SNAPSHOT", snapshot)
+    monkeypatch.setattr(api_signatures, "build", dict)
+    _set_aside_fastapi(monkeypatch)
+
+    api_signatures.write()
+
+    assert list(json.loads(snapshot.read_text())) == [pinned]
+
+
+def test_the_snapshot_reads_a_dependency_s_own_import_error_as_a_missing_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "msgpack", None)
+    for module in ("roomkit.voice.tts.fish_audio", "roomkit.voice.tts._fish_audio_ws"):
+        monkeypatch.delitem(sys.modules, module, raising=False)
+
+    assert api_signatures._resolve(voice_tts, "FishAudioTTSProvider") is api_signatures._OPTIONAL
