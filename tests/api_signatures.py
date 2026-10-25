@@ -20,9 +20,11 @@ needs no entry. The commit that breaks on purpose rewrites the snapshot with
 ``tests/public_api_names.json`` holds every name each package exports in its
 ``__all__``, constants and re-exports included: ``test_public_api.py`` fails
 on one dropped from its package, which a name the signatures resolve by
-import alone would not show. ``make api-snapshot`` rewrites both files; a
-package whose optional dependency the environment lacks keeps the names the
-file holds.
+import alone would not show. ``make api-snapshot`` rewrites both files in an
+environment with every extra installed, so a name only an extra resolves
+(``roomkit.webrtc``, which needs fastapi) is pinned too; written elsewhere, a
+package or a name whose optional dependency the environment lacks keeps what
+the files hold for it, and the guard leaves it out.
 
 Annotations are left out: whether a type widens or narrows is not read
 mechanically. What a call does is not here either; a change of meaning under
@@ -193,9 +195,16 @@ def call_breaks(old: Spec, new: Spec) -> list[str]:
 
 
 def write() -> None:
-    """Rewrite the snapshot from the code, one member per line."""
+    """Rewrite the snapshot from the code, one member per line. A name whose
+    optional dependency the environment lacks keeps the entry the snapshot
+    holds for it."""
+    snapshot = build()
+    if SNAPSHOT.exists():
+        for path, members in json.loads(SNAPSHOT.read_text(encoding="utf-8")).items():
+            if path not in snapshot and _optional_here(path):
+                snapshot[path] = members
     blocks = []
-    for path, members in build().items():
+    for path, members in sorted(snapshot.items()):
         lines = [
             f"    {json.dumps(name)}: {json.dumps(spec, ensure_ascii=False)}"
             for name, spec in members.items()
@@ -346,6 +355,17 @@ def _packages() -> list[tuple[str, Any]]:
         except ModuleNotFoundError as missing:
             _raise_unless_optional(missing)
     return found
+
+
+def _optional_here(path: str) -> bool:
+    """Whether ``path`` needs an optional dependency the environment lacks."""
+    package, _, name = path.rpartition(".")
+    try:
+        module = importlib.import_module(package)
+    except ModuleNotFoundError as missing:
+        _raise_unless_optional(missing)
+        return True
+    return _resolve(module, name) is _OPTIONAL
 
 
 def _resolve(module: Any, name: str) -> Any:

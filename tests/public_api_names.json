@@ -1866,5 +1866,23 @@
     "VuiVoice",
     "filtered_stream",
     "split_sentences"
+  ],
+  "roomkit.webrtc": [
+    "AdditionalOutputs",
+    "AsyncAudioVideoStreamHandler",
+    "AsyncStreamHandler",
+    "AudioEmitType",
+    "AudioVideoStreamHandler",
+    "CloseStream",
+    "Stream",
+    "StreamHandler",
+    "UIArgs",
+    "VideoEmitType",
+    "VideoStreamHandler",
+    "WebRTCData",
+    "WebRTCError",
+    "WebSocketHandler",
+    "current_context",
+    "get_current_context"
   ]
 }

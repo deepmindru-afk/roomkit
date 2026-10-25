@@ -7256,6 +7256,43 @@
     "reset": ["def"],
     "warmup": ["def"]
   },
+  "roomkit.voice.realtime.FastRTCRealtimeTransport": {
+    "__init__": ["def", "*", "input_sample_rate=16000", "output_sample_rate=24000", "audio_transport='webrtc'"],
+    "accept": ["async def", "session", "connection"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_session": ["def", "session_id"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_client_connected": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "reject_connection": ["async def", "webrtc_id", "*", "message=None"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_message": ["async def", "session", "message"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_trace_emitter": ["def", "emitter"],
+    "supports_playback_callback": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
   "roomkit.voice.realtime.MockCall": {
     "__init__": ["def", "method", "args=<factory>"]
   },
@@ -7572,6 +7609,9 @@
     "set_trace_emitter": ["def", "emitter"],
     "supports_playback_callback": ["property"],
     "wait_playback": ["async def", "session"]
+  },
+  "roomkit.voice.realtime.mount_fastrtc_realtime": {
+    "__call__": ["def", "app", "transport", "*", "path='/rtc-realtime'", "auth=None", "rtc_configuration=None", "concurrency_limit=None"]
   },
   "roomkit.voice.realtime.render_transcript_request": {
     "__call__": ["def", "transcript", "*", "first", "instruction=\"Act on the user's most recent request in the conversation above.\""]
@@ -8107,5 +8147,142 @@
   },
   "roomkit.voice.tts.split_sentences": {
     "__call__": ["async gen def", "token_stream", "min_chunk_chars=20"]
+  },
+  "roomkit.webrtc.AdditionalOutputs": {
+    "__init__": ["def", "*args"]
+  },
+  "roomkit.webrtc.AsyncAudioVideoStreamHandler": {
+    "__init__": ["def", "expected_layout='mono'", "output_sample_rate=24000", "output_frame_size=None", "input_sample_rate=48000", "fps=30"],
+    "channel": ["property"],
+    "clear_queue": ["property"],
+    "copy": ["def"],
+    "emit": ["async def"],
+    "fetch_args": ["async def"],
+    "loop": ["property"],
+    "phone_mode": ["property"],
+    "receive": ["async def", "frame"],
+    "resample": ["def", "frame"],
+    "reset": ["def"],
+    "send_message": ["async def", "msg"],
+    "send_message_sync": ["def", "msg"],
+    "set_args": ["def", "args"],
+    "set_channel": ["def", "channel"],
+    "shutdown": ["def"],
+    "start_up": ["async def"],
+    "video_emit": ["async def"],
+    "video_receive": ["async def", "frame"],
+    "wait_for_args": ["async def"],
+    "wait_for_args_sync": ["def"]
+  },
+  "roomkit.webrtc.AsyncStreamHandler": {
+    "__init__": ["def", "expected_layout='mono'", "output_sample_rate=24000", "output_frame_size=None", "input_sample_rate=48000", "fps=30"],
+    "channel": ["property"],
+    "clear_queue": ["property"],
+    "copy": ["def"],
+    "emit": ["async def"],
+    "fetch_args": ["async def"],
+    "loop": ["property"],
+    "phone_mode": ["property"],
+    "receive": ["async def", "frame"],
+    "resample": ["def", "frame"],
+    "reset": ["def"],
+    "send_message": ["async def", "msg"],
+    "send_message_sync": ["def", "msg"],
+    "set_args": ["def", "args"],
+    "set_channel": ["def", "channel"],
+    "shutdown": ["def"],
+    "start_up": ["async def"],
+    "wait_for_args": ["async def"],
+    "wait_for_args_sync": ["def"]
+  },
+  "roomkit.webrtc.AudioVideoStreamHandler": {
+    "__init__": ["def", "expected_layout='mono'", "output_sample_rate=24000", "output_frame_size=None", "input_sample_rate=48000", "fps=30"],
+    "channel": ["property"],
+    "clear_queue": ["property"],
+    "copy": ["def"],
+    "emit": ["def"],
+    "fetch_args": ["async def"],
+    "loop": ["property"],
+    "phone_mode": ["property"],
+    "receive": ["def", "frame"],
+    "resample": ["def", "frame"],
+    "reset": ["def"],
+    "send_message": ["async def", "msg"],
+    "send_message_sync": ["def", "msg"],
+    "set_args": ["def", "args"],
+    "set_channel": ["def", "channel"],
+    "shutdown": ["def"],
+    "start_up": ["def"],
+    "video_emit": ["def"],
+    "video_receive": ["def", "frame"],
+    "wait_for_args": ["async def"],
+    "wait_for_args_sync": ["def"]
+  },
+  "roomkit.webrtc.CloseStream": {
+    "__init__": ["def", "msg='Stream closed'"]
+  },
+  "roomkit.webrtc.Stream": {
+    "__init__": ["def", "handler", "*", "additional_outputs_handler=None", "mode='send-receive'", "modality='video'", "concurrency_limit='default'", "time_limit=None", "allow_extra_tracks=False", "rtp_params=None", "rtc_configuration=None", "server_rtc_configuration=None", "track_constraints=None", "additional_inputs=None", "additional_outputs=None", "ui_args=None", "verbose=True"],
+    "clean_up": ["def", "webrtc_id"],
+    "connection_timeout": ["async def", "pc", "webrtc_id", "time_limit"],
+    "convert_to_aiortc_format": ["staticmethod", "rtc_configuration"],
+    "fetch_latest_output": ["async def", "webrtc_id"],
+    "get_rtc_configuration": ["async def"],
+    "handle_incoming_call": ["async def", "request"],
+    "handle_offer": ["async def", "body", "set_outputs"],
+    "mount": ["def", "app", "path=''", "tags=None"],
+    "offer": ["async def", "body"],
+    "output_stream": ["async gen def", "webrtc_id"],
+    "resolve_rtc_configuration": ["async def"],
+    "resolve_server_rtc_configuration": ["async def"],
+    "set_additional_outputs": ["def", "webrtc_id"],
+    "set_input": ["def", "webrtc_id", "*args"],
+    "set_input_gradio": ["def", "webrtc_data", "*args"],
+    "set_input_on_submit": ["def", "webrtc_data", "*args"],
+    "telephone_handler": ["async def", "websocket"],
+    "update_connection": ["async def", "webrtc_data", "desired_state"],
+    "wait_for_time_limit": ["async staticmethod", "pc", "time_limit"],
+    "websocket_offer": ["async def", "websocket"]
+  },
+  "roomkit.webrtc.StreamHandler": {
+    "__init__": ["def", "expected_layout='mono'", "output_sample_rate=24000", "output_frame_size=None", "input_sample_rate=48000", "fps=30"],
+    "channel": ["property"],
+    "clear_queue": ["property"],
+    "copy": ["def"],
+    "emit": ["def"],
+    "fetch_args": ["async def"],
+    "loop": ["property"],
+    "phone_mode": ["property"],
+    "receive": ["def", "frame"],
+    "resample": ["def", "frame"],
+    "reset": ["def"],
+    "send_message": ["async def", "msg"],
+    "send_message_sync": ["def", "msg"],
+    "set_args": ["def", "args"],
+    "set_channel": ["def", "channel"],
+    "shutdown": ["def"],
+    "start_up": ["def"],
+    "wait_for_args": ["async def"],
+    "wait_for_args_sync": ["def"]
+  },
+  "roomkit.webrtc.UIArgs": {},
+  "roomkit.webrtc.VideoStreamHandler": {
+    "__init__": ["def", "callable", "fps=30", "skip_frames=False"]
+  },
+  "roomkit.webrtc.WebRTCData": {
+    "__init__": ["def", "*", "webrtc_id", "textbox=''", "audio=None"]
+  },
+  "roomkit.webrtc.WebRTCError": {
+    "__init__": ["def", "message"]
+  },
+  "roomkit.webrtc.WebSocketHandler": {
+    "__init__": ["def", "stream_handler", "set_handler", "clean_up", "additional_outputs_factory"],
+    "emit_with_context": ["def"],
+    "handle_websocket": ["async def", "websocket"],
+    "receive_with_context": ["def", "frame"],
+    "set_args": ["def", "args"]
+  },
+  "roomkit.webrtc.get_current_context": {
+    "__call__": ["def"]
   }
 }

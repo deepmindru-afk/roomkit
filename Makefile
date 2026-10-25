@@ -56,8 +56,12 @@ test-changed:
 # from the code. A public signature change that can break a caller, or a name
 # dropped from a package's __all__, fails test_public_api.py until this runs:
 # the commit that breaks on purpose runs it and carries its BREAKING entry.
+# It runs in an environment of its own with every extra (made on first use),
+# so a name only an extra resolves, roomkit.webrtc's, is pinned too; the dev
+# environment's guard leaves out what its missing extras would resolve.
+API_SNAPSHOT_ENV ?= .venv-api-snapshot
 api-snapshot:
-	uv run python -m tests.api_signatures
+	UV_PROJECT_ENVIRONMENT=$(API_SNAPSHOT_ENV) uv run --frozen --extra all python -m tests.api_signatures
 
 coverage:
 	uv run pytest $(PARALLEL) --cov=roomkit --cov-report=term-missing
