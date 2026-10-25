@@ -174,7 +174,9 @@ class WebSocketChannel(Channel):
                 unscoped replaces it whoever registered it. A registration
                 that changes the organization of an id still known, to none
                 included, drops the rooms the id was subscribed to; one for
-                the same organization keeps them.
+                the same organization keeps them. A registration again is a
+                new one: a stream under way sends it nothing
+                (:meth:`deliver_stream`).
 
         Raises:
             ValueError: *organization_id* is set and *connection_id* is
@@ -354,7 +356,9 @@ class WebSocketChannel(Channel):
             metadata=message.metadata,
         )
 
-    async def _send_one(self, conn_id: str, send_fn: SendFn, event: RoomEvent) -> None:
+    async def _send_one(
+        self, conn_id: str, send_fn: SendFn, event: RoomEvent, token: object
+    ) -> None:
         """Send to one connection, bounded in time and never raising.
 
         The timeout is the point. A socket that is closed raises and is
@@ -364,17 +368,24 @@ class WebSocketChannel(Channel):
         lock, because broadcast runs inside it and, unlike the pre-commit
         phase, is deliberately unbounded (RFC §10.1). One dead socket would
         stop the whole room from accepting anything.
+
+        Sent only while *conn_id* holds the registration *token* names, as
+        the send starts; a failure of a registration gone counts against
+        none (RFC §17.2).
         """
+        if self._registrations.get(conn_id) is not token:
+            return
         try:
             await asyncio.wait_for(send_fn(conn_id, event), timeout=self._send_timeout)
-            self._error_counts.pop(conn_id, None)
+            if self._registrations.get(conn_id) is token:
+                self._error_counts.pop(conn_id, None)
         except TimeoutError:
             logger.warning(
                 "WebSocket send to %s timed out after %.1fs", conn_id, self._send_timeout
             )
-            self._handle_send_error(conn_id)
+            self._handle_send_error(conn_id, token)
         except Exception:
-            self._handle_send_error(conn_id)
+            self._handle_send_error(conn_id, token)
 
     async def deliver(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
@@ -388,7 +399,7 @@ class WebSocketChannel(Channel):
         organization_id = context.room.organization_id
         await asyncio.gather(
             *(
-                self._send_one(conn_id, send_fn, event)
+                self._send_one(conn_id, send_fn, event, self._registrations.get(conn_id))
                 for conn_id, send_fn in self._connections_in(binding.room_id, organization_id)
             )
         )
@@ -414,6 +425,12 @@ class WebSocketChannel(Channel):
 
         Non-streaming connections receive all persisted events via
         the regular ``send_fn``.
+
+        A stream sends only to the registrations present when it started,
+        checked as each send starts: an id unregistered, evicted or
+        registered again since, for any organization or the same one (a
+        reconnection), gets nothing more of it, ``stream_end`` included. A
+        new registration never saw the stream's start (RFC §17.2).
         """
         stream_id = uuid.uuid4().hex
         room_id = event.room_id
@@ -469,9 +486,8 @@ class WebSocketChannel(Channel):
                     segment_events.append(delta)
                     await asyncio.gather(
                         *(
-                            self._send_one(conn_id, send_fn, delta)
+                            self._send_one(conn_id, send_fn, delta, token)
                             for conn_id, send_fn, token in room_conns
-                            if self._registrations.get(conn_id) is token
                         )
                     )
         except Exception as exc:
@@ -499,10 +515,9 @@ class WebSocketChannel(Channel):
         # Deliver final event to this room's non-streaming connections
         await asyncio.gather(
             *(
-                self._send_one(conn_id, send_fn, final_event)
+                self._send_one(conn_id, send_fn, final_event, token)
                 for conn_id, send_fn, token in room_conns
-                if self._registrations.get(conn_id) is token
-                and conn_id not in self._stream_send_fns
+                if conn_id not in self._stream_send_fns
             )
         )
 
@@ -521,19 +536,21 @@ class WebSocketChannel(Channel):
         """
         await asyncio.gather(
             *(
-                self._send_stream_message(conn_id, stream_send_fn, msg)
+                self._send_stream_message(conn_id, stream_send_fn, msg, token)
                 for conn_id, stream_send_fn, token in conns
-                if self._registrations.get(conn_id) is token
             )
         )
 
     async def _send_stream_message(
-        self, conn_id: str, stream_send_fn: StreamSendFn, msg: StreamMessage
+        self, conn_id: str, stream_send_fn: StreamSendFn, msg: StreamMessage, token: object
     ) -> None:
         """Send a streaming protocol message, tracking errors."""
+        if self._registrations.get(conn_id) is not token:
+            return
         try:
             await asyncio.wait_for(stream_send_fn(conn_id, msg), timeout=self._send_timeout)
-            self._error_counts.pop(conn_id, None)
+            if self._registrations.get(conn_id) is token:
+                self._error_counts.pop(conn_id, None)
         except TimeoutError:
             logger.warning(
                 "_send_stream_message: timed out for %s after %.1fs (msg type=%s)",
@@ -541,15 +558,17 @@ class WebSocketChannel(Channel):
                 self._send_timeout,
                 msg.type,
             )
-            self._handle_send_error(conn_id)
+            self._handle_send_error(conn_id, token)
         except Exception:
             logger.exception(
                 "_send_stream_message: failed for %s (msg type=%s)", conn_id, msg.type
             )
-            self._handle_send_error(conn_id)
+            self._handle_send_error(conn_id, token)
 
-    def _handle_send_error(self, conn_id: str) -> None:
+    def _handle_send_error(self, conn_id: str, token: object) -> None:
         """Increment error count and remove connection after threshold."""
+        if self._registrations.get(conn_id) is not token:
+            return  # a registration that is gone: the id's new one is not its
         consecutive = self._error_counts.get(conn_id, 0) + 1
         self._error_counts[conn_id] = consecutive
         if consecutive >= self._MAX_CONSECUTIVE_ERRORS:

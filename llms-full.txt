@@ -6118,7 +6118,10 @@ scoped `register_connection()` of an id another organization holds. Unset,
 the calls act as before. A registration that changes the organization of an
 id still known, to none included, drops the rooms it was subscribed to, and
 a connection evicted after repeated send failures is forgotten as
-`unregister_connection()` forgets it.
+`unregister_connection()` forgets it. A stream under way sends only to the
+registrations present when it started: an id registered again since, a
+reconnection of the same organization included, gets neither the rest of
+it nor its `stream_end`.
 
 Connection ids are one namespace for every organization: generate them on
 the host server (a UUID per socket), never take one a client chose. A

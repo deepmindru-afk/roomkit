@@ -10,7 +10,7 @@ client saw them, and so did anything reading that socket.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import pytest
@@ -363,6 +363,57 @@ _TAKEOVER_DOORS = [
 ]
 
 
+class _SharedHost:
+    """A host that passes one send function, the same object, for every
+    socket and dispatches by connection id, as a server holding a dict of its
+    sockets does. A socket that left stays in the dict until another takes
+    its id: what still reaches it is recorded under its name."""
+
+    def __init__(self, ws: WebSocketChannel) -> None:
+        self.ws = ws
+        self.sockets: dict[str, str] = {}
+        self.got: dict[str, list[str]] = {}
+
+        async def send(conn_id: str, event: RoomEvent) -> None:
+            self.got.setdefault(self.sockets[conn_id], []).append(f"event:{event.content.body}")
+
+        async def stream(conn_id: str, msg: Any) -> None:
+            delta = getattr(msg, "delta", None)
+            line = msg.type if delta is None else f"{msg.type}:{delta}"
+            self.got.setdefault(self.sockets[conn_id], []).append(line)
+
+        self.send = send
+        self.stream = stream
+
+    def register(
+        self, conn_id: str, who: str, room_id: str, org: str | None, *, streaming: bool = True
+    ) -> None:
+        self.sockets[conn_id] = who
+        self.ws.register_connection(
+            conn_id,
+            self.send,
+            room_id=room_id,
+            stream_send_fn=self.stream if streaming else None,
+            organization_id=org,
+        )
+
+    def unregister(self, conn_id: str) -> None:
+        self.ws.unregister_connection(conn_id)
+
+
+def _registered_for_globex(host: _SharedHost) -> None:
+    host.unregister("c1")
+    host.register("c1", "globex", "globex-room", "globex")
+
+
+_REGISTRATION_CHANGES: dict[str, Callable[[_SharedHost], None]] = {
+    "another-organization": _registered_for_globex,
+    "same-organization": lambda host: host.register("c1", "acme-new", "acme-room", "acme"),
+    "no-organization": lambda host: host.register("c1", "unscoped-new", "other-room", None),
+    "unregistered": lambda host: host.unregister("c1"),
+}
+
+
 class TestOrganizationScope:
     """A connection registered for an organization receives only the rooms
     of that organization, and only that organization subscribes or
@@ -538,57 +589,84 @@ class TestOrganizationScope:
         assert (acme.seen, ws.connection_count, ws.rooms_for("acme-socket")) == ([], 0, set())
         await kit.close()
 
-    async def test_a_stream_under_way_never_reaches_an_id_registered_again(self) -> None:
-        """The stream's connections are the ones registered when it started:
-        an id unregistered and registered again for globex meanwhile
-        receives nothing of acme's stream, and neither does the socket that
-        left (review probe P1)."""
+    @pytest.mark.parametrize("streaming", [True, False], ids=["stream", "plain"])
+    @pytest.mark.parametrize("change", sorted(_REGISTRATION_CHANGES))
+    async def test_a_stream_sends_only_to_the_registrations_it_started_with(
+        self, change: str, streaming: bool
+    ) -> None:
+        """An id unregistered, or registered again for any organization, the
+        same one included, while acme's stream runs gets nothing more of it:
+        a new registration never saw the stream's start. The change is ready
+        on the loop just before the next fan-out, and the host shares one
+        send function across its sockets (review probes P1, D1, D3)."""
         ws = WebSocketChannel("ws")
-        got: dict[str, list[str]] = {"acme": [], "globex": []}
-
-        def stream_to(who: str) -> Callable[[str, Any], Awaitable[None]]:
-            async def send(conn_id: str, msg: Any) -> None:
-                got[who].append(msg.type)
-
-            return send
-
-        async def plain(conn_id: str, event: RoomEvent) -> None:
-            got["acme" if event.room_id == "acme-room" else "globex"].append("event")
-
-        ws.register_connection(
-            "c1",
-            plain,
-            room_id="acme-room",
-            stream_send_fn=stream_to("acme"),
-            organization_id="acme",
-        )
-        started = asyncio.Event()
+        host = _SharedHost(ws)
+        host.register("c1", "acme", "acme-room", "acme", streaming=streaming)
         resume = asyncio.Event()
 
-        async def text() -> AsyncIterator[Any]:
+        async def text() -> AsyncIterator[str]:
             yield "secret-1 "
-            started.set()
             await resume.wait()
+            asyncio.get_running_loop().call_soon(_REGISTRATION_CHANGES[change], host)
             yield "secret-2"
-            yield _event("acme-room", "a segment")
 
         context = RoomContext(room=Room(id="acme-room", organization_id="acme"))
-        streaming = asyncio.create_task(
+        streamed = asyncio.create_task(
             ws.deliver_stream(text(), _event("acme-room", ""), _binding("acme-room"), context)
         )
-        await asyncio.wait_for(started.wait(), 1)
-        ws.unregister_connection("c1")
-        ws.register_connection(
-            "c1",
-            plain,
-            room_id="globex-room",
-            stream_send_fn=stream_to("globex"),
-            organization_id="globex",
-        )
+        while not host.got and streaming:
+            await asyncio.sleep(0)
         resume.set()
-        await asyncio.wait_for(streaming, 1)
+        await asyncio.wait_for(streamed, 1)
 
-        assert got == {"acme": ["stream_start", "stream_chunk"], "globex": []}
+        before_the_change = ["stream_start", "stream_chunk:secret-1 "] if streaming else []
+        assert host.got == ({"acme": before_the_change} if streaming else {})
+
+    async def test_a_delivery_reaches_no_id_registered_again_before_its_send(self) -> None:
+        """The registration is checked as each send starts: one made on the
+        loop between the fan-out and the send gets nothing (review probe
+        D1, deliver())."""
+        ws = WebSocketChannel("ws")
+        host = _SharedHost(ws)
+        host.register("c1", "acme", "acme-room", "acme", streaming=False)
+        asyncio.get_running_loop().call_soon(_REGISTRATION_CHANGES["another-organization"], host)
+
+        context = RoomContext(room=Room(id="acme-room", organization_id="acme"))
+        await ws.deliver(_event("acme-room", "acme secret"), _binding("acme-room"), context)
+
+        assert host.got == {}
+
+    async def test_failures_of_a_registration_gone_do_not_evict_the_new_one(self) -> None:
+        """Sends to acme's dead socket still under way when the id is
+        registered again for globex time out against acme's registration,
+        not globex's (review probe D2)."""
+        ws = WebSocketChannel("ws", send_timeout=0.05)
+        hang = asyncio.Event()
+        got: list[str] = []
+
+        async def dead(conn_id: str, event: RoomEvent) -> None:
+            await hang.wait()
+
+        async def alive(conn_id: str, event: RoomEvent) -> None:
+            got.append(event.room_id)
+
+        rooms = [f"acme-{n}" for n in range(WebSocketChannel._MAX_CONSECUTIVE_ERRORS)]
+        ws.register_connection("c1", dead, room_id=rooms[0], organization_id="acme")
+        for room_id in rooms[1:]:
+            ws.subscribe("c1", room_id)
+        context = {r: RoomContext(room=Room(id=r, organization_id="acme")) for r in rooms}
+        sends = [
+            asyncio.create_task(ws.deliver(_event(r, "x"), _binding(r), context[r])) for r in rooms
+        ]
+        for _ in range(3):
+            await asyncio.sleep(0)
+        ws.unregister_connection("c1", organization_id="acme")
+        ws.register_connection("c1", alive, room_id="globex-room", organization_id="globex")
+        await asyncio.wait_for(asyncio.gather(*sends), 1)
+        globex = RoomContext(room=Room(id="globex-room", organization_id="globex"))
+        await ws.deliver(_event("globex-room", "hi"), _binding("globex-room"), globex)
+
+        assert (ws.rooms_for("c1"), got) == ({"globex-room"}, ["globex-room"])
 
     async def test_a_room_of_no_organization_reaches_only_unscoped_connections(self) -> None:
         """A room of none is no organization's (RFC §17.2): a connection

@@ -168,7 +168,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `await kit.enable_room_hook(room_id, name)`,
   `await kit.disable_room_hook(room_id, name)`, and in a strategy's own
   `install()`, `await kit.claim_room_strategy(room_id, self)`; a host
-  serving several organizations passes `organization_id=`.
+  serving several organizations passes `organization_id=`. A test whose
+  kit is a `MagicMock` and installs a built-in strategy gives it
+  `kit.claim_room_strategy = AsyncMock()`.
 
 - **A package's `__all__` decides what a star import binds** (RMK-948).
   `from roomkit.channels import *` no longer binds `ChannelType`,
@@ -705,7 +707,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disconnect it. A subscription to another organization's room is not refused: it
   delivers nothing. A registration that changes an id's organization, to
   none included, drops the rooms the id followed, and a stream under way
-  sends nothing to an id unregistered or registered again since it started.
+  sends nothing to an id unregistered or registered again since it
+  started, a reconnection of the same organization included, which gets
+  neither the rest of the stream nor its `stream_end`: a new registration
+  never saw the stream's start. Each send checks the registration as it
+  starts, and a send failure of a registration gone no longer counts
+  against the id's new one.
   Connection ids are one namespace for every organization: the host server
   generates them, never a client.
 
