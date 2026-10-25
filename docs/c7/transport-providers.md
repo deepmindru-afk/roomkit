@@ -365,6 +365,11 @@ kit.subscribe_websocket("ws-client", "conn-1", "room-2")
 kit.unsubscribe_websocket("ws-client", "conn-1", "room-2")
 ```
 
+`connect_websocket(..., organization_id=...)` reads the room with the
+organization first (RFC §17.2): another organization's room raises
+`RoomNotFoundError`, no connection is registered and no `channel_connected`
+event is emitted.
+
 ## Phone Number Utilities
 
 ```python

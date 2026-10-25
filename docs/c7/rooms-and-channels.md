@@ -419,6 +419,11 @@ delivery path writes: a message's key in it is dropped, `send_event()`
 refuses one, and a sender's message keyed like a coming publication never
 stands in for it.
 
+`kit.deliver()`, `send_greeting()`, `regenerate_target()`,
+`regenerate_response()` and `delegate()` take `organization_id=` (RFC
+§17.2): another organization's room raises `RoomNotFoundError` before any
+hook, queue, turn or child room. Unset, no room is read for the scope.
+
 ## Content Transcoding
 
 When broadcasting events, the EventRouter automatically **transcodes** content to match each target channel's capabilities. A channel that only supports TEXT will receive a text fallback of a RichContent message.
@@ -611,6 +616,12 @@ await kit.add_member("room-id", "console", "u-1", role=ParticipantRole.OWNER)
 await kit.add_member("room-id", "web", "u-1")  # records "web"; the role stays OWNER
 # Now the same message on "web" is the owner's.
 ```
+
+A host serving several organizations passes `organization_id=` to
+`add_member`, `remove_member`, `rename_member`, `list_members` and
+`is_member` (RFC §17.2): another organization's room raises
+`RoomNotFoundError`, its roster neither read nor written. Unset, the call is
+unscoped, as before.
 
 ## Cancelling a turn
 
