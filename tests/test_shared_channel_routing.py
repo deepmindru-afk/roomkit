@@ -263,13 +263,18 @@ class TestARoomTheHostOpened:
         room (§10.4 step 3, §10.1 step 2). Bob gets a room of his own and is
         answered there; the binding is left as the host wrote it, and a
         warning names the binding and the value's type, never the value."""
-        shop = _Shop(store, router=_AnswersWith("free") if router == "custom" else None)
+        answers = _AnswersWith("free") if router == "custom" else None
+        shop = _Shop(store, router=answers)
+        asked = answers.asked if answers is not None else _count_routes(shop.kit)
         room = await shop.open_free_room(metadata={"phone_number": held})
 
         with caplog.at_level("WARNING", logger="roomkit"):
             bob_room = await shop.room_of(BOB)
 
         assert bob_room != room
+        # The default router refuses the room itself (step 3); a strategy
+        # that answers it anyway is refused under the lock and asked again.
+        assert asked == ([BOB] if answers is None else [BOB, BOB])
         binding = await store.get_binding(room, "sms")
         assert binding is not None
         assert binding.participant_id is None
@@ -427,17 +432,28 @@ class TestWhatTheBindingRetains:
 
 
 class TestAGroupChannel:
+    @pytest.mark.parametrize(
+        "metadata", [{}, {"phone_number": 15550000001.0}], ids=["nothing", "unreadable"]
+    )
     async def test_every_sender_on_a_group_binding_shares_the_room(
-        self, store: ConversationStore
+        self,
+        store: ConversationStore,
+        metadata: dict[str, Any],
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
+        """Routing reads no recipient on a group binding (RFC §5.7): one
+        holding a value that is not a recipient admits everyone all the same,
+        and routing warns of nothing."""
         shop = _Shop(store)
         await shop.kit.create_room(room_id="team")
-        await shop.kit.attach_channel("team", "sms", group=True)
+        await shop.kit.attach_channel("team", "sms", group=True, metadata=metadata)
 
-        assert await shop.room_of(ALICE) == "team"
-        assert await shop.room_of(BOB) == "team"
-        assert await shop.room_of(CAROL) == "team"
+        with caplog.at_level("WARNING", logger="roomkit"):
+            assert await shop.room_of(ALICE) == "team"
+            assert await shop.room_of(BOB) == "team"
+            assert await shop.room_of(CAROL) == "team"
         assert await shop.named_on("team") is None
+        assert not [r for r in caplog.records if "not a recipient" in r.getMessage()]
 
 
 class TestTwoNumbersOnOneKit:

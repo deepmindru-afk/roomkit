@@ -249,7 +249,7 @@ async def test_a_host_address_is_written_in_e164() -> None:
     [(None, True), ("  ", True), (15550000001.0, False), ([ALICE], False)],
     ids=["nothing", "blank", "float", "list"],
 )
-async def test_a_binding_naming_the_sender_without_recipient_gets_one(
+async def test_a_binding_naming_the_sender_gets_its_address_where_it_holds_no_value(
     held: object, completed: bool
 ) -> None:
     """A binding recorded before it carried a recipient is completed by the
@@ -404,7 +404,9 @@ async def test_no_recipient_is_logged_as_a_refusal_without_traceback(
 
     with caplog.at_level("WARNING", logger="roomkit"):
         await kit.send_event("nobody", "bank", TextContent(body="notice"))
-        await _eventually(lambda: any("refused" in r.getMessage() for r in caplog.records))
+        await _eventually(
+            lambda: any("the binding has no" in r.getMessage() for r in caplog.records)
+        )
 
     refusals = [r for r in caplog.records if "refused" in r.getMessage()]
     assert [r.levelname for r in refusals] == ["WARNING"]

@@ -234,24 +234,27 @@ def routed_recipient(
 ) -> str | UnreadableRecipient | None:
     """The recipient *binding* delivers to, as routing reads it (RFC §5.7, §10.4).
 
-    Its address in the channel's form; ``None`` when it holds no value, or
-    on a channel whose recipient names no conversation (or no channel); an
+    Its address in the channel's form; ``None`` when it holds no value, on a
+    ``group`` binding, whose recipient names no one, or on a channel whose
+    recipient names no conversation (or no channel); an
     :class:`UnreadableRecipient` for a value under the channel's recipient
     key that is not a recipient. That one is not "no recipient": it is a
-    recipient no sender is, so it admits no one by step 3, makes the room
-    no longer a routed message's under the lock, and is never written over
-    by the record of a sender. It is logged as a warning naming the binding
-    and the value's type, never the value, which may be a person's number.
+    recipient no sender is, so on a binding naming no participant it admits
+    no one by step 3 and makes the room no longer a routed message's under
+    the lock, and the record of a sender never writes over it. It is logged
+    as a warning naming the binding and the value's type, never the value,
+    which may be a person's number.
     """
-    if channel is None:
+    if channel is None or binding.group:
         return None
     key = channel.recipient_key
     held = read_recipient(binding.metadata, key) if key is not None else None
     if isinstance(held, UnreadableRecipient):
         logger.warning(
             "The binding of channel %r in room %r holds a %s under %r, which is not a "
-            "recipient: routing reads it as no sender's, and deliveries to it are refused "
-            "no_recipient (RFC §5.7)",
+            "recipient: routing reads it as someone else's address, so no sender the "
+            "binding does not name is admitted through it, and deliveries to it are "
+            "refused no_recipient (RFC §5.7)",
             binding.channel_id,
             binding.room_id,
             held.kind,

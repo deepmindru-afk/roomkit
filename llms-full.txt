@@ -881,12 +881,14 @@ that is not blank or an integer (a chat id). A binding with the key absent,
 null or a blank string holds no recipient: routing reads no correspondent in
 it, so a room opened for no one keeps its first routed sender, whose address
 is written there. Any other value (`true`, a float, a list, an object) is not
-a recipient either, but it is not "no recipient": routing reads it as
-someone else's, so no routed sender is admitted through that binding or
-recorded on it, the value is never written over, and a warning names the
+a recipient, and is not "no recipient" either: routing reads it as someone
+else's address. On a binding naming no participant and not `group`, no
+routed sender is admitted through it or recorded on it; a binding naming its
+correspondent still routes them there, and a `group` binding admits everyone.
+The value is never written over, and routing logs a warning naming the
 binding and the value's type. A delivery to either is refused
-`no_recipient`. On a channel whose
-replies go to a chat only, a message that does not carry its chat has no
+`no_recipient`. Under a message's chat key, either is no chat. On a channel
+whose replies go to a chat only, a message that does not carry its chat has no
 address: it records no one, and a room opened for it names neither
 correspondent nor recipient (deliveries refused `no_recipient` until the host
 names one).
