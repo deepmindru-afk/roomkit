@@ -198,14 +198,21 @@ def delivering(room_id: str, budget: ReentryBudget) -> AbstractContextManager[No
     return _framed(_Frame(_Kind.DELIVERING, room_id, budget))
 
 
-def after_delivery(room_id: str, budget: ReentryBudget) -> AbstractContextManager[None]:
+@contextmanager
+def after_delivery(room_id: str, budget: ReentryBudget, depth: int) -> Generator[None, None, None]:
     """The body of one ASYNC hook a cascade of *room_id* drawing on *budget*
-    fires once an event's delivery set has run: its ``AFTER_BROADCAST``
-    hooks (RFC §10.1 step 16) and a change's mutation trigger (§10.3). It is
-    the cascade's delivery work while it runs; a task it starts that calls
-    once the body has returned is work of its own. What it sends into the
-    room draws on the budget's hook calls."""
-    return _framed(_Frame(_Kind.DELIVERING, room_id, budget, hook_body=True))
+    fires once an event's delivery set has run, for an event *depth* deep:
+    its ``AFTER_BROADCAST`` hooks (RFC §10.1 step 16) and a change's mutation
+    trigger (§10.3). It is the cascade's delivery work while it runs: what it
+    sends into the room draws on the budget's hook calls, and a call it makes
+    into any room is at least one deeper than that event, as a call made
+    within a turn is at least as deep as its response (§8.3), so a hook that
+    asks an agent again after each of its answers ends at the depth limit. A
+    task it starts that calls once the body has returned is work of its
+    own."""
+    frame = _Frame(_Kind.DELIVERING, room_id, budget, hook_body=True)
+    with _framed(frame), within_turn(depth + 1):
+        yield
 
 
 def charge_direct_change(change: Entry, room_id: str, call: str) -> None:

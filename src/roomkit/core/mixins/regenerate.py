@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._changes import withdrawn
-from roomkit.core._reentrance import ReentryBudget, charge_direct_change
+from roomkit.core._reentrance import ReentryBudget, chain_floor, charge_direct_change
 from roomkit.core._room_timers import due_transitions
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
 from roomkit.core.exceptions import RoomClosedError
@@ -373,7 +373,10 @@ class RegenerateMixin(HelpersMixin):
         agents = list(dict.fromkeys(answered)) or discussion.asked_by(trigger)
         if not agents:
             return None
-        await discussion.queue_regeneration(trigger, agents)
+        # As deep as a call made where it is made (RFC §8.3), the discussion's
+        # depth limit included (§19.7.5 rule 11).
+        depth = max(trigger.chain_depth, chain_floor())
+        await discussion.queue_regeneration(trigger, agents, depth=depth)
         return InboundResult(event=trigger)
 
     async def _due_selection(
@@ -444,7 +447,11 @@ class RegenerateMixin(HelpersMixin):
             update={
                 "visibility": intersect_visibility(
                     trigger.visibility, Visibility.INTELLIGENCE, categories.get
-                )
+                ),
+                # Made within a turn or an ASYNC hook's body, the regeneration
+                # is at least as deep as the calls made there (RFC §8.3), so a
+                # hook that regenerates after every answer ends at the limit.
+                "chain_depth": max(trigger.chain_depth, chain_floor()),
             }
         )
         plan = self._get_router().plan(intel_trigger, source_binding, context)

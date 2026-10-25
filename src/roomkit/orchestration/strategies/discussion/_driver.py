@@ -294,6 +294,7 @@ class TurnDriver:
             return self._not_given(state, entry)
         if entry.post:
             return self._handed(state, _Turn(entry, None, {}, posted=answered), answered.id)
+        answered = _at_ask_depth(answered, entry)
         mark = issue_mark([self._notes(entry, answered, context)])
         try:
             cascade = await room.kit._plan_discussion_turn(
@@ -598,3 +599,13 @@ async def _abandon(turn: _Turn, reason: str, *, drain: bool = True) -> None:
         await turn.cascade.abandon(reason)
     except Exception:
         logger.exception("A discussion turn of %s was not abandoned cleanly", turn.entry.agent)
+
+
+def _at_ask_depth(answered: RoomEvent, entry: Entry) -> RoomEvent:
+    """*answered* at the depth its ask stands at when that is deeper than its
+    own: a regeneration a hook asked for answers one deeper than the answer
+    that fired the hook (RFC §8.3, §19.7.5 rule 11)."""
+    ask = entry.answered()
+    if ask is None or ask.depth <= answered.chain_depth:
+        return answered
+    return answered.model_copy(update={"chain_depth": ask.depth})

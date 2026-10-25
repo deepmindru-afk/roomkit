@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import contextvars
 import logging
 from collections.abc import Callable, Coroutine, Iterable
@@ -424,10 +423,14 @@ async def _run_body(
     cascade that fired it once an event's delivery set has run, or of the
     work a direct change was made in, it is that work until it is over:
     what it sends into the room, and a direct change it makes, draws on the
-    budget's hook calls, and a task it starts that calls afterwards has a
-    budget of its own (RFC §9.5.1, §10.1 step 16, §10.3)."""
-    frame = contextlib.nullcontext() if budget is None else after_delivery(room_id, budget)
-    with frame:
+    budget's hook calls and is at least one deeper than *event*, and a task
+    it starts that calls afterwards has a budget and a depth of its own
+    (RFC §8.3, §9.5.1, §10.1 step 16, §10.3)."""
+    if budget is None:
+        await asyncio.wait_for(hook.fn(event, context), timeout=hook.timeout)
+        return
+    depth = event.chain_depth if isinstance(event, RoomEvent) else 0
+    with after_delivery(room_id, budget, depth):
         await asyncio.wait_for(hook.fn(event, context), timeout=hook.timeout)
 
 

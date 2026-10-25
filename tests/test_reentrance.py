@@ -27,6 +27,7 @@ from roomkit import (
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.base import Channel
 from roomkit.core.inbound_router import InboundRoomRouter
+from roomkit.delivery.memory import InMemoryDeliveryBackend
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage, InboundResult
@@ -42,6 +43,7 @@ from roomkit.models.hook import HookResult
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.models.streaming import SegmentBreakMarker
+from roomkit.orchestration.strategies.discussion import Discussion
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
@@ -756,34 +758,102 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
-    async def test_a_hook_posting_to_the_agent_after_each_answer_stops_at_the_cap(
-        self,
+    @pytest.mark.parametrize("room", ["plain", "discussion"])
+    async def test_a_judge_posting_back_after_each_answer_stops_at_the_depth_limit(
+        self, room: str
     ) -> None:
-        """The agent's answer fires the hook, whose post the agent answers:
-        each round trip draws on the budget of the cascade the first message
-        opened, its post one of the 20 hook calls and the answer's reentry
-        one of the 20 passes: twenty round trips, the answer to the
-        twentieth post capped. The agent is asked below the depth limit of
-        2."""
-        kit = await _room(RoomKit(max_chain_depth=2))
-        kit.register_channel(AILikeChannel("ai", response="Answer."))
-        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        """A hook that awaits each answer and posts back to the agent: each
+        post is one deeper than the answer that fired the hook, so the round
+        trips end at the depth limit, about half of it in answers (3 at the
+        limit of 6), in a plain room as in a discussion, whose turns each
+        have a budget of their own (RFC §8.3, §19.7.5 rule 11)."""
+        kit = RoomKit(max_chain_depth=6)
+        provider = MockAIProvider(responses=["Answer."])
+        await _agent_room(kit, room, provider)
         posted: list[RoomEvent] = []
+        ended = _ends_at_the_depth_limit(kit)
 
         @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="judge")
         async def judge(event: RoomEvent, ctx: RoomContext) -> None:
-            if event.source.channel_id == "ai" and len(posted) <= 4 * BUDGET:
-                posted.append(await kit.post("r1", "Try again.", addressed_to=["ai"]))
+            if event.source.channel_id != "a" or event.blocked_by is not None:
+                return
+            if len(posted) >= 4 * BUDGET:
+                ended.set()
+                return
+            posted.append(await kit.post("r1", "@a again", addressed_to=["a"]))
 
         try:
-            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            await asyncio.wait_for(kit.process_inbound(_message("@a hello")), 5)
+            await asyncio.wait_for(ended.wait(), 5)
             await asyncio.wait_for(_settled(kit), 5)
-            events = await _messages(kit)
-            answers = [e for e in events if e.source.channel_id == "ai" and e.blocked_by is None]
-            assert (len(posted), len(answers)) == (20, 20)
-            assert [(e.source.channel_id, e.blocked_by) for e in _capped(events)] == [
-                ("ai", "reentry_loop_cap")
-            ]
+            assert (len(provider.calls), [e.chain_depth for e in posted]) == (3, [2, 4, 6])
+        finally:
+            await kit.close()
+
+    async def test_a_hook_delivering_to_the_agent_through_a_queue_stops_at_the_depth_limit(
+        self,
+    ) -> None:
+        """``deliver()`` from a hook's body continues the hook's chain even
+        when a worker runs it later, outside the body: the queued item
+        carries the depth, and the round trips end at the depth limit of 6,
+        3 answers."""
+        backend = InMemoryDeliveryBackend()
+        kit = RoomKit(max_chain_depth=6, delivery_backend=backend)
+        await backend.start(kit)
+        provider = MockAIProvider(responses=["Answer."])
+        await _agent_room(kit, "plain", provider)
+        delivered: list[None] = []
+        ended = _ends_at_the_depth_limit(kit)
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="again")
+        async def again(event: RoomEvent, ctx: RoomContext) -> None:
+            if event.source.channel_id != "a" or event.blocked_by is not None:
+                return
+            if len(delivered) >= 4 * BUDGET:
+                ended.set()
+                return
+            delivered.append(None)
+            await kit.deliver("r1", "again", channel_id="sms", addressed_to=["a"])
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message("@a hello")), 5)
+            await asyncio.wait_for(ended.wait(), 5)
+            assert (len(provider.calls), len(delivered)) == (3, 3)
+        finally:
+            await kit.close()
+            await backend.close()
+
+    @pytest.mark.parametrize("room", ["plain", "discussion"])
+    async def test_a_hook_regenerating_after_each_answer_stops_at_the_depth_limit(
+        self, room: str
+    ) -> None:
+        """A hook that deletes each answer and regenerates it: each
+        regeneration is one deeper than the answer that fired the hook, so
+        the loop ends at the depth limit of 6 after 3 answers, in a plain
+        room as in a discussion, whose regenerated turns each have a budget
+        of their own (RFC §8.3, §10.3, §19.7.5 rule 11)."""
+        kit = RoomKit(max_chain_depth=6)
+        provider = MockAIProvider(responses=["Answer."])
+        await _agent_room(kit, room, provider)
+        regenerated: list[None] = []
+        ended = _ends_at_the_depth_limit(kit)
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="redo")
+        async def redo(event: RoomEvent, ctx: RoomContext) -> None:
+            if event.source.channel_id != "a" or event.blocked_by is not None:
+                return
+            if len(regenerated) >= 4 * BUDGET:
+                ended.set()
+                return
+            regenerated.append(None)
+            await kit.delete_event("r1", event.id)
+            await kit.regenerate_response("r1")
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message("@a hello")), 5)
+            await asyncio.wait_for(ended.wait(), 5)
+            await asyncio.wait_for(_settled(kit), 5)
+            assert (len(provider.calls), len(regenerated)) == (3, 3)
         finally:
             await kit.close()
 
@@ -1086,15 +1156,14 @@ class TestADirectChangeFromAHook:
         [
             pytest.param("update", 1, 11, id="ON_EVENT_UPDATED updates again"),
             pytest.param("delete", 1, 6, id="ON_EVENT_DELETED sends and deletes again"),
-            pytest.param("regenerate", 2, 11, id="AFTER_BROADCAST deletes and regenerates"),
         ],
     )
     async def test_a_hook_changing_its_room_on_every_change_stops_at_the_cap(
         self, loop: str, max_chain_depth: int, runs: int
     ) -> None:
         """Started from outside the room's work, each loop runs on the
-        budget of its first call (a cap of 10 hook calls, 20 for the agent's
-        loop at depth limit 2), and its last run's call raises."""
+        budget of its first call (a cap of 10 hook calls), and its last run's
+        call raises. They solicit no agent, so no depth limit stops them."""
         kit = await _room(RoomKit(max_chain_depth=max_chain_depth))
         refused: list[ReentryLoopCapError] = []
         ran = await _DIRECT_LOOPS[loop](kit, refused)
@@ -1162,33 +1231,34 @@ async def _deleting(kit: RoomKit, refused: list[ReentryLoopCapError]) -> list[No
     return ran
 
 
-async def _regenerating(kit: RoomKit, refused: list[ReentryLoopCapError]) -> list[None]:
-    """After each answer of the agent, a hook deletes it and regenerates it."""
-    kit.register_channel(AILikeChannel("ai", response="Answer."))
-    await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
-    ran: list[None] = []
+async def _agent_room(kit: RoomKit, room: str, provider: MockAIProvider) -> None:
+    """Room ``r1``, its transport ``sms`` and its agent ``a``: bound to a
+    plain room, or the one agent of a discussion."""
+    agent = AIChannel("a", provider=provider)
+    kit.register_channel(SimpleChannel("sms"))
+    if room == "discussion":
+        await kit.create_room(room_id="r1", orchestration=Discussion([agent]))
+    else:
+        await kit.create_room(room_id="r1")
+        kit.register_channel(agent)
+        await kit.attach_channel("r1", "a", category=ChannelCategory.INTELLIGENCE)
+    await kit.attach_channel("r1", "sms")
 
-    @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="redo")
-    async def redo(event: RoomEvent, ctx: RoomContext) -> None:
-        if event.source.channel_id != "ai" or event.blocked_by is not None:
-            return
-        ran.append(None)
-        if len(ran) > 4 * BUDGET:
-            return
-        try:
-            await kit.delete_event("r1", event.id)
-            await kit.regenerate_response("r1")
-        except ReentryLoopCapError as error:
-            refused.append(error)
 
-    await kit.send_event("r1", "sms", TextContent(body="hi"), addressed_to=["ai"])
-    return ran
+def _ends_at_the_depth_limit(kit: RoomKit) -> asyncio.Event:
+    """An event set when the depth limit stops an agent in the kit's rooms."""
+    ended = asyncio.Event()
+
+    @kit.on("chain_depth_exceeded")
+    async def limited(event: object) -> None:
+        ended.set()
+
+    return ended
 
 
 _DIRECT_LOOPS: dict[str, Callable[[RoomKit, list[ReentryLoopCapError]], Awaitable[list[None]]]] = {
     "update": _updating,
     "delete": _deleting,
-    "regenerate": _regenerating,
 }
 
 

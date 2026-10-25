@@ -399,16 +399,21 @@ class DiscussionRoom:
         self.wake()
         return True
 
-    async def queue_regeneration(self, trigger: RoomEvent, agents: Sequence[str]) -> list[str]:
+    async def queue_regeneration(
+        self, trigger: RoomEvent, agents: Sequence[str], *, depth: int | None = None
+    ) -> list[str]:
         """A regenerated answer to *trigger*: a turn of its own, at the front,
         for each of *agents* not already queued for it (rule 7); the agents
-        queued."""
+        queued. *depth* is the chain the regeneration stands at when it is
+        deeper than the trigger's own (a regeneration an ASYNC hook asked
+        for, RFC §8.3): its turn answers at that depth, bounded by the
+        discussion's limit (rules 9 and 11)."""
         async with self.editing() as state:
             if self._takes_nothing(state):
                 return []
             ask = Ask(
                 event_id=trigger.id,
-                depth=trigger.chain_depth,
+                depth=max(trigger.chain_depth, depth or 0),
                 asker="",
                 index=trigger.index,
                 person=True,

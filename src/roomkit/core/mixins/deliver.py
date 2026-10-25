@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core._reentrance import chain_floor
 from roomkit.core.delivery import DeliveryStrategy, Immediate, resolve_strategy
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.delivery.base import DeliveryItem
@@ -122,6 +123,13 @@ class DeliverMixin(HelpersMixin):
         resolved = resolve_strategy(strategy) or self._delivery_strategy
         if resolved is None:
             resolved = Immediate()
+        # Made within a turn or an ASYNC hook's body, the content continues
+        # at least that work's chain (RFC §8.3), when it runs here as when a
+        # worker runs it later, outside the work. A negative depth is left to
+        # the item's validation.
+        floor = chain_floor()
+        if 0 <= chain_depth < floor:
+            chain_depth = floor
 
         item = DeliveryItem(
             room_id=room_id,
