@@ -1178,12 +1178,15 @@ class TestADirectChangeFromAHook:
     @pytest.mark.parametrize("change", ["update", "delete", "regenerate"])
     async def test_a_direct_change_past_the_cap_writes_nothing(self, change: str) -> None:
         """A hook's body spends the 30 hook calls of its cascade (depth limit
-        3), then makes one more direct change: refused once, nothing of it
-        written, no event changed or deleted and no model called."""
+        3) updating another event, then makes one more direct change of the
+        person's message the agent answered: refused once, nothing of it
+        written, the message neither changed nor deleted, and the agent not
+        asked again, though a regeneration of that message would ask it."""
         kit = await _room(RoomKit(max_chain_depth=3))
         provider = MockAIProvider(responses=["Answer."])
         kit.register_channel(AIChannel("ai", provider=provider))
         await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        spare = await kit.send_event("r1", "sms", TextContent(body="spare"), addressed_to=[])
         refused: list[ReentryLoopCapError] = []
 
         @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="bulk")
@@ -1191,19 +1194,19 @@ class TestADirectChangeFromAHook:
             if _body(event) != "hi":
                 return
             for n in range(30):
-                await kit.send_event("r1", "sms", TextContent(body=f"spent {n}"), addressed_to=[])
+                await kit.update_event("r1", spare.id, metadata={"n": n})
             try:
                 await _ONE_MORE[change](kit, event)
             except ReentryLoopCapError as error:
                 refused.append(error)
 
         try:
-            hi = await kit.send_event("r1", "sms", TextContent(body="hi"), addressed_to=[])
+            hi = await kit.send_event("r1", "sms", TextContent(body="hi"))
             await asyncio.wait_for(_settled(kit), 5)
             assert len(refused) == 1
             stored = await kit.store.get_event(hi.id)
             assert stored is not None and stored.metadata == hi.metadata
-            assert provider.calls == []
+            assert len(provider.calls) == 1
         finally:
             await kit.close()
 
