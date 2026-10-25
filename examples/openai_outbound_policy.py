@@ -8,6 +8,8 @@ dialled, so it judges every request, redirects included. Shows:
   through the transport, inside the SDK's own default client
 - a transport wrapper that refuses a private address before a byte leaves
 - the same seam on AzureAIProvider, OpenRouterAIProvider, create_vllm_provider
+- the same transport on the clients that draw or look: OpenAIImageProvider
+  here, and the Azure, xAI and Meta image providers and OpenAIVisionProvider
 
 Runs without a key: a MockTransport stands in for the endpoint.
 
@@ -24,7 +26,12 @@ from shared import setup_logging
 
 from roomkit.providers import validate_public_url
 from roomkit.providers.ai import AIContext, AIMessage, ProviderError
-from roomkit.providers.openai import OpenAIAIProvider, OpenAIConfig
+from roomkit.providers.openai import (
+    OpenAIAIProvider,
+    OpenAIConfig,
+    OpenAIImageConfig,
+    OpenAIImageProvider,
+)
 
 logger = setup_logging("openai_outbound_policy")
 
@@ -37,6 +44,17 @@ COMPLETION = {
         {"index": 0, "message": {"role": "assistant", "content": "Hi!"}, "finish_reason": "stop"}
     ],
     "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+}
+
+# A 1x1 PNG, as an images endpoint returns it.
+IMAGES = {
+    "created": 0,
+    "data": [
+        {
+            "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+            "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        }
+    ],
 }
 
 
@@ -75,9 +93,24 @@ async def ask(base_url: str) -> None:
         await provider.close()
 
 
+async def draw(base_url: str) -> None:
+    endpoint = httpx.MockTransport(lambda request: httpx.Response(200, json=IMAGES))
+    config = OpenAIImageConfig(api_key="user-key", model="gpt-image-2", base_url=base_url)
+    images = OpenAIImageProvider(config, transport=PublicOnly(endpoint))
+    try:
+        [image] = await images.generate("an origami fox")
+        logger.info("%s drew a %s", base_url, image.mime_type)
+    except ProviderError as exc:
+        logger.info("%s refused: %s", base_url, root_cause(exc))
+    finally:
+        await images.close()
+
+
 async def main() -> None:
     await ask("https://models.example.com/v1")
     await ask("http://169.254.169.254/v1")  # a cloud metadata address
+    await draw("https://images.example.com/v1")
+    await draw("http://169.254.169.254/v1")
 
 
 if __name__ == "__main__":

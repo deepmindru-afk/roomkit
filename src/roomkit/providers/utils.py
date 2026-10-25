@@ -87,6 +87,30 @@ def parse_data_uri(url: str, *, fallback_mime: str | None = None) -> tuple[str, 
     return mime_type, data
 
 
+def openai_http_client(
+    openai_module: Any, transport: httpx.AsyncBaseTransport | None
+) -> httpx.AsyncClient | None:
+    """The OpenAI SDK's default HTTP client over *transport*; ``None`` without one.
+
+    Every client RoomKit builds on the ``openai`` SDK takes its
+    ``http_client`` from here, so a host's ``transport=`` reaches each the
+    same way: the seam for an outbound policy that judges the address
+    actually dialled. The SDK's own class, not a bare ``httpx.AsyncClient``,
+    so redirects are still followed, each hop through the transport. Its
+    timeout is the one the SDK client is built with, applied per request.
+    The pool and its limits are the transport's; httpx reads no environment
+    proxy beside a transport. Closing the SDK client closes it, and the
+    transport with it.
+
+    *openai_module* is the ``openai`` module the caller imported: the SDK is
+    an optional dependency, imported where it is needed.
+    """
+    if transport is None:
+        return None
+    client: httpx.AsyncClient = openai_module.DefaultAsyncHttpxClient(transport=transport)
+    return client
+
+
 def http_timeout(config: HTTPTimeouts) -> httpx.Timeout:
     """The ``httpx.Timeout`` a provider hands its HTTP client or SDK, from its config."""
     return http_timeout_from(config.timeout, config.connect_timeout)

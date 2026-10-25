@@ -23,7 +23,7 @@ default format is WebP.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from roomkit.providers.ai.base import (
     AIImagePart,
@@ -43,7 +43,10 @@ from roomkit.providers.image.base import (
 from roomkit.providers.image.options import ImageModelInfo, ImageOptions
 from roomkit.providers.meta.config import MetaImageConfig
 from roomkit.providers.meta.image_models import MODELS
-from roomkit.providers.utils import http_timeout
+from roomkit.providers.utils import http_timeout, openai_http_client
+
+if TYPE_CHECKING:
+    import httpx
 
 _REASONING = {"minimal": "low", "high": "high"}
 
@@ -51,7 +54,11 @@ _REASONING = {"minimal": "low", "high": "high"}
 class MetaImageProvider(ImageProvider):
     """Image provider on Meta's Muse Image."""
 
-    def __init__(self, config: MetaImageConfig) -> None:
+    def __init__(
+        self, config: MetaImageConfig, *, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
+        """*transport* carries every request, edits included, as for
+        :class:`~roomkit.providers.openai.ai.OpenAIAIProvider`."""
         try:
             import httpx as _httpx
             import openai as _openai
@@ -70,6 +77,7 @@ class MetaImageProvider(ImageProvider):
             base_url=config.base_url,
             timeout=http_timeout(config),
             max_retries=config.max_retries,
+            http_client=openai_http_client(_openai, transport),
         )
 
     @property

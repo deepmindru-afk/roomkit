@@ -3614,7 +3614,7 @@
     "__init__": ["def", "*", "api_key", "azure_endpoint", "api_version='2025-04-01-preview'", "model", "quality=None", "background=None", "output_format=None", "timeout=120.0", "connect_timeout=5.0", "max_retries=0"]
   },
   "roomkit.providers.azure.AzureImageProvider": {
-    "__init__": ["def", "config"],
+    "__init__": ["def", "config", "*", "transport=None"],
     "available_models": ["classmethod"],
     "catalog_entry": ["def"],
     "close": ["async def"],
@@ -4057,7 +4057,7 @@
     "__init__": ["def", "*", "api_key", "base_url='https://api.meta.ai/v1'", "model='muse-image-1.0'", "tools=[]", "reasoning_strength=None", "moderation=None", "output_format=None", "timeout=120.0", "connect_timeout=5.0", "max_retries=0"]
   },
   "roomkit.providers.meta.MetaImageProvider": {
-    "__init__": ["def", "config"],
+    "__init__": ["def", "config", "*", "transport=None"],
     "available_models": ["classmethod"],
     "catalog_entry": ["def"],
     "close": ["async def"],
@@ -4146,7 +4146,7 @@
     "__init__": ["def", "*", "api_key", "base_url=None", "model", "quality=None", "background=None", "output_format=None", "timeout=120.0", "connect_timeout=5.0", "max_retries=0", "default_headers=None"]
   },
   "roomkit.providers.openai.OpenAIImageProvider": {
-    "__init__": ["def", "config"],
+    "__init__": ["def", "config", "*", "transport=None"],
     "available_models": ["classmethod"],
     "catalog_entry": ["def"],
     "close": ["async def"],
@@ -4764,7 +4764,7 @@
     "__init__": ["def", "*", "api_key", "base_url='https://api.x.ai/v1'", "model='grok-imagine-image-2.0'", "quality=None", "resolution=None", "timeout=120.0", "connect_timeout=5.0", "max_retries=0"]
   },
   "roomkit.providers.xai.XAIImageProvider": {
-    "__init__": ["def", "config"],
+    "__init__": ["def", "config", "*", "transport=None"],
     "available_models": ["classmethod"],
     "catalog_entry": ["def"],
     "close": ["async def"],
@@ -5648,7 +5648,7 @@
     "__init__": ["def", "api_key='ollama'", "base_url='http://localhost:11434/v1'", "model='qwen3.5'", "prompt='Describe what you see in this image briefly and precisely. Include key objects, people, actions, and any visible text.'", "max_tokens=100", "temperature=0.3", "timeout=30.0", "detail='low'", "connect_timeout=5.0", "supports_response_schema=True"]
   },
   "roomkit.video.OpenAIVisionProvider": {
-    "__init__": ["def", "config=None"],
+    "__init__": ["def", "config=None", "*", "transport=None"],
     "analyze_frame": ["async def", "frame", "*", "prompt=None", "response_schema=None"],
     "analyze_stream": ["async gen def", "frames", "*", "interval_ms=2000", "assumed_fps=30.0"],
     "close": ["async def"],

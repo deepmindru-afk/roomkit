@@ -9,7 +9,7 @@ from roomkit.providers.ai.reasoning import thinking_switch, turn_setting
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openrouter.config import OpenRouterConfig
 from roomkit.providers.openrouter.models import MODELS
-from roomkit.providers.utils import http_timeout
+from roomkit.providers.utils import http_timeout, openai_http_client
 
 if TYPE_CHECKING:
     import httpx
@@ -50,7 +50,7 @@ class OpenRouterAIProvider(OpenAIAIProvider):
             timeout=http_timeout(config),
             max_retries=config.max_retries,
             default_headers=self._merged_headers(config),
-            http_client=self._sdk_http_client(_openai, transport),
+            http_client=openai_http_client(_openai, transport),
         )
 
     @staticmethod

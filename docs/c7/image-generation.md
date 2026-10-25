@@ -42,6 +42,12 @@ vendor knobs — OpenAI's `quality`/`background`/`output_format`, Gemini's
 `image_size`/`output_mime_type`, xAI's `quality`/`resolution`, Azure's
 `azure_endpoint`/`api_version`. The `generate()` call is identical everywhere.
 
+The OpenAI, Azure, xAI and Meta providers run on the `openai` SDK and take
+`transport=` (an `httpx.AsyncBaseTransport`) as the OpenAI AI provider does:
+every request, an edit's included, goes through it, the seam for a policy
+that judges the address dialled when users name `base_url`
+(`examples/openai_outbound_policy.py`).
+
 ```python
 from roomkit.providers.xai import XAIImageConfig, XAIImageProvider
 

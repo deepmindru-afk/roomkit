@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from roomkit.providers.ai.base import ModelInfo
 from roomkit.providers.azure.config import AzureAIConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider
-from roomkit.providers.utils import http_timeout
+from roomkit.providers.utils import http_timeout, openai_http_client
 
 if TYPE_CHECKING:
     import httpx
@@ -43,7 +43,7 @@ class AzureAIProvider(OpenAIAIProvider):
             api_version=config.api_version,
             timeout=http_timeout(config),
             max_retries=config.max_retries,
-            http_client=self._sdk_http_client(_openai, transport),
+            http_client=openai_http_client(_openai, transport),
         )
 
     @property

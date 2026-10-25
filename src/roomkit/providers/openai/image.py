@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from roomkit.providers.ai.base import (
     AIImagePart,
@@ -25,7 +25,10 @@ from roomkit.providers.image.usage import openai_image_usage
 from roomkit.providers.openai.config import OpenAIImageConfig
 from roomkit.providers.openai.image_models import MODELS
 from roomkit.providers.openai.image_stream import consume_image_stream
-from roomkit.providers.utils import http_timeout
+from roomkit.providers.utils import http_timeout, openai_http_client
+
+if TYPE_CHECKING:
+    import httpx
 
 _EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 
@@ -38,9 +41,14 @@ class OpenAIImageProvider(ImageProvider):
     RFC §25.4 requires the provider to absorb it.
     """
 
-    def __init__(self, config: OpenAIImageConfig) -> None:
+    def __init__(
+        self, config: OpenAIImageConfig, *, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
+        """*transport* carries every request, as for
+        :class:`~roomkit.providers.openai.ai.OpenAIAIProvider`: the seam for a
+        policy that judges the address dialled when users name ``base_url``."""
         try:
-            import httpx
+            import httpx as _httpx
             import openai as _openai
         except ImportError as exc:
             raise ImportError(
@@ -49,13 +57,14 @@ class OpenAIImageProvider(ImageProvider):
             ) from exc
         self._config = config
         self._api_status_error = _openai.APIStatusError
-        self._api_connection_error = (_openai.APIConnectionError, httpx.TransportError)
+        self._api_connection_error = (_openai.APIConnectionError, _httpx.TransportError)
         self._client = _openai.AsyncOpenAI(
             api_key=config.api_key.get_secret_value(),
             base_url=config.base_url,
             timeout=http_timeout(config),
             max_retries=0,
             default_headers=config.default_headers,
+            http_client=openai_http_client(_openai, transport),
         )
 
     @property

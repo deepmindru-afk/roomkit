@@ -11,7 +11,7 @@ absorb it.
 from __future__ import annotations
 
 from math import gcd
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from roomkit.providers.ai.base import (
     AIImagePart,
@@ -28,9 +28,12 @@ from roomkit.providers.image.base import (
     payload_mime_type,
     to_data_uri,
 )
-from roomkit.providers.utils import http_timeout
+from roomkit.providers.utils import http_timeout, openai_http_client
 from roomkit.providers.xai.config import XAIImageConfig
 from roomkit.providers.xai.image_models import MODELS
+
+if TYPE_CHECKING:
+    import httpx
 
 _MODELS_BY_ID: dict[str, ModelInfo] = {m.id: m for m in MODELS}
 
@@ -70,7 +73,11 @@ _SIZE_TIERS: tuple[tuple[int, str], ...] = ((1024, "1k"), (2048, "2k"))
 class XAIImageProvider(ImageProvider):
     """Image provider using xAI's Grok Imagine images API."""
 
-    def __init__(self, config: XAIImageConfig) -> None:
+    def __init__(
+        self, config: XAIImageConfig, *, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
+        """*transport* carries every request, edits included, as for
+        :class:`~roomkit.providers.openai.ai.OpenAIAIProvider`."""
         try:
             import httpx as _httpx
             import openai as _openai
@@ -89,6 +96,7 @@ class XAIImageProvider(ImageProvider):
             base_url=config.base_url,
             timeout=http_timeout(config),
             max_retries=config.max_retries,
+            http_client=openai_http_client(_openai, transport),
         )
 
     @property

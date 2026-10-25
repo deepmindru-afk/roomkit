@@ -502,6 +502,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chain that has the tool, whatever the policy says of servers. A host that
   declares bare names puts first in the chain the server they must reach.
 
+- **The image and vision clients built on the `openai` SDK take
+  `transport=`** (RMK-453), as the AI providers do since RMK-408:
+  `OpenAIImageProvider`, `AzureImageProvider`, `XAIImageProvider`,
+  `MetaImageProvider` and `OpenAIVisionProvider`. Each composes a request
+  from an endpoint its config names (`base_url`, `azure_endpoint`), and none
+  let a host put a policy where the address is dialled: a user's endpoint
+  that resolves to a private address at call time, past any check made when
+  it was saved, was dialled anyway. Every request, an edit's included, now
+  goes through the `httpx.AsyncBaseTransport` given, inside the SDK's own
+  default client, built in one place for every client on that SDK.
+  Redirects are still followed, each hop through the transport, and the
+  per-request timeout applies; the transport owns its pool, and closes with
+  the client. `examples/openai_outbound_policy.py` refuses a metadata
+  address to an image provider too.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

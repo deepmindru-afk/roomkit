@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from roomkit.providers.ai.openai_dialect import (
     choice_refusal,
@@ -39,10 +39,13 @@ from roomkit.providers.ai.openai_dialect import (
     json_schema_format,
 )
 from roomkit.providers.ai.response_schema import check_schema_answer, check_schema_request
-from roomkit.providers.utils import http_timeout
+from roomkit.providers.utils import http_timeout, openai_http_client
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.base import DEFAULT_VISION_PROMPT, VisionProvider, VisionResult
 from roomkit.video.vision.encode import frame_to_jpeg_base64
+
+if TYPE_CHECKING:
+    import httpx
 
 logger = logging.getLogger("roomkit.video.vision.openai")
 
@@ -110,8 +113,18 @@ class OpenAIVisionProvider(VisionProvider):
         print(result.description)
     """
 
-    def __init__(self, config: OpenAIVisionConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: OpenAIVisionConfig | None = None,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        """*transport* carries every request, as for
+        :class:`~roomkit.providers.openai.ai.OpenAIAIProvider`: the seam for a
+        policy that judges the address dialled when users name ``base_url``.
+        It goes into the client built on first use, and closes with it."""
         self._config = config or OpenAIVisionConfig()
+        self._transport = transport
         self._client: Any = None
 
     @property
@@ -132,6 +145,7 @@ class OpenAIVisionProvider(VisionProvider):
                 api_key=self._config.api_key,
                 base_url=self._config.base_url,
                 timeout=http_timeout(self._config),
+                http_client=openai_http_client(openai, self._transport),
             )
         return self._client
 

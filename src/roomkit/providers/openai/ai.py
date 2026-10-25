@@ -62,7 +62,7 @@ from roomkit.providers.ai.response_schema import (
 from roomkit.providers.ai.tool_declaration import ToolNameRule, chat_tool_declarations
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.openai.models import MODELS
-from roomkit.providers.utils import _aclose_stream, http_timeout
+from roomkit.providers.utils import _aclose_stream, http_timeout, openai_http_client
 from roomkit.providers.vendor_endpoint import OPENAI_BASE_URL, is_vendor_endpoint
 
 if TYPE_CHECKING:
@@ -151,24 +151,8 @@ class OpenAIAIProvider(AIProvider):
             timeout=http_timeout(config),
             max_retries=config.max_retries,
             default_headers=config.default_headers,
-            http_client=self._sdk_http_client(_openai, transport),
+            http_client=openai_http_client(_openai, transport),
         )
-
-    @staticmethod
-    def _sdk_http_client(
-        openai_module: Any, transport: httpx.AsyncBaseTransport | None
-    ) -> httpx.AsyncClient | None:
-        """The SDK's default HTTP client over *transport*; ``None`` without one.
-
-        The SDK's own class, not a bare ``httpx.AsyncClient``, so redirects
-        are still followed. Its timeout is the one the SDK client is built
-        with, applied per request. The pool and its limits are the
-        transport's; httpx reads no environment proxy beside a transport.
-        """
-        if transport is None:
-            return None
-        client: httpx.AsyncClient = openai_module.DefaultAsyncHttpxClient(transport=transport)
-        return client
 
     @property
     def _provider_name(self) -> str:
