@@ -223,7 +223,7 @@ class WebSocketChannel(Channel):
     def _refuse_another(self, connection_id: str, organization_id: str) -> None:
         """Refuse a connection that is not registered for *organization_id*
         (RFC §17.2): another organization's, an unscoped one, or none, all
-        told alike, so a caller cannot tell which ids another holds."""
+        refused alike, so the refusal does not say whose the id is."""
         if (
             connection_id not in self._connections
             or self._organization_of.get(connection_id) != organization_id
