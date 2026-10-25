@@ -281,15 +281,6 @@ async def _openrouter_models_fetch() -> Any:
     return RecordingAsyncClient.calls[-1]["timeout"]
 
 
-async def _litellm_model_info_fetch() -> Any:
-    with patch.dict("sys.modules", {"openai": _sdk_module()}):
-        provider = LiteLLMAIProvider(LiteLLMConfig(api_key="k", model="m", **_TIMEOUTS))
-    RecordingAsyncClient.calls.clear()
-    with patch("httpx.AsyncClient", RecordingAsyncClient):
-        await provider._fetch_model_info()
-    return RecordingAsyncClient.calls[-1]["timeout"]
-
-
 CASES: dict[str, Builder] = {
     "twilio-sms": _twilio_sms,
     "twilio-rcs": _twilio_rcs,
@@ -319,7 +310,6 @@ CASES: dict[str, Builder] = {
     "azure-image": _azure_image,
     "xai-image": _xai_image,
     "openrouter-models-fetch": _openrouter_models_fetch,
-    "litellm-model-info-fetch": _litellm_model_info_fetch,
 }
 
 

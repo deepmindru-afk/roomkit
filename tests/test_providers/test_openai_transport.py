@@ -6,7 +6,8 @@ actually dialled), and a test a ``MockTransport``. Honoured by
 own SDK client included (Azure, OpenRouter) and ``create_vllm_provider``; and
 by the other clients built on the ``openai`` SDK, whose endpoint a host's
 users name too: the OpenAI, Azure, xAI and Meta image providers and
-``OpenAIVisionProvider`` (RMK-453).
+``OpenAIVisionProvider``; and by the requests beside a completion, such as
+LiteLLM's model listing (RMK-453).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from roomkit.providers.azure.ai import AzureAIProvider
 from roomkit.providers.azure.config import AzureAIConfig, AzureImageConfig
 from roomkit.providers.azure.image import AzureImageProvider
 from roomkit.providers.deepseek import DeepSeekAIProvider, DeepSeekConfig
+from roomkit.providers.litellm import LiteLLMAIProvider, LiteLLMConfig
 from roomkit.providers.meta.config import MetaImageConfig
 from roomkit.providers.meta.image import MetaImageProvider
 from roomkit.providers.openai.ai import OpenAIAIProvider
@@ -123,14 +125,17 @@ _IMAGES = {"created": 0, "data": [{"b64_json": _PNG_B64}]}
 
 
 def _answer(request: httpx.Request) -> httpx.Response:
-    """The endpoint's answer: an image to an images call, a completion otherwise."""
+    """The endpoint's answer: an image to an images call, an empty model
+    listing to a listing, a completion otherwise."""
     if request.url.path.endswith("/images/generations"):
         return httpx.Response(200, json=_IMAGES)
+    if request.url.path.endswith("/model/info"):
+        return httpx.Response(200, json={"data": []})
     return httpx.Response(200, json=_COMPLETION)
 
 
 class _Client(NamedTuple):
-    """An image or vision client on the ``openai`` SDK, and one call it makes."""
+    """A client on the ``openai`` SDK, and one call it makes beside a completion."""
 
     build: Callable[[str, httpx.AsyncBaseTransport], Any]
     """The client for an endpoint at this origin, over this transport."""
@@ -141,13 +146,17 @@ def _draw(provider: Any) -> Awaitable[object]:
     return provider.generate("an origami fox")
 
 
+def _list(provider: Any) -> Awaitable[object]:
+    return provider.list_models()
+
+
 def _look(provider: Any) -> Awaitable[object]:
     return provider.analyze_frame(
         VideoFrame(data=b"\x00\x00\x01", codec="h264", width=2, height=2)
     )
 
 
-_IMAGE_AND_VISION: dict[str, _Client] = {
+_CALLS: dict[str, _Client] = {
     "openai image": _Client(
         lambda origin, t: OpenAIImageProvider(
             OpenAIImageConfig(api_key="k", model="gpt-image-2", base_url=f"{origin}/v1"),
@@ -179,6 +188,12 @@ _IMAGE_AND_VISION: dict[str, _Client] = {
         ),
         _look,
     ),
+    "litellm models": _Client(
+        lambda origin, t: LiteLLMAIProvider(
+            LiteLLMConfig(api_key="k", model="m", base_url=origin), transport=t
+        ),
+        _list,
+    ),
 }
 
 
@@ -193,17 +208,15 @@ class _PublicOnly(httpx.AsyncBaseTransport):
         return await self._inner.handle_async_request(request)
 
 
-@pytest.mark.parametrize("kind", list(_IMAGE_AND_VISION))
-async def test_image_and_vision_clients_send_their_requests_through_the_transport(
-    kind: str,
-) -> None:
+@pytest.mark.parametrize("kind", list(_CALLS))
+async def test_each_call_sends_its_request_through_the_transport(kind: str) -> None:
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         return _answer(request)
 
-    client = _IMAGE_AND_VISION[kind]
+    client = _CALLS[kind]
     provider = client.build("https://models.example", httpx.MockTransport(handler))
     try:
         await client.call(provider)
@@ -213,7 +226,7 @@ async def test_image_and_vision_clients_send_their_requests_through_the_transpor
     assert [request.url.host for request in seen] == ["models.example"]
 
 
-@pytest.mark.parametrize("kind", list(_IMAGE_AND_VISION))
+@pytest.mark.parametrize("kind", list(_CALLS))
 async def test_a_policy_in_the_transport_refuses_a_private_endpoint_before_any_request(
     kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -226,7 +239,7 @@ async def test_a_policy_in_the_transport_refuses_a_private_endpoint_before_any_r
         sent.append(request)
         return _answer(request)
 
-    client = _IMAGE_AND_VISION[kind]
+    client = _CALLS[kind]
     provider = client.build("https://169.254.169.254", _PublicOnly(httpx.MockTransport(handler)))
     try:
         with pytest.raises((ProviderError, openai.APIConnectionError)) as caught:

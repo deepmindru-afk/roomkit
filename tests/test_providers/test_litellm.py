@@ -245,12 +245,12 @@ class TestLiteLLMMetadata:
 
     async def test_list_models_collapses_load_balanced_deployments(self) -> None:
         # /model/info lists one entry per deployment; a load-balanced group
-        # repeats the public name and must surface as one model.
+        # repeats the public name and must surface as one model. Read over
+        # the wire, through the provider's SDK client and its key.
         from roomkit.providers.litellm.ai import LiteLLMAIProvider
 
-        provider = LiteLLMAIProvider.__new__(LiteLLMAIProvider)
-        provider._fetch_model_info = AsyncMock(  # type: ignore[method-assign]
-            return_value=[
+        payload = {
+            "data": [
                 {
                     "model_name": "claude-sonnet",
                     "model_info": {"max_input_tokens": 200_000, "supports_vision": True},
@@ -262,9 +262,24 @@ class TestLiteLLMMetadata:
                 {"model_name": "gpt-5.5", "model_info": {"max_input_tokens": 400_000}},
                 {"litellm_params": {"model": "entry-without-a-name"}},
             ]
-        )
+        }
+        seen: list[httpx.Request] = []
 
-        models = {m.id: m for m in await provider.list_models()}
+        def proxy(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json=payload)
+
+        provider = LiteLLMAIProvider(
+            _config(base_url="https://gateway.example"), transport=httpx.MockTransport(proxy)
+        )
+        try:
+            models = {m.id: m for m in await provider.list_models()}
+        finally:
+            await provider.close()
+
+        [request] = seen
+        assert str(request.url) == "https://gateway.example/model/info"
+        assert request.headers["authorization"] == "Bearer sk-virtual-key"
         assert set(models) == {"claude-sonnet", "gpt-5.5"}
         assert models["claude-sonnet"].context_window == 200_000
         assert models["claude-sonnet"].supports_vision is True

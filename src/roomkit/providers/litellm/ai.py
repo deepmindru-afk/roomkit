@@ -10,7 +10,6 @@ from roomkit.providers.ai.model_tags import SPEECH_CAPABILITY, TRANSCRIPTION_CAP
 from roomkit.providers.ai.reasoning import thinking_switch, turn_setting
 from roomkit.providers.litellm.config import LiteLLMConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider
-from roomkit.providers.utils import http_timeout
 
 
 def _rate_per_million(value: object) -> float | None:
@@ -187,18 +186,13 @@ class LiteLLMAIProvider(OpenAIAIProvider):
         )
 
     async def _fetch_model_info(self) -> list[dict[str, Any]]:
-        """GET the raw ``/model/info`` payload and return its ``data`` array."""
-        # httpx ships with the openai SDK; imported lazily so the class stays
-        # importable (available_models, catalogs) without the HTTP stack.
-        import httpx
+        """GET the raw ``/model/info`` payload and return its ``data`` array.
 
-        url = f"{self._config.base_url.rstrip('/')}/model/info"
-        headers = {"Authorization": f"Bearer {self._config.api_key.get_secret_value()}"}
-        async with httpx.AsyncClient(timeout=http_timeout(self._config)) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            payload = response.json()
-        data = payload.get("data", [])
+        Through the provider's own SDK client, as its completions are: the
+        same key, timeout and ``transport=``, so a host's policy judges this
+        request too. The SDK's errors are raised, as for any other call."""
+        payload = await self._client.get("/model/info", cast_to=object)
+        data = payload.get("data", []) if isinstance(payload, dict) else []
         return data if isinstance(data, list) else []
 
     @staticmethod
