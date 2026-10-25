@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from roomkit._text import is_label
 from roomkit.core.exceptions import ToolFailedError, UnservedToolCallError
 from roomkit.providers.ai.base import AITool, some_vendor_accepts_tool_name
 from roomkit.tools._mcp_result import (
@@ -22,7 +23,7 @@ from roomkit.tools._mcp_result import (
     text_body,
 )
 from roomkit.tools.compose import ToolHandler, ToolResult
-from roomkit.tools.policy import served_tool_name
+from roomkit.tools.policy import alias_server, served_tool_name
 
 logger = logging.getLogger("roomkit.tools.mcp")
 
@@ -166,6 +167,12 @@ class MCPToolProvider:
     ``discover=False`` connects without listing, for a host that only reads
     the server's resources.
 
+    ``label`` is the host's name for the server, the ``<server>`` of an MCP
+    alias ``mcp__<server>__<tool>`` (RFC §21.1): the handler of a labelled
+    provider serves only the aliases that name it, so a tool policy that names
+    a server holds. Without a label the handler serves an alias whatever
+    server it names; give one wherever a host composes several servers.
+
     Enter and exit it in the same task (``async with``): the MCP SDK's
     transports hold anyio cancel scopes that must close where they opened.
     """
@@ -182,7 +189,13 @@ class MCPToolProvider:
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         discover: bool = True,
+        label: str | None = None,
     ) -> None:
+        if label is not None and (not is_label(label) or "__" in label):
+            raise ValueError(
+                f"MCP server label {label!r} is not an identifier "
+                "(letters, digits, '_ . -', 64 at most, no '__')"
+            )
         if transport not in ("streamable_http", "sse", "stdio"):
             raise ValueError(f"Unsupported transport: {transport!r}")
         if transport == "stdio":
@@ -204,6 +217,7 @@ class MCPToolProvider:
         self._env = env
         self._cwd = cwd
         self._discover = discover
+        self._label = label
         self._session: Any = None
         self._stack: AsyncExitStack | None = None
         self._tools: list[AITool] = []
@@ -224,6 +238,7 @@ class MCPToolProvider:
         tool_filter: Callable[[str], bool] | None = None,
         headers: dict[str, str] | None = None,
         discover: bool = True,
+        label: str | None = None,
     ) -> MCPToolProvider:
         """Create an MCPToolProvider for the given URL.
 
@@ -238,12 +253,25 @@ class MCPToolProvider:
                 connects without listing, for a host that only reads
                 resources: :meth:`get_tools` and :meth:`tool_meta` are then
                 empty, and no call is checked against an output schema.
+            label: The host's name for the server, the ``<server>`` of an
+                MCP alias ``mcp__<server>__<tool>``: letters, digits and
+                ``_ . -``, 64 at most, no ``__``. The tool handler then serves
+                only the aliases naming this server. ``None`` (the default)
+                serves an alias whatever server it names.
 
         Returns:
             An MCPToolProvider instance (not yet connected).
+
+        Raises:
+            ValueError: *label* is not an identifier, or holds ``__``.
         """
         return cls(
-            url, transport=transport, tool_filter=tool_filter, headers=headers, discover=discover
+            url,
+            transport=transport,
+            tool_filter=tool_filter,
+            headers=headers,
+            discover=discover,
+            label=label,
         )
 
     @classmethod
@@ -256,6 +284,7 @@ class MCPToolProvider:
         cwd: str | None = None,
         tool_filter: Callable[[str], bool] | None = None,
         discover: bool = True,
+        label: str | None = None,
     ) -> MCPToolProvider:
         """Create an MCPToolProvider for a server started as a subprocess (stdio).
 
@@ -272,9 +301,13 @@ class MCPToolProvider:
             tool_filter: Optional predicate to include only matching tool names.
             discover: List the server's tools on entry (the default); see
                 :meth:`from_url`.
+            label: The host's name for the server; see :meth:`from_url`.
 
         Returns:
             An MCPToolProvider instance (not yet connected).
+
+        Raises:
+            ValueError: *label* is not an identifier, or holds ``__``.
         """
         return cls(
             transport="stdio",
@@ -284,6 +317,7 @@ class MCPToolProvider:
             cwd=cwd,
             tool_filter=tool_filter,
             discover=discover,
+            label=label,
         )
 
     @property
@@ -594,14 +628,22 @@ class MCPToolProvider:
         the call to the next handler of a ``compose_tool_handlers`` chain and
         reads as served by nothing on a channel (RFC §21.4).
 
+        An MCP alias ``mcp__<server>__<tool>`` runs ``<tool>``. A provider
+        given a ``label`` serves only the aliases naming that server: one
+        naming another raises ``UnservedToolCallError`` either way, so the
+        next handler of the chain takes it. A provider without a label serves
+        an alias whatever server it names, so a policy that names a server
+        (``deny=["mcp__b__*"]``) cannot hold a call to it.
+
         ``gate_discovery=False`` forwards every name to the server instead. A
         gateway that routes by name prefix and authenticates the caller per
         call serves tools this connection never listed — a server whose
         ``tools/list`` answers only behind the caller's own credential, say —
         and a host with its own allow-list in front has already decided what
-        the model may call. Such a handler never raises
-        ``UnservedToolCallError``, so it sits last in a
-        ``compose_tool_handlers`` chain: nothing after it would be reached.
+        the model may call. Such a handler raises ``UnservedToolCallError``
+        only for an alias naming another server than its label, so it sits
+        last in a ``compose_tool_handlers`` chain: nothing after it would be
+        reached for any other name.
         A provider connected with ``discover=False`` discovered nothing, so
         its gated handler serves no name: every call raises
         ``UnservedToolCallError``.
@@ -623,7 +665,11 @@ class MCPToolProvider:
 
         async def _handler(name: str, arguments: dict[str, Any]) -> ToolResult:
             # An MCP alias (``mcp__<server>__<tool>``, from a prompt's naming)
-            # runs the tool it names; the gate judged both names.
+            # runs the tool it names; the gate judged both names. A labelled
+            # provider is that one server only.
+            server = alias_server(name)
+            if server is not None and self._label is not None and server != self._label:
+                raise UnservedToolCallError(f"tool {name!r} names another server")
             lookup = served_tool_name(name)
             if gate_discovery and lookup not in self._tool_set:
                 raise UnservedToolCallError(f"tool {name!r} is not served here")

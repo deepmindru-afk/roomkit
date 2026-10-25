@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MCPToolProvider(label=...)`, also on `from_url` and `from_command`: the
+  host's name for the server, the `<server>` of an MCP alias
+  `mcp__<server>__<tool>` (RFC §21.2, RMK-493). Letters, digits and `_ . -`,
+  64 at most, no `__`; anything else raises `ValueError`. Optional: see
+  Security for what it changes. `examples/mcp_server_labels.py` composes two
+  labelled servers under a policy that keeps one out.
+
 - **An agent's answer text, published live as `TEXT_DELTA`** (RFC §6.4,
   RMK-951). The live pipe reaches only a room's streaming transports, and a
   delegated turn's text, collected for its result, reached no one until the
@@ -2396,6 +2403,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connected to another process, are still skipped without a report.
 
 ### Security
+
+- **An MCP alias runs on the server it names, so a tool policy that names a
+  server holds** (RFC §21.1, RMK-493). `MCPToolProvider.as_tool_handler()`
+  served `mcp__<server>__<tool>` as `<tool>` and never read `<server>`: with
+  two servers composed, `mcp__crm__delete_records` ran on the first server of
+  the chain that had `delete_records`, so a policy keeping a server out
+  (`deny=["mcp__archive__*"]`) let its tool run under the other server's
+  alias. A provider given `label=` now serves only the aliases naming its
+  server; one naming another server raises `UnservedToolCallError`, so the
+  next handler of the chain takes it. A provider without a label serves an
+  alias whatever server it names, as before: give `label=` wherever a host
+  composes several servers. A call under the tool's bare name still names no
+  server.
 
 - A routed message's room is checked again under the room lock, not only its
   binding (RFC §10.1 step 2, §10.4, RMK-930). Someone heard on the channel, or

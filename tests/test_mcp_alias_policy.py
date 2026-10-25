@@ -3,7 +3,9 @@
 ``MCPToolProvider.as_tool_handler()`` serves ``mcp__<server>__<tool>`` as
 ``<tool>``. The tool policy and a skill's gate judge both names, on every
 door, so a tool they refuse never runs under its alias; the alias itself is
-still served for a tool they admit.
+still served for a tool they admit. A provider given a ``label`` serves only
+the aliases naming its server, so a policy that names a server holds
+(RMK-493).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from roomkit.models.enums import ChannelType
 from roomkit.models.room import Room
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.compose import ToolHandler, compose_tool_handlers
 from roomkit.tools.external import PolicyExternalToolHandler
 from roomkit.tools.mcp import MCPToolProvider
 from roomkit.tools.policy import ToolPolicy, judged_names, policy_refusal, served_tool_name
@@ -47,15 +50,17 @@ class _Server:
         )
 
 
-def _mcp_handler(server: _Server) -> Any:
-    provider = MCPToolProvider("http://crm.invalid/mcp")
+def _mcp_handler(
+    server: _Server, label: str | None = None, *, gate_discovery: bool = True
+) -> ToolHandler:
+    provider = MCPToolProvider("http://crm.invalid/mcp", label=label)
     provider._connected = True
     provider._session = server  # type: ignore[assignment]
     provider._tools = [
         AITool(name=n, description=n, parameters={}) for n in ("search_records", "delete_records")
     ]
     provider._tool_set = {"search_records", "delete_records"}
-    return provider.as_tool_handler()
+    return provider.as_tool_handler(gate_discovery=gate_discovery)
 
 
 def test_an_alias_is_judged_under_both_names() -> None:
@@ -65,13 +70,13 @@ def test_an_alias_is_judged_under_both_names() -> None:
     assert judged_names("search_records") == ("search_records",)
 
 
-async def _on_session(policy: ToolPolicy, server: _Server, name: str) -> str:
+async def _on_session(policy: ToolPolicy | None, handler: ToolHandler, name: str) -> str:
     provider = MockRealtimeProvider()
     channel = RealtimeVoiceChannel(
         "rt",
         provider=provider,
         transport=MockRealtimeTransport(),
-        tool_handler=_mcp_handler(server),
+        tool_handler=handler,
         tool_policy=policy,
     )
     kit = RoomKit()
@@ -85,9 +90,8 @@ async def _on_session(policy: ToolPolicy, server: _Server, name: str) -> str:
     return provider.tool_results[0][2]
 
 
-async def _on_conference(policy: ToolPolicy, server: _Server, name: str) -> str:
+async def _on_conference(policy: ToolPolicy | None, handler: ToolHandler, name: str) -> str:
     provider = MockRealtimeProvider()
-    handler = _mcp_handler(server)
 
     async def room_handler(room_id: str, tool: str, arguments: dict[str, Any]) -> Any:
         return await handler(tool, arguments)
@@ -117,7 +121,7 @@ async def test_a_tool_the_policy_refuses_never_runs_under_its_alias(
 ) -> None:
     server = _Server()
 
-    answer = await DOORS[door](policy, server, ALIAS)
+    answer = await DOORS[door](policy, _mcp_handler(server), ALIAS)
 
     assert "not permitted by the agent's tool policy" in answer
     assert server.ran == []
@@ -127,10 +131,93 @@ async def test_a_tool_the_policy_refuses_never_runs_under_its_alias(
 async def test_an_alias_of_an_admitted_tool_is_still_served(door: str) -> None:
     server = _Server()
 
-    answer = await DOORS[door](ToolPolicy(deny=["delete_*"]), server, "mcp__crm__search_records")
+    answer = await DOORS[door](
+        ToolPolicy(deny=["delete_*"]), _mcp_handler(server), "mcp__crm__search_records"
+    )
 
     assert "search_records done" in answer
     assert server.ran == ["search_records"]
+
+
+def _two_servers(*, labelled: bool) -> tuple[_Server, _Server, ToolHandler]:
+    """Servers a and b, each serving ``delete_records``, composed with b first."""
+    a, b = _Server(), _Server()
+    handler = compose_tool_handlers(
+        _mcp_handler(b, "b" if labelled else None), _mcp_handler(a, "a" if labelled else None)
+    )
+    return a, b, handler
+
+
+SCOPED_TO_A = [
+    ToolPolicy(deny=["mcp__b__*"]),
+    ToolPolicy(allow=["mcp__a__*", "delete_records"]),
+]
+
+
+@pytest.mark.parametrize("door", list(DOORS))
+@pytest.mark.parametrize("policy", SCOPED_TO_A, ids=["deny-b", "allow-a"])
+async def test_a_policy_scoped_to_one_server_keeps_the_call_off_the_other(
+    door: str, policy: ToolPolicy
+) -> None:
+    a, b, handler = _two_servers(labelled=True)
+
+    on_a = await DOORS[door](policy, handler, "mcp__a__delete_records")
+    on_b = await DOORS[door](policy, handler, "mcp__b__delete_records")
+
+    assert "delete_records done" in on_a
+    assert "not permitted by the agent's tool policy" in on_b
+    assert (a.ran, b.ran) == (["delete_records"], [])
+
+
+async def test_a_policy_that_names_no_server_applies_to_both() -> None:
+    a, b, handler = _two_servers(labelled=True)
+
+    refused = [
+        await _on_session(ToolPolicy(deny=["delete_*"]), handler, f"mcp__{server}__delete_records")
+        for server in ("a", "b")
+    ]
+    assert all("not permitted by the agent's tool policy" in answer for answer in refused)
+    assert (a.ran, b.ran) == ([], [])
+
+    admitting = ToolPolicy(allow=["mcp__*", "delete_records"])
+    for server in ("a", "b"):
+        await _on_session(admitting, handler, f"mcp__{server}__delete_records")
+    assert (a.ran, b.ran) == (["delete_records"], ["delete_records"])
+
+
+async def test_an_unlabelled_provider_serves_an_alias_naming_any_server() -> None:
+    a, b, handler = _two_servers(labelled=False)
+
+    answer = await _on_session(None, handler, "mcp__a__delete_records")
+
+    assert "delete_records done" in answer
+    assert (a.ran, b.ran) == ([], ["delete_records"])
+
+
+@pytest.mark.parametrize("gate_discovery", [True, False], ids=["gated", "forwarding"])
+async def test_a_labelled_provider_serves_no_alias_of_another_server(gate_discovery: bool) -> None:
+    server = _Server()
+    handler = _mcp_handler(server, "crm", gate_discovery=gate_discovery)
+
+    answer = await _on_session(None, handler, "mcp__erp__delete_records")
+
+    assert answer == '{"error": "No handler for tool mcp__erp__delete_records"}'
+    assert server.ran == []
+
+
+@pytest.mark.parametrize("label", ["", "a__b", "crm server", "crm\n", "x" * 65])
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda label: MCPToolProvider("http://crm.invalid/mcp", label=label),
+        lambda label: MCPToolProvider.from_url("http://crm.invalid/mcp", label=label),
+        lambda label: MCPToolProvider.from_command("crm-server", label=label),
+    ],
+    ids=["init", "from_url", "from_command"],
+)
+def test_a_label_that_is_not_an_identifier_is_refused(make: Any, label: str) -> None:
+    with pytest.raises(ValueError, match="label"):
+        make(label)
 
 
 async def test_a_tool_a_skill_gates_never_runs_under_its_alias(tmp_path: Path) -> None:

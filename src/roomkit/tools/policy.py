@@ -35,13 +35,22 @@ class RoleOverride(BaseModel):
     mode: Literal["restrict", "replace"] = "restrict"
 
 
+def alias_server(name: str) -> str | None:
+    """The server an MCP alias ``mcp__<server>__<tool>`` names, ``None`` for a
+    name that is not an alias: the label a labelled ``MCPToolProvider``
+    serves aliases under (RFC §21.1)."""
+    if name.startswith("mcp__") and "__" in name[5:]:
+        return name.split("__", 2)[1]
+    return None
+
+
 def served_tool_name(name: str) -> str:
     """The tool a call to *name* runs: an MCP alias ``mcp__<server>__<tool>``
     runs ``<tool>`` (``MCPToolProvider.as_tool_handler``); any other name runs
     as itself."""
-    if name.startswith("mcp__") and "__" in name[5:]:
-        return name.split("__", 2)[-1]
-    return name
+    if alias_server(name) is None:
+        return name
+    return name.split("__", 2)[2]
 
 
 def judged_names(name: str) -> tuple[str, ...]:
