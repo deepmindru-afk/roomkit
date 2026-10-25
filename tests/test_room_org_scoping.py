@@ -17,6 +17,7 @@ from roomkit import Access, AgentResponsePolicy, RoomKit, RoomTimers
 from roomkit.channels import SMSChannel
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
+from roomkit.channels.websocket import WebSocketChannel
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.inbound_router import InboundRoomRouter
 from roomkit.delivery.memory import InMemoryDeliveryBackend
@@ -26,6 +27,8 @@ from roomkit.models.event import TextContent
 from roomkit.models.identity import Identity
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.sms.mock import MockSMSProvider
+from roomkit.realtime.base import EphemeralCallback, EphemeralEvent
+from roomkit.realtime.memory import InMemoryRealtime
 from tests.test_framework import SimpleChannel
 
 
@@ -567,3 +570,101 @@ class TestScopedTurnsAndDeliveries:
         )
         assert task.parent_room_id == "globex-room" and len(worker.calls) == 1
         await kit.close()
+
+
+class _RecordingRealtime(InMemoryRealtime):
+    """The channels the kit publishes to and subscribes to, read without
+    waiting on a subscription's queue."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reached: list[str] = []
+
+    async def publish(self, channel: str, event: EphemeralEvent) -> None:
+        self.reached.append(channel)
+        await super().publish(channel, event)
+
+    async def subscribe(self, channel: str, callback: EphemeralCallback) -> str:
+        self.reached.append(channel)
+        return await super().subscribe(channel, callback)
+
+
+async def _ignore(event: EphemeralEvent) -> None:
+    return None
+
+
+_EPHEMERALS: dict[str, Callable[[RoomKit, str | None], Awaitable[Any]]] = {
+    "publish_typing": lambda kit, org: kit.publish_typing(
+        "globex-room", "u1", organization_id=org
+    ),
+    "publish_tool_call": lambda kit, org: kit.publish_tool_call(
+        "globex-room", "ai", [{"id": "c1", "name": "lookup"}], organization_id=org
+    ),
+    "publish_presence": lambda kit, org: kit.publish_presence(
+        "globex-room", "u1", "online", organization_id=org
+    ),
+    "publish_read_receipt": lambda kit, org: kit.publish_read_receipt(
+        "globex-room", "u1", "e1", organization_id=org
+    ),
+    "publish_reaction": lambda kit, org: kit.publish_reaction(
+        "globex-room", "u1", "e1", "+1", organization_id=org
+    ),
+    "subscribe_room": lambda kit, org: kit.subscribe_room(
+        "globex-room", _ignore, organization_id=org
+    ),
+}
+
+
+class TestScopedEphemerals:
+    """Nothing is published to, or heard from, another organization's room
+    (RFC §17.2, RMK-491)."""
+
+    @pytest.mark.parametrize("verb", sorted(_EPHEMERALS))
+    async def test_another_organizations_room_is_not_found_and_nothing_is_published(
+        self, verb: str
+    ) -> None:
+        realtime = _RecordingRealtime()
+        kit = RoomKit(realtime=realtime)
+        await kit.create_room(room_id="globex-room", organization_id="globex")
+
+        with pytest.raises(RoomNotFoundError):
+            await _EPHEMERALS[verb](kit, "acme")
+
+        assert realtime.reached == []
+        await kit.close()
+
+    @pytest.mark.parametrize("organization_id", ["globex", None], ids=["own", "unscoped"])
+    @pytest.mark.parametrize("verb", sorted(_EPHEMERALS))
+    async def test_the_rooms_own_organization_or_none_reaches_the_room(
+        self, verb: str, organization_id: str | None
+    ) -> None:
+        realtime = _RecordingRealtime()
+        kit = RoomKit(realtime=realtime)
+        await kit.create_room(room_id="globex-room", organization_id="globex")
+
+        await _EPHEMERALS[verb](kit, organization_id)
+
+        assert realtime.reached == ["room:globex-room"]
+        await kit.close()
+
+    async def test_a_socket_is_not_connected_to_another_organizations_room(self) -> None:
+        kit = await _two_tenants()
+        ws = WebSocketChannel("ws")
+        kit.register_channel(ws)
+
+        with pytest.raises(RoomNotFoundError):
+            await kit.connect_websocket(
+                "ws", "c1", _send_nothing, room_id="globex-room", organization_id="acme"
+            )
+
+        assert (ws.connection_count, ws.rooms_for("c1")) == (0, set())
+        await kit.connect_websocket(
+            "ws", "c1", _send_nothing, room_id="globex-room", organization_id="globex"
+        )
+        await kit.connect_websocket("ws", "c2", _send_nothing, room_id="globex-room")
+        assert ws.rooms_for("c1") == ws.rooms_for("c2") == {"globex-room"}
+        await kit.close()
+
+
+async def _send_nothing(connection_id: str, event: Any) -> None:
+    return None

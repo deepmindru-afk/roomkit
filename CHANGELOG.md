@@ -651,6 +651,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs, anything is queued, a turn starts or a child room is created.
   Unset, no room is read for the scope, as before.
 
+- Ephemeral events and a WebSocket connection take the organization the
+  caller acts for (RFC §17.2, §8.4, RMK-491). A tenant's host could publish
+  typing, presence, receipts, reactions or tool calls into another tenant's
+  room, subscribe to its ephemerals, or connect a socket to it.
+  `publish_typing()`, `publish_tool_call()`, `publish_presence()`,
+  `publish_read_receipt()`, `publish_reaction()`, `subscribe_room()` and
+  `connect_websocket()` take `organization_id=None`: another organization's
+  room raises `RoomNotFoundError`, nothing published, subscribed or
+  connected. Unset, no room is read, as before.
+  `WebSocketChannel.register_connection()` and `subscribe()`, and
+  `kit.subscribe_websocket()`, are synchronous and read no room: they stay
+  unscoped.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

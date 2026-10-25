@@ -1681,6 +1681,7 @@ class RoomKit(
         *,
         room_id: str,
         stream_send_fn: StreamSendFn | None = None,
+        organization_id: str | None = None,
     ) -> None:
         """Register a WebSocket connection for a room and emit framework event.
 
@@ -1689,6 +1690,12 @@ class RoomKit(
         connection the channel cannot place would otherwise have to receive
         every room's events. Add more rooms to the same socket with
         :meth:`subscribe_websocket`.
+
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): the room is read with it before the socket is registered, and
+        another organization's room raises :class:`RoomNotFoundError` with
+        no connection registered and no event emitted. Unset, no room is
+        read, as before.
         """
         await self._ensure_status_bus_subscribed()
         channel = self._channels.get(channel_id)
@@ -1696,6 +1703,8 @@ class RoomKit(
             raise ChannelNotRegisteredError(
                 f"Channel {channel_id} is not a registered WebSocket channel"
             )
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         channel.register_connection(
             connection_id, send_fn, room_id=room_id, stream_send_fn=stream_send_fn
         )

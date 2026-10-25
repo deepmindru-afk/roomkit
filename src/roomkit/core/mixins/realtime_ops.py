@@ -11,9 +11,19 @@ if TYPE_CHECKING:
 
 
 class RealtimeOpsMixin:
-    """Ephemeral event publishing and room subscription operations."""
+    """Ephemeral event publishing and room subscription operations.
+
+    Each takes the organization the caller acts for (RFC §17.2): with one,
+    the room is read first, and another organization's room raises
+    :class:`~roomkit.core.exceptions.RoomNotFoundError` with nothing
+    published or subscribed. Unset, no room is read, and a room id the store
+    does not hold is published to and subscribed to as before.
+    """
 
     _realtime: RealtimeBackend
+
+    # Cross-mixin method — attribute annotation avoids MRO shadowing
+    get_room: Any  # RoomLifecycleMixin
 
     async def publish_typing(
         self,
@@ -21,6 +31,8 @@ class RealtimeOpsMixin:
         user_id: str,
         is_typing: bool = True,
         data: dict[str, Any] | None = None,
+        *,
+        organization_id: str | None = None,
     ) -> None:
         """Publish a typing indicator for a user in a room.
 
@@ -29,7 +41,10 @@ class RealtimeOpsMixin:
             user_id: The user who is typing.
             is_typing: True for typing_start, False for typing_stop.
             data: Optional additional data (e.g., {"name": "User Name"}).
+            organization_id: The organization the caller acts for (RFC §17.2).
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         event = EphemeralEvent(
             room_id=room_id,
             type=EphemeralEventType.TYPING_START if is_typing else EphemeralEventType.TYPING_STOP,
@@ -46,6 +61,7 @@ class RealtimeOpsMixin:
         event_type: EphemeralEventType = EphemeralEventType.TOOL_CALL_START,
         *,
         duration_ms: int | None = None,
+        organization_id: str | None = None,
     ) -> None:
         """Publish a tool call ephemeral event for a channel in a room.
 
@@ -57,7 +73,10 @@ class RealtimeOpsMixin:
             event_type: ``TOOL_CALL_DELTA``, ``TOOL_CALL_START`` or
                 ``TOOL_CALL_END``.
             duration_ms: Optional execution duration (for END events).
+            organization_id: The organization the caller acts for (RFC §17.2).
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         data: dict[str, Any] = {"tool_calls": tool_calls, "channel_id": channel_id}
         if duration_ms is not None:
             data["duration_ms"] = duration_ms
@@ -70,14 +89,19 @@ class RealtimeOpsMixin:
         )
         await self._realtime.publish_to_room(room_id, event)
 
-    async def publish_presence(self, room_id: str, user_id: str, status: str) -> None:
+    async def publish_presence(
+        self, room_id: str, user_id: str, status: str, *, organization_id: str | None = None
+    ) -> None:
         """Publish a presence update for a user in a room.
 
         Args:
             room_id: The room to publish the presence event in.
             user_id: The user whose presence changed.
             status: One of "online", "away", or "offline".
+            organization_id: The organization the caller acts for (RFC §17.2).
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         type_map = {
             "online": EphemeralEventType.PRESENCE_ONLINE,
             "away": EphemeralEventType.PRESENCE_AWAY,
@@ -92,14 +116,19 @@ class RealtimeOpsMixin:
         )
         await self._realtime.publish_to_room(room_id, event)
 
-    async def publish_read_receipt(self, room_id: str, user_id: str, event_id: str) -> None:
+    async def publish_read_receipt(
+        self, room_id: str, user_id: str, event_id: str, *, organization_id: str | None = None
+    ) -> None:
         """Publish a read receipt for a user in a room.
 
         Args:
             room_id: The room to publish the read receipt in.
             user_id: The user who read the message.
             event_id: The ID of the event that was read.
+            organization_id: The organization the caller acts for (RFC §17.2).
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         event = EphemeralEvent(
             room_id=room_id,
             type=EphemeralEventType.READ_RECEIPT,
@@ -115,6 +144,8 @@ class RealtimeOpsMixin:
         target_event_id: str,
         emoji: str,
         action: str = "add",
+        *,
+        organization_id: str | None = None,
     ) -> None:
         """Publish a reaction to a message in a room.
 
@@ -124,7 +155,10 @@ class RealtimeOpsMixin:
             target_event_id: The ID of the event being reacted to.
             emoji: The emoji reaction (empty string to remove).
             action: ``"add"`` or ``"remove"``.
+            organization_id: The organization the caller acts for (RFC §17.2).
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         event = EphemeralEvent(
             room_id=room_id,
             type=EphemeralEventType.REACTION,
@@ -137,16 +171,21 @@ class RealtimeOpsMixin:
         )
         await self._realtime.publish_to_room(room_id, event)
 
-    async def subscribe_room(self, room_id: str, callback: EphemeralCallback) -> str:
+    async def subscribe_room(
+        self, room_id: str, callback: EphemeralCallback, *, organization_id: str | None = None
+    ) -> str:
         """Subscribe to ephemeral events for a room.
 
         Args:
             room_id: The room to subscribe to.
             callback: Async callback invoked for each ephemeral event.
+            organization_id: The organization the caller acts for (RFC §17.2).
 
         Returns:
             A subscription ID that can be used to unsubscribe.
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         return await self._realtime.subscribe_to_room(room_id, callback)
 
     async def unsubscribe_room(self, subscription_id: str) -> bool:
