@@ -71,6 +71,12 @@ class RemoteStream:
         finally:
             self._reading = False
 
+    def read_as_trace(self) -> None:
+        """Say, before reading it, that its reader commits the turn as a
+        delegated task's trace, crossing no hook (RFC §23.3 step 5): only such
+        a turn's answer text is published (RFC §6.4)."""
+        self._turn.read_as_trace()
+
     def drop(self) -> None:
         """Give the stream up unread: it is closed in the background, as its
         collection would close it."""

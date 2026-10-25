@@ -34,6 +34,7 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.sms.mock import MockSMSProvider
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
 from roomkit.turns import InMemoryTurnBackend, OwnerEvents, TurnClient, TurnExecutor
+from roomkit.turns._outlet import TurnRealtime
 from roomkit.turns._owner_between import publish_between_turns
 from roomkit.turns._rooms import RoomRecords
 from roomkit.turns.wire import Ephemeral, PreviousTurn, RoomPublication
@@ -130,14 +131,20 @@ class _Events:
         return self._reaches_room
 
 
-def _publication(turn_id: str = "t1") -> RoomPublication:
-    event = EphemeralEvent(
+def _ephemeral(kind: EphemeralEventType) -> EphemeralEvent:
+    return EphemeralEvent(
         room_id="r",
-        type=EphemeralEventType.THINKING_DELTA,
+        type=kind,
         user_id="assistant",
         channel_id="assistant",
-        data={"thinking": "after the turn"},
+        data={"text": "after the turn"},
     )
+
+
+def _publication(
+    turn_id: str = "t1", kind: EphemeralEventType = EphemeralEventType.THINKING_DELTA
+) -> RoomPublication:
+    event = _ephemeral(kind)
     return RoomPublication(
         turn_id=turn_id,
         executor_id="x",
@@ -147,26 +154,33 @@ def _publication(turn_id: str = "t1") -> RoomPublication:
     )
 
 
+_THINKING = EphemeralEventType.THINKING_DELTA
+
+
 @pytest.mark.parametrize(
-    ("named_turn", "binding_reaches_room", "published"),
+    ("named_turn", "binding_reaches_room", "kind", "published"),
     [
-        ("t2", True, ["thinking_delta"]),
+        ("t2", True, _THINKING, ["thinking_delta"]),
         # An earlier turn of the executor, whose trigger scoped its answers:
         # its work is not published under the later turn's scope.
-        ("t1", True, []),
-        ("t0", True, []),
+        ("t1", True, _THINKING, []),
+        ("t0", True, _THINKING, []),
         # The binding narrowed since the turn began: decided at publish time.
-        ("t2", False, []),
+        ("t2", False, _THINKING, []),
+        # An answer's text is published only while a trace reads its turn
+        # (RFC §6.4, RMK-972).
+        ("t2", True, EphemeralEventType.TEXT_DELTA, []),
     ],
     ids=[
         "the turn it names is open",
         "an earlier turn that was scoped",
         "a turn the owner does not know",
         "binding narrowed after the turn began",
+        "an answer's text",
     ],
 )
 async def test_work_a_turn_began_publishes_after_it_as_that_turn_and_the_room_allow(
-    named_turn, binding_reaches_room, published
+    named_turn, binding_reaches_room, kind, published
 ):
     previous: RoomRecords[PreviousTurn] = RoomRecords()
     earlier = PreviousTurn(turn_id="t1", executor_id="x")
@@ -177,9 +191,30 @@ async def test_work_a_turn_began_publishes_after_it_as_that_turn_and_the_room_al
     previous.put("assistant", "r", latest)
     events = _Events(reaches_room=binding_reaches_room)
 
-    await publish_between_turns(previous, events, _publication(named_turn))
+    await publish_between_turns(previous, events, _publication(named_turn, kind))
 
     assert events.published == published
+
+
+class _KitRealtime:
+    def __init__(self) -> None:
+        self.published: list[str] = []
+
+    async def publish_to_room(self, room_id: str, event: EphemeralEvent) -> None:
+        self.published.append(event.type.value)
+
+
+async def test_an_answers_text_published_outside_a_turn_is_dropped():
+    """Outside a turn, an executor publishes on the kit's realtime, with no
+    owner to judge it: an answer's text, which only a trace's owner
+    publishes (RFC §6.4, RMK-972), is dropped there, nothing else."""
+    kit_realtime = _KitRealtime()
+    realtime = TurnRealtime(lambda: kit_realtime)  # ty: ignore[invalid-argument-type]
+
+    for kind in (EphemeralEventType.TEXT_DELTA, _THINKING):
+        await realtime.publish_to_room("r", _ephemeral(kind))
+
+    assert kit_realtime.published == ["thinking_delta"]
 
 
 class _HostEvents(OwnerEvents):

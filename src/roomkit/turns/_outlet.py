@@ -16,7 +16,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from roomkit.realtime.base import EphemeralCallback, EphemeralEvent, RealtimeBackend
+from roomkit.realtime.base import (
+    EphemeralCallback,
+    EphemeralEvent,
+    EphemeralEventType,
+    RealtimeBackend,
+)
 from roomkit.turns.wire import Ephemeral, FrameworkEventFrame
 
 if TYPE_CHECKING:
@@ -101,7 +106,8 @@ class TurnRealtime(RealtimeBackend):
     """The realtime backend an executor gives the channels it wires: a
     publication made during a turn crosses to the owner as an ``ephemeral``
     frame; one made outside goes to *fallback()*, the kit's own realtime for
-    the kit's executor, and is dropped when there is none.
+    the kit's executor, and is dropped when there is none, or when it is an
+    answer's text, which only a turn's owner publishes (RFC §6.4).
 
     Args:
         fallback: The backend to publish to outside a turn, read when used.
@@ -114,22 +120,28 @@ class TurnRealtime(RealtimeBackend):
         outlet = current_turn_outlet()
         if outlet is not None and await outlet.publish(channel, event):
             return
-        backend = self._fallback()
-        if backend is None:
-            logger.debug("Ephemeral %s on %s, outside a turn: dropped", event.type, channel)
-            return
-        await backend.publish(channel, event)
+        if (backend := self._outside_a_turn(event, f"on {channel}")) is not None:
+            await backend.publish(channel, event)
 
     async def publish_to_room(self, room_id: str, event: EphemeralEvent) -> None:
         # The fallback's own room publish, which a backend may implement apart.
         outlet = current_turn_outlet()
         if outlet is not None and await outlet.publish(f"room:{room_id}", event):
             return
-        backend = self._fallback()
+        if (backend := self._outside_a_turn(event, f"in room {room_id}")) is not None:
+            await backend.publish_to_room(room_id, event)
+
+    def _outside_a_turn(self, event: EphemeralEvent, where: str) -> RealtimeBackend | None:
+        """Where *event*, published outside a turn, goes; ``None`` drops it.
+
+        An answer's text is published only by a turn's owner, for a turn read
+        as a delegated task's trace (RFC §6.4): outside a turn, no owner
+        judges it, so none is published.
+        """
+        backend = None if event.type == EphemeralEventType.TEXT_DELTA else self._fallback()
         if backend is None:
-            logger.debug("Ephemeral %s in room %s, outside a turn: dropped", event.type, room_id)
-            return
-        await backend.publish_to_room(room_id, event)
+            logger.debug("Ephemeral %s %s, outside a turn: dropped", event.type, where)
+        return backend
 
     async def subscribe(self, channel: str, callback: EphemeralCallback) -> str:
         return await self._backend().subscribe(channel, callback)

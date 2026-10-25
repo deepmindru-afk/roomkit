@@ -1,10 +1,10 @@
 """An agent's answer text, published live as TEXT_DELTA ephemerals (RFC §6.4, RMK-951).
 
-An observer that is not a transport of the room (a debugger, a dashboard, the
-code that delegated a task) reads the answer as it is written, coalesced on a
-window, in the room the agent speaks in, a delegated task's child room
-included, once the host turns it on with ``publish_text_deltas=True``.
-BEFORE_BROADCAST does not cover that stream, so it is off by default.
+The code that delegated a task reads its agent's answer as it is written,
+coalesced on a window, in the task's child room, once the host turns it on
+with ``publish_text_deltas=True``. BEFORE_BROADCAST does not cover that
+stream, and only a delegated turn's trace is stored without a hook either,
+so no other turn's text is published (RMK-972).
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from roomkit import (
+    AgentResponsePolicy,
     ChannelCategory,
     HookExecution,
     HookResult,
@@ -95,39 +96,41 @@ async def kit():
     await kit.close()
 
 
+async def _delegated_texts(kit: RoomKit, agent: Agent, task: str = "go") -> _Observer:
+    """What a subscriber to *agent*'s child room reads while it does *task*."""
+    kit.register_channel(agent)
+    observer = _Observer()
+
+    @kit.hook(HookTrigger.ON_TASK_DELEGATED, execution=HookExecution.ASYNC)
+    async def watch(event, ctx) -> None:
+        await kit.realtime.subscribe_to_room(event.metadata["child_room_id"], observer)
+
+    room = await kit.create_room()
+    await (await kit.delegate(room.id, agent.channel_id, task, wait=True)).wait()
+    return observer
+
+
 @pytest.mark.parametrize(
     ("coalesce_ms", "publishes"),
     # 690 characters: one publish per token, or one per 256-character window.
     [(0, len(WORDS)), (80, 3)],
     ids=["window off: one per token", "default window: by size"],
 )
-async def test_a_streamed_answer_reaches_a_room_subscriber_as_its_text(
+async def test_a_delegated_answer_is_published_as_its_text_on_a_window(
     kit, coalesce_ms, publishes
 ):
-    kit.register_channel(SMSChannel("sms", provider=MockSMSProvider()))
-    kit.register_channel(
-        Agent(
-            "assistant",
-            provider=_Rounds([(WORDS, None)]),
-            publish_text_deltas=True,
-            text_coalesce_ms=coalesce_ms,
-        )
-    )
-    await kit.create_room(room_id="r")
-    await kit.attach_channel("r", "sms", metadata={"phone_number": "+15550100001"})
-    await kit.attach_channel("r", "assistant", category=ChannelCategory.INTELLIGENCE)
-    observer = _Observer()
-    await kit.realtime.subscribe_to_room("r", observer)
-
-    await kit.process_inbound(
-        InboundMessage(channel_id="sms", sender_id="+15550100001", content=TextContent(body="go")),
-        room_id="r",
+    agent = Agent(
+        "worker",
+        provider=_Rounds([(WORDS, None)]),
+        publish_text_deltas=True,
+        text_coalesce_ms=coalesce_ms,
     )
 
-    texts = observer.texts()
+    texts = (await _delegated_texts(kit, agent)).texts()
+
     assert "".join(data["text"] for data in texts) == ANSWER
     assert len(texts) == publishes
-    assert {data["channel_id"] for data in texts} == {"assistant"}
+    assert {data["channel_id"] for data in texts} == {"worker"}
 
 
 async def test_a_delegated_turns_text_reaches_its_child_room_while_it_is_written(kit):
@@ -160,23 +163,15 @@ async def test_text_before_a_tool_call_is_published_before_it_with_its_round(kit
     async def lookup(name: str, arguments: dict[str, Any]) -> str:
         return "shipped"
 
-    kit.register_channel(
-        Agent(
-            "worker",
-            provider=provider,
-            tools=[AITool(name="lookup", description="Look up an order", parameters={})],
-            tool_handler=lookup,
-            publish_text_deltas=True,
-        )
+    agent = Agent(
+        "worker",
+        provider=provider,
+        tools=[AITool(name="lookup", description="Look up an order", parameters={})],
+        tool_handler=lookup,
+        publish_text_deltas=True,
     )
-    observer = _Observer()
 
-    @kit.hook(HookTrigger.ON_TASK_DELEGATED, execution=HookExecution.ASYNC)
-    async def watch(event, ctx) -> None:
-        await kit.realtime.subscribe_to_room(event.metadata["child_room_id"], observer)
-
-    room = await kit.create_room()
-    await (await kit.delegate(room.id, "worker", "where is my order?", wait=True)).wait()
+    observer = await _delegated_texts(kit, agent, "where is my order?")
 
     kinds = [kind for kind, _ in observer.events]
     assert kinds.index("text_delta") < kinds.index("tool_call_start")
@@ -188,45 +183,16 @@ async def test_text_before_a_tool_call_is_published_before_it_with_its_round(kit
 
 SECRET = "Your card 4111 1111 1111 1111 is on file."
 _MODERATIONS = {
-    "block": (lambda event: HookResult.block("pii"), []),
-    "redact": (
-        lambda event: HookResult.modify(
-            event.model_copy(update={"content": TextContent(body="[redacted]")})
-        ),
-        ["[redacted]"],
+    "block": lambda event: HookResult.block("pii"),
+    "redact": lambda event: HookResult.modify(
+        event.model_copy(update={"content": TextContent(body="[redacted]")})
     ),
 }
 
 
-@pytest.mark.parametrize("moderation", sorted(_MODERATIONS))
-@pytest.mark.parametrize(
-    ("publish", "read"), [(None, ""), (True, SECRET)], ids=["default", "turned on"]
-)
-async def test_before_broadcast_does_not_cover_the_text_stream(
-    kit, moderation: str, publish: bool | None, read: str
-) -> None:
-    """A hook that blocks or redacts the answer judges the stored message,
-    never the TEXT_DELTA stream: turned on, the stream hands a room
-    subscriber the text the room never got. So it is off unless the host
-    asks, and a host that filters or redacts answers leaves it off."""
-    judge, sent = _MODERATIONS[moderation]
-    sms = MockSMSProvider()
-    kit.register_channel(SMSChannel("sms", provider=sms))
-    options = {} if publish is None else {"publish_text_deltas": publish}
-    kit.register_channel(Agent("assistant", provider=_Rounds([([SECRET], None)]), **options))
-    await kit.create_room(room_id="r")
-    await kit.attach_channel("r", "sms", metadata={"phone_number": "+15550100001"})
+async def _answer_in_the_room(kit: RoomKit, observer: _Observer) -> None:
     await kit.attach_channel("r", "assistant", category=ChannelCategory.INTELLIGENCE)
-
-    @kit.hook(HookTrigger.BEFORE_BROADCAST)
-    async def moderate(event, ctx) -> HookResult:
-        if event.source.channel_id == "assistant":
-            return judge(event)
-        return HookResult.allow()
-
-    observer = _Observer()
     await kit.realtime.subscribe_to_room("r", observer)
-
     await kit.process_inbound(
         InboundMessage(
             channel_id="sms", sender_id="+15550100001", content=TextContent(body="my card?")
@@ -234,5 +200,69 @@ async def test_before_broadcast_does_not_cover_the_text_stream(
         room_id="r",
     )
 
-    assert [item["event"].content.body for item in sms.sent] == sent
-    assert "".join(data["text"] for data in observer.texts()) == read
+
+async def _answer_a_task_sharing_the_sms(kit: RoomKit, observer: _Observer) -> None:
+    @kit.hook(HookTrigger.ON_TASK_DELEGATED, execution=HookExecution.ASYNC)
+    async def watch(event, ctx) -> None:
+        await kit.realtime.subscribe_to_room(event.metadata["child_room_id"], observer)
+
+    task = await kit.delegate("r", "assistant", "my card?", share_channels=["sms"], wait=True)
+    await task.wait()
+
+
+async def _answer_another_agent_in_a_tasks_room(kit: RoomKit, observer: _Observer) -> None:
+    """A task's room keeps its own turn as a trace; a turn another agent's
+    message starts there crosses the room's hooks, as any room's."""
+    kit.register_channel(Agent("planner", provider=_Rounds([])))
+    task = await kit.delegate("r", "assistant", "warm up", wait=True)
+    await task.wait()
+    child = task.child_room_id
+    await kit.attach_channel(child, "planner", category=ChannelCategory.INTELLIGENCE)
+    await kit.set_agent_response_policy(child, AgentResponsePolicy.ADDRESSED_ONLY)
+    await kit.realtime.subscribe_to_room(child, observer)
+    await kit.send_event(
+        child, "planner", TextContent(body="the card?"), addressed_to=["assistant"]
+    )
+
+
+_WHERE = {
+    "room": _answer_in_the_room,
+    "task sharing the sms": _answer_a_task_sharing_the_sms,
+    "another agent in a task's room": _answer_another_agent_in_a_tasks_room,
+}
+
+
+@pytest.mark.parametrize("moderation", sorted(_MODERATIONS))
+@pytest.mark.parametrize("publish", [None, True], ids=["default", "turned on"])
+@pytest.mark.parametrize("where", sorted(_WHERE))
+async def test_an_answer_a_hook_judges_is_never_published_as_text(
+    kit, moderation: str, publish: bool | None, where: str
+) -> None:
+    """A hook that blocks or redacts the answer judges the stored message,
+    never a TEXT_DELTA stream: a turn that crosses BEFORE_BROADCAST, in a
+    task's room a transport is shared into (RFC §23.3 step 5) or that
+    another agent's message starts there included, publishes no stream,
+    turned on or not, so a subscriber reads only what the room got (RMK-972:
+    turned on, it read the card number the SMS never sent)."""
+    judge = _MODERATIONS[moderation]
+    kit.register_channel(SMSChannel("sms", provider=MockSMSProvider()))
+    options = {} if publish is None else {"publish_text_deltas": publish}
+    provider = _Rounds([([SECRET], None), ([SECRET], None)])
+    kit.register_channel(Agent("assistant", provider=provider, **options))
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "sms", metadata={"phone_number": "+15550100001"})
+    judged: list[str] = []
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def moderate(event, ctx) -> HookResult:
+        if event.source.channel_id != "assistant":
+            return HookResult.allow()
+        judged.append(event.content.body)
+        return judge(event)
+
+    observer = _Observer()
+    await _WHERE[where](kit, observer)
+    await kit.close()
+
+    assert judged == [SECRET]
+    assert observer.texts() == []

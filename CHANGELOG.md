@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **BREAKING — an agent's answer text is published only for a delegated
+  task's trace** (RFC §6.4, §23.3 step 5, RMK-972). In 0.109.0, with
+  `AIChannel(publish_text_deltas=True)`, every turn of the agent published
+  its text as `TEXT_DELTA`, which `BEFORE_BROADCAST` never judges: a room
+  subscriber read the whole of an answer a hook blocked or redacted, in a
+  room, in a task's child room a transport is shared into, and for a turn
+  another agent's message starts in a task's child room. The room's owner
+  now publishes a turn's `TEXT_DELTA` only while the delegation reads that
+  turn as its trace, the rows a child room with no shared transport stores
+  without a hook (RFC §23.3 step 5); any other turn's is dropped, and so is
+  one an executor publishes after its turn or outside one. A task's text is
+  published as before: the same windows, `round`, and order before a
+  round's tool-call events. A dashboard that read a room's text reads its
+  stored messages, or a streaming transport's live pipe, instead. A host
+  that filters or redacts answers may now turn the option on, once every
+  process that owns rooms runs this release: the owner decides, and one on
+  0.109.0 still publishes every turn's text. What is published is the
+  trace's text, which no hook judges either; a delegation cut short may
+  store less of it than was published, the text its executor read ahead of
+  the reader.
+
 ## [0.109.0] — 2026-10-25
 
 ### Added

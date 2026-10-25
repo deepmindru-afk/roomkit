@@ -250,9 +250,10 @@ class AIChannel(
         self._thinking_coalesce_ms = thinking_coalesce_ms
         self._thinking_coalesce_chars = thinking_coalesce_chars
         # The answer's text as it is written, the same way: one TEXT_DELTA per
-        # window, for an observer that is not a transport (RFC §6.4). Off
-        # unless the host asks: BEFORE_BROADCAST does not see this stream, so
-        # an answer a hook blocks or redacts would reach a subscriber whole.
+        # window, for the code that delegated a task (RFC §6.4). Off unless
+        # the host asks, and published by the room's owner only for a turn a
+        # delegation reads as its trace: BEFORE_BROADCAST does not see this
+        # stream, so no turn it judges has its text published (RFC §23.3).
         self._publish_text_deltas = publish_text_deltas
         self._text_coalesce_ms = text_coalesce_ms
         self._text_coalesce_chars = text_coalesce_chars

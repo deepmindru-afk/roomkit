@@ -46,7 +46,7 @@ from roomkit.models.response_metadata import TurnEntries, recorded_turn_end
 from roomkit.models.store_filter import EventFilter
 from roomkit.providers.ai.base import ProviderError
 from roomkit.providers.utils import _aclose_stream
-from roomkit.turns.owner import unread_dropped_on_failure
+from roomkit.turns.owner import read_as_trace, unread_dropped_on_failure
 
 if TYPE_CHECKING:
     from roomkit.channels._tool_registry import ChannelRegistry
@@ -175,7 +175,13 @@ async def _persist_child_stream(
     answer as a non-streaming responder's last message is, and its turn's end:
     whether a cut short ends the task is the delegated agent's alone to decide
     (RFC §23.3 step 6).
+
+    The turn's owner is told before the first read that the turn is a trace,
+    so before any of its text is produced: its answer text is published, the
+    only one a turn's owner publishes, since no hook judges these rows (RFC
+    §6.4).
     """
+    read_as_trace(sr.stream)
     correlation_id = uuid4().hex
     writer = SegmentWriter(
         kit,

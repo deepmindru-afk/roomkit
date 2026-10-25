@@ -453,6 +453,15 @@ def drop_unread(stream: object) -> None:
         stream.drop()
 
 
+def read_as_trace(stream: object) -> None:
+    """Say, before reading it, that a turn's stream is read as a delegated
+    task's trace, committed without crossing a hook (RFC §23.3 step 5): only
+    such a turn's answer text is published (RFC §6.4). A plain generator is
+    no turn's: its text is published by nobody."""
+    if isinstance(stream, RemoteStream):
+        stream.read_as_trace()
+
+
 def drop_unread_streams(responses: Iterable[Any]) -> None:
     """Give up the streams of *responses* (each a ``StreamingResponse``) that
     a failure leaves nobody to read: none is left to the garbage collector."""

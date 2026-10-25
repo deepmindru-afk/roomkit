@@ -230,6 +230,12 @@ class OwnerTurn:
         if not self._over and (pull := self._copies.pull()) is not None:
             await self._link.send(pull)
 
+    def read_as_trace(self) -> None:
+        """Its reader commits the turn as a delegated task's trace, crossing
+        no hook: the turn's answer text is published from now (RFC §6.4).
+        Said before the first read, so before any of that text was produced."""
+        self._publisher.traced = True
+
     async def close_stream(self) -> None:
         """Close the stream: the executor closes the channel's, a running
         call let finish (RFC §12.2 step 13s), and its end is waited for."""

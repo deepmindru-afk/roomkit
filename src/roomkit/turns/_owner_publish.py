@@ -2,7 +2,9 @@
 executor (RFC §10.6.2, §10.6.3): during the turn, from its ``ephemeral`` and
 ``framework_event`` frames; after it, from a ``room_publication``. Only what
 names the turn's room and channel, and only the framework events a turn's
-executor emits, are published; anything else is dropped."""
+executor emits, are published; anything else is dropped. An answer's own text
+is published only for a turn whose reader commits it as a delegated task's
+trace."""
 
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from roomkit.core.visibility import answers_reach
 from roomkit.models.enums import Visibility
-from roomkit.realtime.base import EphemeralEvent
+from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
 from roomkit.turns.wire import Ephemeral
 
 if TYPE_CHECKING:
@@ -53,6 +55,7 @@ async def publish_frame(
     *,
     label: str,
     unscoped: bool,
+    traced: bool = False,
 ) -> None:
     """Publish *frame*, published by a turn of *channel_id* in *room_id*
     (*label* names it in the log), as that channel in that room.
@@ -61,8 +64,17 @@ async def publish_frame(
     room (RFC §8.4): its trigger is *unscoped*, and the channel's binding, as
     the room holds it at this publish, lets it (``events.reaches_room``). Its
     subscribers are not bound channels, so a turn whose answer the room
-    narrows publishes none, from the moment the room narrows it."""
+    narrows publishes none, from the moment the room narrows it.
+
+    The answer's own text (``TEXT_DELTA``) is published only for a turn
+    *traced*: one whose reader commits its rows as a delegated task's trace,
+    crossing no hook (RFC §6.4, §23.3 step 5). ``BEFORE_BROADCAST`` judges
+    the message a room stores, never this stream, so the text of an answer a
+    hook judges is never published, nor any after its turn ended."""
     if isinstance(frame, Ephemeral):
+        if _carries_answer_text(frame) and not traced:
+            logger.debug("%s: its answer is not a trace, its text not published", label)
+            return
         if not (unscoped and await events.reaches_room(room_id, channel_id)):
             logger.debug("%s: its answer does not reach the room, ephemeral not published", label)
             return
@@ -88,6 +100,11 @@ async def publish_frame(
     )
 
 
+def _carries_answer_text(frame: Ephemeral) -> bool:
+    """Whether *frame* carries the text of the turn's answer."""
+    return frame.event.get("type") == EphemeralEventType.TEXT_DELTA.value
+
+
 class TurnPublisher:
     """What one turn published on its executor, published here in order by a
     task of its own: a handler that waits on the turn (an answer to an input
@@ -97,6 +114,9 @@ class TurnPublisher:
         self._events = events
         self._request = request
         self._unscoped = answers_reach(request.event) == Visibility.ALL
+        self.traced = False
+        """Whether the turn's reader commits it as a delegated task's trace:
+        only then is its answer's text published (RFC §6.4)."""
         self._queue: asyncio.Queue[Ephemeral | FrameworkEventFrame | None] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
 
@@ -133,6 +153,7 @@ class TurnPublisher:
                 frame,
                 label=f"Turn {request.turn_id}",
                 unscoped=self._unscoped,
+                traced=self.traced,
             )
         except Exception:
             # What the turn published never stops the turn.
