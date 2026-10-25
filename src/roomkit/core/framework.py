@@ -1338,7 +1338,9 @@ class RoomKit(
         written either way. One ``process_timeout`` bounds the whole call, the
         wait for that lock included; once the lock is held, the attach runs to
         its end, a cancelled caller's included, and stays when the deadline
-        passes during it (RFC §13.6).
+        passes during it (RFC §13.6). A first post made from the room's own
+        work draws its pass before the attach (RFC §9.5.1): past the budget,
+        it is stored ``BLOCKED`` with ``reentry_loop_cap`` and binds nothing.
 
         Returns:
             The committed event, as :meth:`send_event` returns it.
@@ -1396,6 +1398,7 @@ class RoomKit(
         organization_id: str | None = None,
         standalone: bool = False,
         deadline: float | None = None,
+        first_post: _host_post.FirstPost | None = None,
     ) -> RoomEvent:
         """:meth:`send_event` for the framework's own records too, whose
         *visibility* may be ``internal`` (an interruption record, RFC §6.4,
@@ -1406,6 +1409,10 @@ class RoomKit(
         ``internal`` before anything is read (RFC §7.3). *deadline* is the
         call's when a caller started it earlier (:meth:`post`, whose first
         attach spends it too); ``process_timeout`` from now otherwise.
+        :meth:`post` passes *first_post* for a room that does not bind its
+        host channel yet, once it has read the room: the event comes from its
+        source, and its attach binds the channel once the call has drawn its
+        pass (RFC §10.5, §9.5.1).
         """
         # One deadline from the call's start to its decision (RFC §13.6,
         # §10.5): the room's read, the off-lock check, the wait for its turn
@@ -1444,11 +1451,15 @@ class RoomKit(
         refuse_reserved(idempotency_key)
 
         await self._ensure_status_bus_subscribed()
-        binding = await self._injection_binding(room_id, channel_id, organization_id, deadline)
+        if first_post is None:
+            binding = await self._injection_binding(room_id, channel_id, organization_id, deadline)
+            source = _direct_source(binding, participant_id, provider)
+        else:
+            source = first_post.source
         fields: dict[str, Any] = dict(
             room_id=room_id,
             type=event_type,
-            source=_direct_source(binding, participant_id, provider),
+            source=source,
             content=content,
             # A call made within a turn is at least as deep as the turn's
             # response (RFC §8.3, §10.6).
@@ -1464,7 +1475,16 @@ class RoomKit(
         )
         if created_at is not None:
             fields["created_at"] = created_at
-        event = RoomEvent(**fields)
+        return await self._enter_injection(RoomEvent(**fields), deadline, first_post)
+
+    async def _enter_injection(
+        self, event: RoomEvent, deadline: float, first_post: _host_post.FirstPost | None
+    ) -> RoomEvent:
+        """A direct injection of *event* entering its room (RFC §10.5): as
+        the room's own work, it draws its pass first (§9.5.1). A first post
+        attaches its host channel only once the pass is drawn, so past the
+        budget it binds nothing."""
+        room_id, channel_id = event.room_id, event.source.channel_id
         entry = self._room_work.entry(room_id)
         if entry.charged:
             # A replay of a key its channel holds is no pass: it is read
@@ -1478,6 +1498,8 @@ class RoomKit(
                 # Past the budget of the work that made it, it is not a pass:
                 # its hooks never run (RFC §8.3, §9.5.1).
                 return await self._store_entry_past_cap(room_id, event)
+        if first_post is not None:
+            await first_post.attach()
         return await self._inject(event, entry, deadline)
 
     async def _inject(self, event: RoomEvent, entry: Entry, deadline: float) -> RoomEvent:

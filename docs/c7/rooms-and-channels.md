@@ -220,7 +220,9 @@ await kit.post(room_id, "Refund issued.", idempotency_key=webhook_delivery_id)
   One `process_timeout` bounds the whole call, the wait for the room lock
   included (`ProcessTimeoutError`); once the lock is held, the attach runs to
   its end even if the caller is cancelled, and stays when the deadline passes
-  during it, the message then not written.
+  during it, the message then not written. A first post a hook or a turn
+  makes past its reentry budget is stored `BLOCKED` with `reentry_loop_cap`
+  and binds nothing: the post draws its pass before the attach.
 - A host channel is attached as a transport only: `category=INTELLIGENCE`
   raises `ValueError`. `process_inbound()` on it raises `ValueError` before
   anything is read: it receives no external payload.

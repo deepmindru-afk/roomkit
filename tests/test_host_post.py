@@ -20,6 +20,7 @@ from roomkit import (
     EventFilter,
     EventType,
     FrameworkEvent,
+    HookExecution,
     HookResult,
     HookTrigger,
     HostChannel,
@@ -643,6 +644,41 @@ async def test_a_post_replayed_from_the_room_s_work_draws_no_pass(needs_lock):
             if e.type == EventType.MESSAGE and e.source.channel_id == "host"
         ]
         assert host == [("Received.", None), ("We answer within the hour.", None)]
+        assert await _host_attachments(kit) == 1
+    finally:
+        await kit.close()
+
+
+async def test_a_first_post_past_the_cap_binds_nothing():
+    """A hook's body spends its cascade's hook calls, then posts for the
+    first time: the post draws its call before the attach, so past the cap it
+    is stored ``BLOCKED`` with ``reentry_loop_cap`` and binds nothing, no
+    attachment recorded (RFC §9.5.1, §10.5). The next post, outside that
+    work, attaches the host channel."""
+    kit = RoomKit(max_chain_depth=1)
+    posted: list[RoomEvent] = []
+    done = asyncio.Event()
+    try:
+        await _sms_room(kit, agent=None)
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="notice")
+        async def notice(event: RoomEvent, ctx: RoomContext) -> None:
+            if event.source.channel_id != "sms" or done.is_set():
+                return
+            try:
+                for _ in range(BUDGET):
+                    await kit.send_event("r", "sms", TextContent(body="Logged."), addressed_to=[])
+                posted.append(await kit.post("r", "We answer within the hour."))
+            finally:
+                done.set()
+
+        await kit.process_inbound(_customer("Hello?"))
+        await asyncio.wait_for(done.wait(), 5)
+
+        assert [e.blocked_by for e in posted] == ["reentry_loop_cap"]
+        assert await kit.store.get_binding("r", "host") is None
+        assert await _host_attachments(kit) == 0
+        await kit.post("r", "Your order shipped.")
         assert await _host_attachments(kit) == 1
     finally:
         await kit.close()

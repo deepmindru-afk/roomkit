@@ -8,8 +8,10 @@ one. A room that never bound the host channel is given it on its first post.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels.host import HOST_CHANNEL_ID, HostChannel
@@ -22,14 +24,27 @@ from roomkit.core.exceptions import (
     RoomClosedError,
     RoomNotFoundError,
 )
+from roomkit.core.mixins.channel_ops import is_channel_detached
 from roomkit.core.mixins.helpers import _REFUSING_STATUSES
 from roomkit.core.task_utils import run_to_its_end
-from roomkit.models.enums import ChannelType
-from roomkit.models.event import EventContent, TextContent, refuse_too_deep
+from roomkit.models.enums import ChannelType, EventDirection
+from roomkit.models.event import EventContent, EventSource, TextContent, refuse_too_deep
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
     from roomkit.models.event import RoomEvent
+    from roomkit.models.room import Room
+
+
+@dataclass(frozen=True, slots=True)
+class FirstPost:
+    """A post into a room that does not bind its host channel yet (RFC
+    §10.5): its event's source, the host channel's own, and the attach that
+    binds the channel once the post has drawn its pass on the budget of the
+    room's work, so that a post past the budget binds nothing (§9.5.1)."""
+
+    source: EventSource
+    attach: Callable[[], Awaitable[None]]
 
 
 async def post(
@@ -70,8 +85,27 @@ async def post(
     bound = await kit._by_deadline(
         kit.store.get_binding(room_id, host_id), room_id, host_id, deadline
     )
+    first_post = None
     if bound is None:
-        await _attach_on_first_post(kit, room_id, host_id, organization_id, deadline)
+        # Read before the post draws its pass (RFC §17.2, §9.5.1), attached
+        # once it has drawn it: a refused post binds nothing.
+        await kit._by_deadline(
+            _refuse_unbindable(kit, room_id, host_id, organization_id),
+            room_id,
+            host_id,
+            deadline,
+        )
+        first_post = FirstPost(
+            source=EventSource(
+                channel_id=host_id,
+                channel_type=ChannelType.HOST,
+                direction=EventDirection.INBOUND,
+                participant_id=participant_id,
+            ),
+            attach=partial(
+                _attach_on_first_post, kit, room_id, host_id, organization_id, deadline
+            ),
+        )
     # The rest of the call's budget, not a fresh one (RFC §13.6).
     return await kit._send_event(
         room_id,
@@ -84,6 +118,7 @@ async def post(
         organization_id=organization_id,
         chain_depth=chain_depth,
         deadline=deadline,
+        first_post=first_post,
     )
 
 
@@ -113,6 +148,32 @@ async def _refuse_unreached_speaker(
         f"post() speaks as a participant of room {room_id} the host channel {host_id!r} "
         f"reaches, and {participant_id!r} {why}. The host's own speakers are members "
         f"added on that channel: kit.add_member(room_id, {host_id!r}, speaker_id)"
+    )
+
+
+async def _refuse_unbindable(
+    kit: RoomKit, room_id: str, host_id: str, organization_id: str | None
+) -> None:
+    """Refuse a first post that could not attach *host_id*, before it draws
+    its pass (RFC §17.2, §9.5.1): the room read scoped, then whether the
+    host channel was detached from it. The section under the room lock
+    decides again.
+
+    Raises:
+        RoomNotFoundError: the room is missing, or another organization's.
+        ChannelNotFoundError: the host channel was detached from the room.
+    """
+    room = await kit.get_room(room_id, organization_id=organization_id)
+    if is_channel_detached(room, host_id):
+        raise _detached(room, host_id)
+
+
+def _detached(room: Room, host_id: str) -> ChannelNotFoundError:
+    """The refusal of a post into *room*, which *host_id* was detached
+    from (RFC §7.5 rule 7)."""
+    return ChannelNotFoundError(
+        f"Channel {host_id} not in room {room.id}: it was detached, and post() "
+        "does not attach it again"
     )
 
 
@@ -162,10 +223,7 @@ async def _attach_locked(
     if room.status in _REFUSING_STATUSES:
         raise RoomClosedError(f"Room {room_id} does not accept new events")
     if await kit._attach_unbound(room, host_id) is None:
-        raise ChannelNotFoundError(
-            f"Channel {host_id} not in room {room_id}: it was detached, and post() "
-            "does not attach it again"
-        )
+        raise _detached(room, host_id)
 
 
 def _host_channel_id(kit: RoomKit, channel_id: str | None) -> str:

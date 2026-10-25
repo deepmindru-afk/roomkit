@@ -452,6 +452,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer could carry to what that binding declared, an SMS's text and media
   in a WebSocket room, without rich text, typing or reactions.
 
+- `kit.post()` past its reentry budget binds nothing (RFC §9.5.1, §10.5,
+  RMK-947, RMK-954). A first post made from the room's own work, a hook
+  that had spent its cascade's calls say, attached the host channel before
+  it drew its pass: the post was stored `BLOCKED` with `reentry_loop_cap`,
+  yet the room bound the host channel, recorded its `CHANNEL_ATTACHED` and
+  ran its `ON_CHANNEL_ATTACHED` hooks. The post now draws its pass first and
+  attaches the channel once it holds one; the room's scope and a detached
+  host channel are still refused before anything is drawn or written.
+
 - **A blank idempotency key is no key** (RFC §13.4, RMK-942). The pipeline
   skipped an empty key while the stores indexed it: a second message from a
   channel carrying `idempotency_key=""` was refused by SQLite with
