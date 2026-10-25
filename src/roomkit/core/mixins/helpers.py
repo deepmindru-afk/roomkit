@@ -801,7 +801,9 @@ class HelpersMixin:
         transport-only room (e.g. realtime voice) whose channels read no history
         loads just the floor instead of deserialising the whole ceiling per
         turn, and nothing at all when nothing will read it: the read is
-        skipped, not merely emptied. ``reads_history`` says the caller itself
+        skipped, not merely emptied, and so is the read of the room's register
+        of authors (``RoomContext.author_register``), which only labels the
+        history. ``reads_history`` says the caller itself
         scans ``recent_events`` — ``regenerate_response`` looking for its
         trigger — so the floor applies whether or not a hook is registered.
 
@@ -842,14 +844,16 @@ class HelpersMixin:
                     )
                 if recent_limit <= 0:
                     # Nothing bound reads history and no hook is registered:
-                    # no query, no deserialisation.
+                    # no query, no deserialisation, nor the register of
+                    # authors that labels the history.
                     recent: list[RoomEvent] = []
+                    register = None
                 else:
                     carried = self._carried_history(carrying, room, recent_limit)
                     if carried is None:
                         carried = await self._store.get_conversation(room_id, limit=recent_limit)
                     recent = carried
-                register = await stored_register(self._store, room)
+                    register = await stored_register(self._store, room)
         return RoomContext(
             room=room,
             bindings=bindings,

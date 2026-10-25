@@ -43,6 +43,11 @@ class CountingStore(InMemoryStore):
     def __init__(self) -> None:
         super().__init__()
         self.history_reads = 0
+        self.register_reads = 0
+
+    async def get_author_register(self, room_id: str) -> dict[str, Any] | None:
+        self.register_reads += 1
+        return await super().get_author_register(room_id)
 
     async def get_conversation(
         self, room_id: str, *, limit: int = 50, after_index: int | None = None
@@ -337,7 +342,8 @@ async def test_the_delivered_context_carries_the_committed_event() -> None:
 
 
 async def test_a_room_with_no_reader_costs_no_history_read() -> None:
-    """The other side of the counter: no hook, no declaring channel, no read at all."""
+    """The other side of the counter: no hook, no declaring channel, no read
+    at all, the register of authors that labels the history included."""
     store = CountingStore()
     kit = RoomKit(store=store)
     kit.register_channel(PlainChannel())
@@ -348,4 +354,4 @@ async def test_a_room_with_no_reader_costs_no_history_read() -> None:
     finally:
         await kit.close()
 
-    assert store.history_reads == 0
+    assert (store.history_reads, store.register_reads) == (0, 0)
