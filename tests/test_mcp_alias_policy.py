@@ -4,8 +4,9 @@
 ``<tool>``. The tool policy and a skill's gate judge both names, on every
 door, so a tool they refuse never runs under its alias; the alias itself is
 still served for a tool they admit. A provider given a ``label`` serves only
-the aliases naming its server, so a policy that names a server holds
-(RMK-493).
+the aliases naming its server, so a policy that names a server holds when
+every provider of the chain is labelled and the tools are declared under
+their aliases alone (RMK-493).
 """
 
 from __future__ import annotations
