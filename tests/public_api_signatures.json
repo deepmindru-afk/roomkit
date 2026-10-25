@@ -5743,7 +5743,7 @@
     "tap_frame": ["def", "handle", "frame"]
   },
   "roomkit.video.VideoRecordingConfig": {
-    "__init__": ["def", "storage=''", "format='mp4'", "codec='auto'", "fps=15.0", "metadata=<factory>"]
+    "__init__": ["def", "storage=''", "format='mp4'", "codec='auto'", "fps=15.0", "metadata=<factory>", "encryption=None", "storage_encrypted_at_rest=False"]
   },
   "roomkit.video.VideoRecordingHandle": {
     "__init__": ["def", "id", "session_id", "state='recording'", "started_at=None", "path=''"]
