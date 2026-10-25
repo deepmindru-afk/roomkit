@@ -138,8 +138,9 @@ def _answer(request: httpx.Request) -> httpx.Response:
 class _Client(NamedTuple):
     """A client on the ``openai`` SDK, and one call it makes beside a completion."""
 
-    build: Callable[[str, httpx.AsyncBaseTransport], Any]
-    """The client for an endpoint at this origin, over this transport."""
+    build: Callable[..., Any]
+    """``(origin, transport, **config)``: the client for an endpoint at this
+    origin, over this transport, its config's other fields overridden."""
     call: Callable[[Any], Awaitable[object]]
 
 
@@ -159,45 +160,45 @@ def _look(provider: Any) -> Awaitable[object]:
 
 _CALLS: dict[str, _Client] = {
     "openai image": _Client(
-        lambda origin, t: OpenAIImageProvider(
-            OpenAIImageConfig(api_key="k", model="gpt-image-2", base_url=f"{origin}/v1"),
+        lambda origin, t, **c: OpenAIImageProvider(
+            OpenAIImageConfig(api_key="k", model="gpt-image-2", base_url=f"{origin}/v1", **c),
             transport=t,
         ),
         _draw,
     ),
     "azure image": _Client(
-        lambda origin, t: AzureImageProvider(
-            AzureImageConfig(api_key="k", azure_endpoint=origin, model="dep"), transport=t
+        lambda origin, t, **c: AzureImageProvider(
+            AzureImageConfig(api_key="k", azure_endpoint=origin, model="dep", **c), transport=t
         ),
         _draw,
     ),
     "xai image": _Client(
-        lambda origin, t: XAIImageProvider(
-            XAIImageConfig(api_key="k", base_url=f"{origin}/v1"), transport=t
+        lambda origin, t, **c: XAIImageProvider(
+            XAIImageConfig(api_key="k", base_url=f"{origin}/v1", **c), transport=t
         ),
         _draw,
     ),
     "meta image": _Client(
-        lambda origin, t: MetaImageProvider(
-            MetaImageConfig(api_key="k", base_url=f"{origin}/v1"), transport=t
+        lambda origin, t, **c: MetaImageProvider(
+            MetaImageConfig(api_key="k", base_url=f"{origin}/v1", **c), transport=t
         ),
         _draw,
     ),
     "openai vision": _Client(
-        lambda origin, t: OpenAIVisionProvider(
-            OpenAIVisionConfig(base_url=f"{origin}/v1"), transport=t
+        lambda origin, t, **c: OpenAIVisionProvider(
+            OpenAIVisionConfig(base_url=f"{origin}/v1", **c), transport=t
         ),
         _look,
     ),
     "litellm models": _Client(
-        lambda origin, t: LiteLLMAIProvider(
-            LiteLLMConfig(api_key="k", model="m", base_url=origin), transport=t
+        lambda origin, t, **c: LiteLLMAIProvider(
+            LiteLLMConfig(api_key="k", model="m", base_url=origin, **c), transport=t
         ),
         _list,
     ),
     "openrouter models": _Client(
-        lambda origin, t: OpenRouterAIProvider(
-            OpenRouterConfig(api_key="k", model="vendor/model", base_url=f"{origin}/api/v1"),
+        lambda origin, t, **c: OpenRouterAIProvider(
+            OpenRouterConfig(api_key="k", model="vendor/model", base_url=f"{origin}/api/v1", **c),
             transport=t,
         ),
         _list,
@@ -220,6 +221,28 @@ class _PublicOnly(httpx.AsyncBaseTransport):
         except ValueError as refusal:
             raise httpx.ConnectError(str(refusal), request=request) from refusal
         return await self._inner.handle_async_request(request)
+
+
+class _Scripted(httpx.AsyncBaseTransport):
+    """Fails each request with the next of *failures*, then answers."""
+
+    def __init__(self, *failures: type[httpx.TransportError]) -> None:
+        self._failures = list(failures)
+        self.requests = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests += 1
+        if self._failures:
+            raise self._failures.pop(0)("scripted", request=request)
+        return _answer(request)
+
+
+def _refusing() -> httpx.AsyncBaseTransport:
+    return _PublicOnly(httpx.MockTransport(_answer))
+
+
+def _timing_out() -> httpx.AsyncBaseTransport:
+    return _Scripted(httpx.ReadTimeout)
 
 
 @pytest.mark.parametrize("kind", list(_CALLS))
@@ -269,24 +292,30 @@ async def test_a_policy_in_the_transport_refuses_a_private_endpoint_before_any_r
     assert "169.254.169.254" in str(cause)
 
 
-@pytest.mark.parametrize("kind", ["openai image", "azure image"])
-async def test_an_image_request_the_policy_refused_is_reported_never_sent(kind: str) -> None:
-    """Nothing reached the vendor, so nothing ran or was billed: the attempt
-    is ``failed``, not ``unknown`` (RFC §25.2)."""
-    sent: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        sent.append(request)
-        return _answer(request)
-
+@pytest.mark.parametrize(
+    ("kind", "transport", "status"),
+    [
+        ("openai image", _refusing, "failed"),
+        ("azure image", _refusing, "failed"),
+        ("openai image", _timing_out, "unknown"),
+        ("azure image", _timing_out, "unknown"),
+    ],
+    ids=["openai-refused", "azure-refused", "openai-timed-out", "azure-timed-out"],
+)
+async def test_an_image_attempt_is_unknown_once_its_request_may_have_left(
+    kind: str, transport: Callable[[], httpx.AsyncBaseTransport], status: str
+) -> None:
+    """A request the policy refused reached nothing, so nothing ran or was
+    billed: ``failed``. One that timed out may have run: ``unknown``
+    (RFC §25.2)."""
     client = _CALLS[kind]
-    provider = client.build("https://169.254.169.254", _PublicOnly(httpx.MockTransport(handler)))
+    # The scripted transports answer whatever the address; the policy refuses this one.
+    provider = client.build("https://169.254.169.254", transport())
     try:
         with pytest.raises(ImageGenerationError) as caught:
             await client.call(provider)
     finally:
         await provider.close()
 
-    assert sent == []
     [attempt] = caught.value.attempts
-    assert attempt.status == "failed"
+    assert attempt.status == status
