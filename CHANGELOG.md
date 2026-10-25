@@ -336,9 +336,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `"10000000000000000"`, and a delivery handed `15550000001.0` to the
   provider as the number `15550000001.0`. A float under a channel's
   recipient key, or under its chat key, is now no recipient, like a boolean:
-  the delivery to that binding is refused `no_recipient`, attach and routing
-  read no correspondent in it, the record of a routed sender writes the
-  sender's address over it, and `find_room_id_by_binding()` finds no room by
+  the delivery to that binding is refused `no_recipient`, attach reads no
+  correspondent in it, routing reads it as someone else's and the record of
+  a routed sender never writes over it (RMK-965, under Security), and
+  `find_room_id_by_binding()` finds no room by
   it, in every store but for one range on Postgres: `jsonb` keeps a number
   as the exact value it equals, and a float of magnitude 1e16 or more, which
   JSON writes in exponent form (`1e+16`), is read back there as the integer
@@ -589,6 +590,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   into an error status `failed` by Azure.
 
 ### Security
+
+- **A binding whose recipient is not one admits no stranger** (RFC §5.7,
+  §10.4 step 3, §10.1 step 2, RMK-965). A value under a channel's recipient
+  key that is not a recipient (a boolean, a float, a list, an object) read
+  as no recipient, so a room the host opened for someone, its number written
+  `15550000001.0`, was open to no one: the first routed sender was admitted,
+  read the room's history, and had their address written over the field.
+  Such a value now reads as a recipient that is not the sender, by the
+  default router and by the check made under the room lock whatever strategy
+  chose the room: no routed sender is admitted through the binding or
+  recorded on it, the message is routed as one for a room delivering to
+  someone else (a room of its own), and the field is left as the host wrote
+  it. A binding that names its correspondent keeps the value too, and the
+  one ACTIVE room bound to a channel takes no delivery status for a
+  recipient through it. Each read logs a warning naming the binding's room
+  and channel and the value's type, never the value. No value (the key
+  absent, null, a blank string) still names no one: the first routed sender
+  is the room's, and their address its recipient. Deliveries to either stay
+  refused `no_recipient`, and a message routed by `room_id` lands as before.
+  Fix the field with `update_binding_metadata()`, writing the string the
+  channel writes (`"+15550000001"`) or an `int` chat id.
 
 - **An MCP alias runs on the server it names** (RFC §21.2, RMK-493).
   `MCPToolProvider.as_tool_handler()` served `mcp__<server>__<tool>` as
