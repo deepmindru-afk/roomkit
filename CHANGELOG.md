@@ -634,6 +634,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning once that it is readable there: implement `get_private_state()`
   and `set_private_state()` to keep it private.
 
+- Membership calls take the organization the caller acts for (RFC §17.2,
+  §5.5, RMK-488). A tenant's host that knew another tenant's room id could
+  add, remove or rename its members and read its roster.
+  `add_member()`, `remove_member()`, `rename_member()`, `list_members()` and
+  `is_member()` take `organization_id=None`: another organization's room
+  raises `RoomNotFoundError`, its roster neither read nor written, no event
+  and no hook. Unset, the call is unscoped, as before.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

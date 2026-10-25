@@ -58,6 +58,7 @@ class MembershipMixin(HelpersMixin):
         identity_id: str | None = None,
         display_name: str | None = None,
         role: ParticipantRole = ParticipantRole.MEMBER,
+        organization_id: str | None = None,
     ) -> Participant:
         """Explicitly add a member to a room (an intentional join).
 
@@ -80,6 +81,11 @@ class MembershipMixin(HelpersMixin):
         second record. The channel it replaces stays in ``connected_via``, and
         the move is logged naming both, since a caller reading ``channel_id``
         afterwards sees only the new one.
+
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): the room is read with it under the room lock, and another
+        organization's room raises :class:`RoomNotFoundError` with nothing
+        written. Unset, the room is read unscoped.
         """
         channel = self._channels.get(channel_id)
         if channel is not None:
@@ -87,7 +93,7 @@ class MembershipMixin(HelpersMixin):
             # channel), as the router compares it with an inbound sender.
             participant_id = channel.normalize_address(participant_id)
         async with self._lock_manager.locked(room_id):
-            await self.get_room(room_id)
+            await self.get_room(room_id, organization_id=organization_id)
             existing = await self._store.get_participant(room_id, participant_id)
             if existing is not None and existing.status == ParticipantStatus.ACTIVE:
                 # Already a member: membership remains an idempotent no-op, but
@@ -159,6 +165,7 @@ class MembershipMixin(HelpersMixin):
         participant_id: str,
         *,
         status: ParticipantStatus = ParticipantStatus.LEFT,
+        organization_id: str | None = None,
     ) -> Participant:
         """Remove a member from a room (leave) via a soft status flip.
 
@@ -167,8 +174,14 @@ class MembershipMixin(HelpersMixin):
         markers survive. Emits ``PARTICIPANT_LEFT`` and fires the
         ``ON_PARTICIPANT_LEFT`` hook. Raises :class:`ParticipantNotFoundError`
         when the participant is unknown.
+
+        *organization_id* scopes the call to one tenant (RFC §17.2): another
+        organization's room raises :class:`RoomNotFoundError`, nothing
+        written. Unset, no room is read, as before.
         """
         async with self._lock_manager.locked(room_id):
+            if organization_id is not None:
+                await self.get_room(room_id, organization_id=organization_id)
             participant = await self._store.get_participant(room_id, participant_id)
             if participant is None:
                 raise ParticipantNotFoundError(
@@ -199,6 +212,8 @@ class MembershipMixin(HelpersMixin):
         room_id: str,
         participant_id: str,
         display_name: str,
+        *,
+        organization_id: str | None = None,
     ) -> Participant:
         """Change what a member is called — never who they are (RFC §5.5).
 
@@ -211,8 +226,14 @@ class MembershipMixin(HelpersMixin):
         of the change the same way it learned of the join. A rename to the
         name already held is a no-op — no write, no event. Raises
         :class:`ParticipantNotFoundError` when the participant is unknown.
+
+        *organization_id* scopes the call to one tenant (RFC §17.2): another
+        organization's room raises :class:`RoomNotFoundError`, nothing
+        written. Unset, no room is read, as before.
         """
         async with self._lock_manager.locked(room_id):
+            if organization_id is not None:
+                await self.get_room(room_id, organization_id=organization_id)
             participant = await self._store.get_participant(room_id, participant_id)
             if participant is None:
                 raise ParticipantNotFoundError(
@@ -246,20 +267,32 @@ class MembershipMixin(HelpersMixin):
         room_id: str,
         *,
         include_left: bool = False,
+        organization_id: str | None = None,
     ) -> list[Participant]:
         """List a room's members.
 
         Returns only ``ACTIVE`` participants (the current roster) by default.
         Pass ``include_left=True`` to also include those who left or were
-        removed/banned.
+        removed/banned. *organization_id* scopes the read to one tenant (RFC
+        §17.2): another organization's room raises :class:`RoomNotFoundError`.
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         participants = await self._store.list_participants(room_id)
         if include_left:
             return participants
         return [p for p in participants if p.status == ParticipantStatus.ACTIVE]
 
-    async def is_member(self, room_id: str, identity_id: str) -> bool:
-        """Return ``True`` if ``identity_id`` is an active member of the room."""
+    async def is_member(
+        self, room_id: str, identity_id: str, *, organization_id: str | None = None
+    ) -> bool:
+        """Return ``True`` if ``identity_id`` is an active member of the room.
+
+        *organization_id* scopes the read to one tenant (RFC §17.2): another
+        organization's room raises :class:`RoomNotFoundError`.
+        """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         for participant in await self._store.list_participants(room_id):
             if (
                 participant.identity_id == identity_id

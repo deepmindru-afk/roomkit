@@ -7,6 +7,7 @@ when given one, refuse a room belonging to anyone else.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -408,3 +409,66 @@ class TestScopedInbound:
         assert await kit.store.get_binding("acme-room", "sms1") is None
         await kit.process_inbound(_message(), room_id="acme-room", organization_id="acme")
         assert await kit.store.get_binding("acme-room", "sms1") is not None
+
+
+async def _globex_with_alice() -> RoomKit:
+    kit = await _two_tenants()
+    await kit.attach_channel("globex-room", "sms1")
+    await kit.add_member("globex-room", "sms1", "alice", identity_id="id-alice")
+    return kit
+
+
+async def _globex_roster(kit: RoomKit) -> tuple[list[Any], list[Any]]:
+    """What a membership call may write: the room's participants and events."""
+    return (
+        await kit.store.list_participants("globex-room"),
+        await kit.store.list_events("globex-room"),
+    )
+
+
+_MEMBERSHIP: dict[str, Callable[[RoomKit, str | None], Awaitable[Any]]] = {
+    "add_member": lambda kit, org: kit.add_member(
+        "globex-room", "sms1", "intruder", organization_id=org
+    ),
+    "remove_member": lambda kit, org: kit.remove_member(
+        "globex-room", "alice", organization_id=org
+    ),
+    "rename_member": lambda kit, org: kit.rename_member(
+        "globex-room", "alice", "Mallory", organization_id=org
+    ),
+    "list_members": lambda kit, org: kit.list_members("globex-room", organization_id=org),
+    "is_member": lambda kit, org: kit.is_member("globex-room", "id-alice", organization_id=org),
+}
+
+
+class TestScopedMembership:
+    """The roster of another organization's room is neither read nor written
+    (RFC §17.2, RMK-488)."""
+
+    @pytest.mark.parametrize("verb", sorted(_MEMBERSHIP))
+    async def test_another_organizations_room_is_not_found_and_keeps_its_roster(
+        self, verb: str
+    ) -> None:
+        kit = await _globex_with_alice()
+        before = await _globex_roster(kit)
+
+        with pytest.raises(RoomNotFoundError):
+            await _MEMBERSHIP[verb](kit, "acme")
+
+        assert await _globex_roster(kit) == before
+        await kit.close()
+
+    @pytest.mark.parametrize("organization_id", ["globex", None], ids=["own", "unscoped"])
+    async def test_the_rooms_own_organization_or_none_reads_and_writes_the_roster(
+        self, organization_id: str | None
+    ) -> None:
+        kit = await _globex_with_alice()
+
+        assert await kit.is_member("globex-room", "id-alice", organization_id=organization_id)
+        await kit.add_member("globex-room", "sms1", "bob", organization_id=organization_id)
+        await kit.rename_member("globex-room", "alice", "Alice", organization_id=organization_id)
+        await kit.remove_member("globex-room", "bob", organization_id=organization_id)
+
+        members = await kit.list_members("globex-room", organization_id=organization_id)
+        assert [(member.id, member.display_name) for member in members] == [("alice", "Alice")]
+        await kit.close()
