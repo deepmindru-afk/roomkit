@@ -509,6 +509,43 @@ class TestACallFromATurn:
         finally:
             await kit.close()
 
+    async def test_a_delivery_queued_from_a_tool_call_carries_the_turn_s_depth(self) -> None:
+        """A ``deliver()`` a tool handler makes while the turn runs continues
+        at least the turn's chain (RFC §8.3): queued, its item carries the
+        depth of the turn's response, 1 for an answer to a person's message,
+        to the worker that runs it once the turn is over (none runs here)."""
+        backend = _RecordingBackend()
+        kit = await _room(RoomKit(max_chain_depth=3, delivery_backend=backend))
+
+        async def lookup(name: str, arguments: dict[str, Any]) -> str:
+            await kit.deliver("r1", "Found it.", channel_id="sms", addressed_to=[])
+            return "ok"
+
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    finish_reason="tool_calls",
+                    tool_calls=[AIToolCall(id="t1", name="lookup", arguments={})],
+                ),
+                AIResponse(content="Done.", finish_reason="stop"),
+            ]
+        )
+        kit.register_channel(
+            AIChannel(
+                "ai",
+                provider=provider,
+                tool_handler=lookup,
+                tools=[AITool(name="lookup", description="d")],
+            )
+        )
+        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            assert backend.depths == [1]
+        finally:
+            await kit.close()
+
     @pytest.mark.in_process(
         "the agent calls the kit it holds, whose context an in-memory turn shares with "
         "the owner; across Redis it goes through its TurnHost"
@@ -531,6 +568,18 @@ class TestACallFromATurn:
             )
         finally:
             await kit.close()
+
+
+class _RecordingBackend(InMemoryDeliveryBackend):
+    """An in-memory delivery queue that records the depth of each item."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.depths: list[int] = []
+
+    async def enqueue(self, item: Any) -> None:
+        self.depths.append(item.chain_depth)
+        await super().enqueue(item)
 
 
 class _Later:
