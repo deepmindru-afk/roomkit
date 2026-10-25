@@ -1174,17 +1174,70 @@ class TestADirectChangeFromAHook:
         finally:
             await kit.close()
 
-    async def test_a_direct_change_past_the_cap_writes_nothing(self) -> None:
-        """The refused update leaves the event as the last allowed one
-        wrote it."""
-        kit = await _room(RoomKit(max_chain_depth=1))
+    @pytest.mark.parametrize("change", ["update", "delete", "regenerate"])
+    async def test_a_direct_change_past_the_cap_writes_nothing(self, change: str) -> None:
+        """A hook's body spends the 30 hook calls of its cascade (depth limit
+        3), then makes one more direct change: refused once, nothing of it
+        written, no event changed or deleted and no model called."""
+        kit = await _room(RoomKit(max_chain_depth=3))
+        provider = MockAIProvider(responses=["Answer."])
+        kit.register_channel(AIChannel("ai", provider=provider))
+        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
         refused: list[ReentryLoopCapError] = []
-        ran = await _DIRECT_LOOPS["update"](kit, refused)
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="bulk")
+        async def bulk(event: RoomEvent, ctx: RoomContext) -> None:
+            if _body(event) != "hi":
+                return
+            for n in range(30):
+                await kit.send_event("r1", "sms", TextContent(body=f"spent {n}"), addressed_to=[])
+            try:
+                await _ONE_MORE[change](kit, event)
+            except ReentryLoopCapError as error:
+                refused.append(error)
 
         try:
+            hi = await kit.send_event("r1", "sms", TextContent(body="hi"), addressed_to=[])
             await asyncio.wait_for(_settled(kit), 5)
-            [event] = await _messages(kit)
-            assert event.metadata == {"n": len(ran) - 1}
+            assert len(refused) == 1
+            stored = await kit.store.get_event(hi.id)
+            assert stored is not None and stored.metadata == hi.metadata
+            assert provider.calls == []
+        finally:
+            await kit.close()
+
+    @pytest.mark.parametrize("work", ["a delivery", "a locked hook"])
+    async def test_work_outside_a_hook_body_draws_nothing(self, work: str) -> None:
+        """A transport's delivery, or a SYNC hook under the lock, that makes
+        60 direct updates, six times the cap of 10, never raises: only an
+        ASYNC hook's body draws on the hook calls (RFC §10.3)."""
+        kit = await _room(RoomKit(max_chain_depth=1))
+        target = await kit.send_event("r1", "sms", TextContent(body="target"))
+        failures: list[Exception] = []
+
+        async def update_sixty_times() -> None:
+            try:
+                for n in range(60):
+                    await kit.update_event("r1", target.id, metadata={"n": n})
+            except Exception as error:
+                failures.append(error)
+
+        if work == "a delivery":
+            kit.register_channel(_Calling("calling", update_sixty_times))
+            await kit.attach_channel("r1", "calling")
+        else:
+
+            @kit.hook(HookTrigger.BEFORE_BROADCAST, name="updates")
+            async def updates(event: RoomEvent, ctx: RoomContext) -> HookResult:
+                if _body(event) == "go":
+                    await update_sixty_times()
+                return HookResult.allow()
+
+        try:
+            await asyncio.wait_for(kit.send_event("r1", "sms", TextContent(body="go")), 5)
+            await asyncio.wait_for(_settled(kit), 5)
+            stored = await kit.store.get_event(target.id)
+            assert (failures, stored.metadata if stored else None) == ([], {"n": 59})
         finally:
             await kit.close()
 
@@ -1229,6 +1282,40 @@ async def _deleting(kit: RoomKit, refused: list[ReentryLoopCapError]) -> list[No
     first = await kit.send_event("r1", "sms", TextContent(body="v"))
     await kit.delete_event("r1", first.id)
     return ran
+
+
+async def _update_hi(kit: RoomKit, event: RoomEvent) -> None:
+    await kit.update_event("r1", event.id, metadata={"changed": True})
+
+
+async def _delete_hi(kit: RoomKit, event: RoomEvent) -> None:
+    await kit.delete_event("r1", event.id)
+
+
+async def _regenerate(kit: RoomKit, event: RoomEvent) -> None:
+    await kit.regenerate_response("r1")
+
+
+_ONE_MORE: dict[str, Callable[[RoomKit, RoomEvent], Awaitable[None]]] = {
+    "update": _update_hi,
+    "delete": _delete_hi,
+    "regenerate": _regenerate,
+}
+
+
+class _Calling(SimpleChannel):
+    """A transport whose delivery of ``go`` runs *work*."""
+
+    def __init__(self, channel_id: str, work: Callable[[], Awaitable[None]]) -> None:
+        super().__init__(channel_id)
+        self._work = work
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if _body(event) == "go":
+            await self._work()
+        return ChannelOutput.empty()
 
 
 async def _agent_room(kit: RoomKit, room: str, provider: MockAIProvider) -> None:
