@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
+import pydoc
 import re
 import sys
 from pathlib import Path
@@ -12,6 +14,7 @@ from types import ModuleType
 import pytest
 
 import roomkit
+from roomkit.voice import realtime as voice_realtime
 from roomkit.voice import tts as voice_tts
 from tests.api_signatures import breaks_since_snapshot, call_breaks, object_breaks
 
@@ -85,9 +88,9 @@ class TestPublicAPI:
         """
         assert breaks_since_snapshot() == []
 
-    def test_dir_lists_every_name_a_package_exports(self) -> None:
+    def test_dir_lists_every_name_a_package_exports_that_imports(self) -> None:
         """A name a package exports lazily is not in its namespace until first
-        use; ``dir()`` and ``help()`` list it all the same."""
+        use; ``dir()`` lists it all the same, unless its extra is missing."""
         unlisted: dict[str, list[str]] = {}
         for init in sorted(_PACKAGE_ROOT.rglob("__init__.py"), key=str):
             package = ".".join(("roomkit", *init.parent.relative_to(_PACKAGE_ROOT).parts))
@@ -97,8 +100,9 @@ class TestPublicAPI:
                 _raise_unless_optional(missing)
                 continue
             names = sorted(set(getattr(module, "__all__", ())) - set(dir(module)))
-            if names:
-                unlisted[package] = names
+            importable = [name for name in names if not _needs_a_missing_extra(module, name)]
+            if importable:
+                unlisted[package] = importable
 
         assert unlisted == {}
 
@@ -127,6 +131,15 @@ class TestPublicAPI:
             obj = getattr(channels, name, None)
             assert obj is not None, f"roomkit.channels.{name} is missing"
             assert obj is getattr(roomkit, name), f"{name} differs from the top-level export"
+
+
+def _needs_a_missing_extra(module: ModuleType, name: str) -> bool:
+    try:
+        getattr(module, name)
+    except ImportError as missing:
+        _raise_unless_optional(missing)
+        return True
+    return False
 
 
 def _resolves(module: ModuleType, name: str) -> bool:
@@ -239,3 +252,24 @@ def test_a_lazy_name_whose_optional_dependency_fails_to_import_counts_as_optiona
         monkeypatch.delitem(sys.modules, module, raising=False)
 
     assert _resolves(voice_tts, "FishAudioTTSProvider")
+
+
+def test_help_on_a_lazy_package_skips_a_name_whose_extra_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """help() and inspect.getmembers() read every name dir() lists: one whose
+    extra is missing (fastapi, for the FastRTC transport) is not listed, so
+    neither raises its ModuleNotFoundError."""
+    _set_aside_fastapi(monkeypatch)
+
+    assert "FastRTCRealtimeTransport" not in dir(voice_realtime)
+    assert "SIPRealtimeTransport" in dir(voice_realtime)
+    pydoc.render_doc(voice_realtime)
+    inspect.getmembers(voice_realtime)
+
+
+def _set_aside_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "fastapi", None)
+    for module in list(sys.modules):
+        if module.startswith(("roomkit.webrtc", "roomkit.voice.realtime.fastrtc")):
+            monkeypatch.delitem(sys.modules, module)
