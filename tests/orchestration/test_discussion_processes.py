@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from roomkit import Discussion, Loop, Pipeline, RoomKit, Supervisor, Swarm
+from roomkit.channels._mark_copies import compile_mark_patterns
 from roomkit.channels.ai import AIChannel
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.locks import InMemoryLockManager
@@ -745,6 +746,9 @@ async def test_installing_under_the_room_lock_returns_mid_turn() -> None:
     a = cluster.kit()
     await a.create_room(room_id="r1")
     await a.attach_channel("r1", "ops")
+    # The first install compiles the mark patterns (about 0.9 s, once per
+    # process); the bounds below are about the installs, not that.
+    await compile_mark_patterns()
     async with asyncio.timeout(1.0), a.lock_manager.locked("r1"):
         await a.install_strategy("r1", cluster.strategy(delay=1.0))
     await _say(a, "@investigator take your time")
