@@ -660,9 +660,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `connect_websocket()` take `organization_id=None`: another organization's
   room raises `RoomNotFoundError`, nothing published, subscribed or
   connected. Unset, no room is read, as before.
-  `WebSocketChannel.register_connection()` and `subscribe()`, and
-  `kit.subscribe_websocket()`, are synchronous and read no room: they stay
-  unscoped.
+  `WebSocketChannel.register_connection()`, `subscribe()` and
+  `unsubscribe()`, and `kit.subscribe_websocket()` and
+  `unsubscribe_websocket()`, are synchronous and read no room: they take
+  `organization_id=None` too, recorded for each (connection, room), and a
+  room of another organization, or of none, delivers nothing to a
+  connection subscribed for an organization, streamed or not; a scoped
+  unsubscribe removes only a subscription made for its organization. The
+  subscription itself is not refused.
 
 ## [0.108.0] — 2026-10-24
 

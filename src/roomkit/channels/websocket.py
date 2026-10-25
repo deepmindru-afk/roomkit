@@ -93,6 +93,10 @@ class WebSocketChannel(Channel):
         # every socket it happens to hold.
         self._connection_rooms: dict[str, set[str]] = {}
         self._room_connections: dict[str, set[str]] = {}
+        # The organization a subscription was made for (RFC §17.2), by
+        # (connection, room); an unscoped subscription has no entry. A
+        # subscription reads no room, so the room is matched at delivery.
+        self._subscribed_for: dict[tuple[str, str], str] = {}
 
     @property
     def info(self) -> dict[str, Any]:
@@ -131,6 +135,7 @@ class WebSocketChannel(Channel):
         *,
         room_id: str,
         stream_send_fn: StreamSendFn | None = None,
+        organization_id: str | None = None,
     ) -> None:
         """Register a WebSocket connection and subscribe it to a room.
 
@@ -146,6 +151,8 @@ class WebSocketChannel(Channel):
             stream_send_fn: Optional callback for delivering streaming messages.
                 When provided, this connection receives progressive text delivery
                 via the ``stream_start``/``stream_chunk``/``stream_end`` protocol.
+            organization_id: The organization the connection acts for (RFC
+                §17.2), as :meth:`subscribe` takes it.
         """
         self._connections[connection_id] = send_fn
         if stream_send_fn is not None:
@@ -153,18 +160,44 @@ class WebSocketChannel(Channel):
         else:
             self._stream_send_fns.pop(connection_id, None)
         self._error_counts.pop(connection_id, None)
-        self.subscribe(connection_id, room_id)
+        self.subscribe(connection_id, room_id, organization_id=organization_id)
 
-    def subscribe(self, connection_id: str, room_id: str) -> None:
+    def subscribe(
+        self, connection_id: str, room_id: str, *, organization_id: str | None = None
+    ) -> None:
         """Also deliver *room_id*'s events to an existing connection.
 
         For the client that holds several conversations open on one socket.
+
+        *organization_id* is the organization the connection acts for (RFC
+        §17.2). The call reads no room, so nothing is refused here: the
+        subscription is recorded for the organization, and a room of another
+        organization, or of none, delivers nothing to it. Unset, the
+        connection receives the room's events whatever its organization, as
+        before. The latest subscription of a connection to a room holds.
         """
         self._connection_rooms.setdefault(connection_id, set()).add(room_id)
         self._room_connections.setdefault(room_id, set()).add(connection_id)
+        if organization_id is None:
+            self._subscribed_for.pop((connection_id, room_id), None)
+        else:
+            self._subscribed_for[(connection_id, room_id)] = organization_id
 
-    def unsubscribe(self, connection_id: str, room_id: str) -> None:
-        """Stop delivering *room_id*'s events to a connection."""
+    def unsubscribe(
+        self, connection_id: str, room_id: str, *, organization_id: str | None = None
+    ) -> None:
+        """Stop delivering *room_id*'s events to a connection.
+
+        With *organization_id* (RFC §17.2), only a subscription made for that
+        organization is removed: one made for another, or unscoped, stays.
+        Unset, the subscription is removed whoever made it, as before.
+        """
+        if (
+            organization_id is not None
+            and self._subscribed_for.get((connection_id, room_id)) != organization_id
+        ):
+            return
+        self._subscribed_for.pop((connection_id, room_id), None)
         rooms = self._connection_rooms.get(connection_id)
         if rooms is not None:
             rooms.discard(room_id)
@@ -188,13 +221,23 @@ class WebSocketChannel(Channel):
         for room_id in self.rooms_for(connection_id):
             self.unsubscribe(connection_id, room_id)
 
-    def _connections_in(self, room_id: str) -> list[tuple[str, SendFn]]:
-        """Live connections subscribed to *room_id*, as (id, send_fn) pairs."""
+    def _connections_in(
+        self, room_id: str, organization_id: str | None
+    ) -> list[tuple[str, SendFn]]:
+        """Live connections subscribed to *room_id*, a room of
+        *organization_id*, as (id, send_fn) pairs: none subscribed for
+        another organization (RFC §17.2)."""
         return [
             (conn_id, self._connections[conn_id])
             for conn_id in sorted(self._room_connections.get(room_id, ()))
-            if conn_id in self._connections
+            if conn_id in self._connections and self._reaches(conn_id, room_id, organization_id)
         ]
+
+    def _reaches(self, conn_id: str, room_id: str, organization_id: str | None) -> bool:
+        """Whether *conn_id*'s subscription to *room_id* admits a room of
+        *organization_id*: an unscoped one admits any (RFC §17.2)."""
+        subscribed_for = self._subscribed_for.get((conn_id, room_id))
+        return subscribed_for is None or subscribed_for == organization_id
 
     def _streaming_connections_in(self, room_id: str) -> list[str]:
         """Ids of connections in *room_id* that speak the streaming protocol."""
@@ -272,10 +315,11 @@ class WebSocketChannel(Channel):
         #
         # Concurrently, so one slow client delays only itself: sequentially,
         # every connection waited for the ones before it.
+        organization_id = context.room.organization_id
         await asyncio.gather(
             *(
                 self._send_one(conn_id, send_fn, event)
-                for conn_id, send_fn in self._connections_in(binding.room_id)
+                for conn_id, send_fn in self._connections_in(binding.room_id, organization_id)
             )
         )
         return ChannelOutput.empty()
@@ -307,8 +351,13 @@ class WebSocketChannel(Channel):
 
         # Every fan-out below is scoped to the room being delivered, not to
         # every socket the channel holds.
-        streaming_conns = self._streaming_connections_in(binding.room_id)
-        room_conns = self._connections_in(binding.room_id)
+        organization_id = context.room.organization_id
+        room_conns = self._connections_in(binding.room_id, organization_id)
+        streaming_conns = [
+            conn_id
+            for conn_id in self._streaming_connections_in(binding.room_id)
+            if self._reaches(conn_id, binding.room_id, organization_id)
+        ]
 
         logger.debug(
             "deliver_stream: channel=%s, room=%s, stream=%s, streaming_conns=%d, room_conns=%d",

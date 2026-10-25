@@ -10,15 +10,19 @@ client saw them, and so did anything reading that socket.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable
 
 import pytest
 
-from roomkit.channels.websocket import WebSocketChannel
+from roomkit import RoomKit
+from roomkit.channels.websocket import SendFn, WebSocketChannel
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
+from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
+from tests.test_framework import SimpleChannel
 
 
 def _binding(room_id: str, channel_id: str = "ws") -> ChannelBinding:
@@ -261,3 +265,119 @@ class TestFanOutIsBounded:
         await ws.deliver(_event("room-a", "hi"), _binding("room-a"), _context("room-a"))
 
         assert sorted(delivered) == [f"c{i}" for i in range(5)], "fan-out was sequential"
+
+
+async def _acme_room_on_a_socket_channel() -> tuple[RoomKit, WebSocketChannel]:
+    kit = RoomKit()
+    ws = WebSocketChannel("ws")
+    kit.register_channel(ws)
+    kit.register_channel(SimpleChannel("sms1"))
+    await kit.create_room(room_id="acme-room", organization_id="acme")
+    await kit.attach_channel("acme-room", "ws")
+    await kit.attach_channel("acme-room", "sms1")
+    return kit, ws
+
+
+SubscribeDoor = Callable[[RoomKit, WebSocketChannel, str, SendFn, str | None], None]
+
+
+def _by_register(
+    kit: RoomKit, ws: WebSocketChannel, conn: str, send: SendFn, org: str | None
+) -> None:
+    ws.register_connection(conn, send, room_id="acme-room", organization_id=org)
+
+
+def _by_subscribe(
+    kit: RoomKit, ws: WebSocketChannel, conn: str, send: SendFn, org: str | None
+) -> None:
+    ws.register_connection(conn, send, room_id="lobby")
+    ws.subscribe(conn, "acme-room", organization_id=org)
+
+
+def _by_kit_subscribe(
+    kit: RoomKit, ws: WebSocketChannel, conn: str, send: SendFn, org: str | None
+) -> None:
+    ws.register_connection(conn, send, room_id="lobby")
+    kit.subscribe_websocket("ws", conn, "acme-room", organization_id=org)
+
+
+_SUBSCRIBE_DOORS: dict[str, SubscribeDoor] = {
+    "register_connection": _by_register,
+    "subscribe": _by_subscribe,
+    "subscribe_websocket": _by_kit_subscribe,
+}
+
+
+class TestOrganizationScope:
+    """A connection subscribed for an organization receives only the rooms
+    of that organization (RFC §17.2, RMK-491): the subscription is
+    synchronous and reads no room, so the room is matched at delivery."""
+
+    @pytest.mark.parametrize("door", sorted(_SUBSCRIBE_DOORS))
+    async def test_a_connection_of_another_organization_receives_nothing(self, door: str) -> None:
+        kit, ws = await _acme_room_on_a_socket_channel()
+        seen: list[str] = []
+
+        async def send(conn_id: str, event: RoomEvent) -> None:
+            seen.append(conn_id)
+
+        for conn, org in (("acme-socket", "acme"), ("globex-socket", "globex"), ("any", None)):
+            _SUBSCRIBE_DOORS[door](kit, ws, conn, send, org)
+
+        await kit.process_inbound(
+            InboundMessage(
+                channel_id="sms1", sender_id="+15550001", content=TextContent(body="hi")
+            ),
+            room_id="acme-room",
+        )
+
+        assert sorted(seen) == ["acme-socket", "any"]
+        await kit.close()
+
+    async def test_a_stream_reaches_no_connection_of_another_organization(self) -> None:
+        ws = WebSocketChannel("ws")
+        streamed: list[str] = []
+        sent: list[str] = []
+
+        async def send(conn_id: str, event: RoomEvent) -> None:
+            sent.append(conn_id)
+
+        async def stream_send(conn_id: str, msg: object) -> None:
+            streamed.append(conn_id)
+
+        for conn, org in (("acme-live", "acme"), ("globex-live", "globex")):
+            ws.register_connection(
+                conn, send, room_id="room-a", stream_send_fn=stream_send, organization_id=org
+            )
+        for conn, org in (("acme-final", "acme"), ("globex-final", "globex")):
+            ws.register_connection(conn, send, room_id="room-a", organization_id=org)
+
+        async def text_stream() -> AsyncIterator[str]:
+            yield "hello"
+
+        context = RoomContext(room=Room(id="room-a", organization_id="acme"))
+        await ws.deliver_stream(text_stream(), _event("room-a", ""), _binding("room-a"), context)
+
+        assert set(streamed) == {"acme-live"}
+        assert sent == ["acme-final"]
+
+    @pytest.mark.parametrize("door", ["unsubscribe", "unsubscribe_websocket"])
+    async def test_another_organization_does_not_unsubscribe_a_connection(self, door: str) -> None:
+        kit, ws = await _acme_room_on_a_socket_channel()
+
+        async def send(conn_id: str, event: RoomEvent) -> None:
+            return None
+
+        ws.register_connection("acme-socket", send, room_id="acme-room", organization_id="acme")
+
+        def unsubscribe(org: str | None) -> None:
+            if door == "unsubscribe":
+                ws.unsubscribe("acme-socket", "acme-room", organization_id=org)
+            else:
+                kit.unsubscribe_websocket("ws", "acme-socket", "acme-room", organization_id=org)
+
+        unsubscribe("globex")
+        assert ws.rooms_for("acme-socket") == {"acme-room"}
+        unsubscribe("acme")
+        assert ws.rooms_for("acme-socket") == set()
+        await kit.close()

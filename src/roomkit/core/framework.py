@@ -1694,8 +1694,9 @@ class RoomKit(
         *organization_id* is the organization the caller acts for (RFC
         §17.2): the room is read with it before the socket is registered, and
         another organization's room raises :class:`RoomNotFoundError` with
-        no connection registered and no event emitted. Unset, no room is
-        read, as before.
+        no connection registered and no event emitted; the subscription is
+        recorded for it, as :meth:`WebSocketChannel.subscribe` records one.
+        Unset, no room is read, as before.
         """
         await self._ensure_status_bus_subscribed()
         channel = self._channels.get(channel_id)
@@ -1706,7 +1707,11 @@ class RoomKit(
         if organization_id is not None:
             await self.get_room(room_id, organization_id=organization_id)
         channel.register_connection(
-            connection_id, send_fn, room_id=room_id, stream_send_fn=stream_send_fn
+            connection_id,
+            send_fn,
+            room_id=room_id,
+            stream_send_fn=stream_send_fn,
+            organization_id=organization_id,
         )
         await self._emit_framework_event(
             "channel_connected",
@@ -1715,23 +1720,45 @@ class RoomKit(
             data={"connection_id": connection_id, "room_id": room_id},
         )
 
-    def subscribe_websocket(self, channel_id: str, connection_id: str, room_id: str) -> None:
-        """Also deliver *room_id* to an already-connected socket."""
-        channel = self._channels.get(channel_id)
-        if not isinstance(channel, WebSocketChannel):
-            raise ChannelNotRegisteredError(
-                f"Channel {channel_id} is not a registered WebSocket channel"
-            )
-        channel.subscribe(connection_id, room_id)
+    def subscribe_websocket(
+        self,
+        channel_id: str,
+        connection_id: str,
+        room_id: str,
+        *,
+        organization_id: str | None = None,
+    ) -> None:
+        """Also deliver *room_id* to an already-connected socket.
 
-    def unsubscribe_websocket(self, channel_id: str, connection_id: str, room_id: str) -> None:
-        """Stop delivering *room_id* to a connected socket."""
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): the call reads no room, and the subscription is recorded for
+        it, so a room of another organization, or of none, delivers nothing
+        to the socket (:meth:`WebSocketChannel.subscribe`).
+        """
         channel = self._channels.get(channel_id)
         if not isinstance(channel, WebSocketChannel):
             raise ChannelNotRegisteredError(
                 f"Channel {channel_id} is not a registered WebSocket channel"
             )
-        channel.unsubscribe(connection_id, room_id)
+        channel.subscribe(connection_id, room_id, organization_id=organization_id)
+
+    def unsubscribe_websocket(
+        self,
+        channel_id: str,
+        connection_id: str,
+        room_id: str,
+        *,
+        organization_id: str | None = None,
+    ) -> None:
+        """Stop delivering *room_id* to a connected socket; with
+        *organization_id* (RFC §17.2), only a subscription made for it
+        (:meth:`WebSocketChannel.unsubscribe`)."""
+        channel = self._channels.get(channel_id)
+        if not isinstance(channel, WebSocketChannel):
+            raise ChannelNotRegisteredError(
+                f"Channel {channel_id} is not a registered WebSocket channel"
+            )
+        channel.unsubscribe(connection_id, room_id, organization_id=organization_id)
 
     async def disconnect_websocket(self, channel_id: str, connection_id: str) -> None:
         """Unregister a WebSocket connection and emit framework event."""
