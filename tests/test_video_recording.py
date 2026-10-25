@@ -13,20 +13,20 @@ from roomkit import (
     RoomKit,
     VideoChannel,
 )
-from roomkit.video.backends.mock import MockVideoBackend
-from roomkit.video.base import VideoSession
-from roomkit.video.pipeline.config import VideoPipelineConfig
+from roomkit.video import MockVideoBackend, VideoFrame, VideoSession
+from roomkit.video.pipeline import VideoPipelineConfig
 from roomkit.video.recorder import (
     MockVideoRecorder,
+    OpenCVVideoRecorder,
+    PyAVVideoRecorder,
     VideoRecorder,
     VideoRecordingConfig,
 )
+
+# The modules themselves, only to inject faults into what they wrap.
 from roomkit.video.recorder import opencv as opencv_recorder
 from roomkit.video.recorder import pyav as pyav_recorder
-from roomkit.video.recorder.opencv import OpenCVVideoRecorder
-from roomkit.video.recorder.pyav import PyAVVideoRecorder
-from roomkit.video.video_frame import VideoFrame
-from roomkit.voice.pipeline.recorder.base import RecordingEncryption
+from roomkit.voice.pipeline import RecordingEncryption
 
 
 @pytest.fixture
@@ -425,3 +425,89 @@ class TestRecordingEncryptionAtRest:
             Path(h.path).name + ".enc" for h in handles
         )
         assert "disk full" in caplog.text
+
+
+class TestVideoChannelRecordingFailures:
+    """A recorder that fails leaves the channel's other sessions as configured."""
+
+    @staticmethod
+    async def _kit_recording(
+        recorder: VideoRecorder, config: VideoRecordingConfig
+    ) -> tuple[RoomKit, MockVideoBackend, VideoChannel]:
+        kit, backend = RoomKit(), MockVideoBackend()
+        channel = VideoChannel(
+            "video-1",
+            backend=backend,
+            pipeline=VideoPipelineConfig(recorder=recorder, recording_config=config),
+        )
+        kit.register_channel(channel)
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "video-1")
+        return kit, backend, channel
+
+    async def test_kit_close_encrypts_every_recording_when_one_fails_to_stop(
+        self, file_recorder: _FileRecorder, tmp_path: Path
+    ) -> None:
+        """``kit.close()`` stops each open recording and closes the recorder even
+        when one ``stop()`` raises: the next ones would otherwise stay in the
+        clear. The failure is raised once the channel is closed."""
+        config = VideoRecordingConfig(
+            storage=str(tmp_path), codec=file_recorder.codec, encryption=_XorEncryption()
+        )
+        kit, backend, _ = await self._kit_recording(file_recorder.recorder, config)
+        for participant in ("u1", "u2"):
+            session = await kit.join("r1", "video-1", participant_id=participant)
+            await backend.simulate_video_received(session, _raw_frame(7))
+        file_recorder.fail_closing(1)
+
+        with pytest.raises(ExceptionGroup) as raised:
+            await kit.close()
+
+        assert raised.group_contains(OSError, match="disk full")
+        assert [p.suffix for p in tmp_path.iterdir()] == [".enc", ".enc"]
+
+    async def test_a_recording_that_fails_to_stop_does_not_keep_its_session_bound(
+        self, file_recorder: _FileRecorder, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """``kit.leave()`` unbinds the session even when its recording's
+        ``stop()`` raises: the failure is logged, the session receives no more
+        frames, and the file is stored as configured."""
+        config = VideoRecordingConfig(
+            storage=str(tmp_path), codec=file_recorder.codec, encryption=_XorEncryption()
+        )
+        kit, backend, channel = await self._kit_recording(file_recorder.recorder, config)
+        tapped: list[VideoFrame] = []
+        channel.add_media_tap(lambda _session, frame: tapped.append(frame))
+        session = await kit.join("r1", "video-1", participant_id="u1")
+        await backend.simulate_video_received(session, _raw_frame(7))
+        file_recorder.fail_closing(1)
+
+        await kit.leave(session)
+        await backend.simulate_video_received(session, _raw_frame(8))
+        await kit.close()
+
+        assert len(tapped) == 1
+        assert "disk full" in caplog.text
+        assert [p.suffix for p in tmp_path.iterdir()] == [".enc"]
+
+    async def test_a_refused_recording_refuses_the_session_before_binding_it(
+        self, file_recorder: _FileRecorder, tmp_path: Path
+    ) -> None:
+        """A recording the recorder refuses to start (here a ``storage`` with
+        '..') fails ``kit.join()`` before the session is bound to the room: it
+        receives no frames."""
+        config = VideoRecordingConfig(
+            storage=str(tmp_path / "a" / ".." / "b"), codec=file_recorder.codec
+        )
+        kit, backend, channel = await self._kit_recording(file_recorder.recorder, config)
+        tapped: list[VideoFrame] = []
+        channel.add_media_tap(lambda _session, frame: tapped.append(frame))
+        session = await backend.connect("r1", "u1", "video-1")
+
+        with pytest.raises(ValueError, match="must not contain '..'"):
+            await kit.join("r1", "video-1", session=session)
+        await backend.simulate_video_received(session, _raw_frame(7))
+        await kit.close()
+
+        assert tapped == []
+        assert list(tmp_path.rglob("*")) == []

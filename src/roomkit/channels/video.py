@@ -204,7 +204,13 @@ class VideoChannel(VideoHooksMixin, FrameworkAwareChannel, Channel):
         room_id: str,
         binding: ChannelBinding,
     ) -> None:
-        """Bind a video session to a room for event routing."""
+        """Bind a video session to a room for event routing.
+
+        The recording starts first: a recorder that refuses it (a ``storage``
+        with '..', a directory it cannot write) refuses the session before
+        anything is bound to the room.
+        """
+        self._start_recording(session)
         self._session_bindings[session.id] = (room_id, binding)
         # Dual-signal: check if backend already signalled ready
         was_ready_pending = session.id in self._session_ready_pending
@@ -218,11 +224,6 @@ class VideoChannel(VideoHooksMixin, FrameworkAwareChannel, Channel):
                 self._emit_session_event("video_session_started", session, room_id),
                 name=f"video_session_started:{session.id}",
             )
-        # Start recording if configured
-        if self._recorder and self._recording_config:
-            handle = self._recorder.start(session, self._recording_config)
-            self._recording_handles[session.id] = handle
-            logger.info("Recording started: %s for session %s", handle.id, session.id[:8])
         # Fire hook if backend was already ready
         if was_ready_pending and self._framework:
             self._schedule(
@@ -236,16 +237,8 @@ class VideoChannel(VideoHooksMixin, FrameworkAwareChannel, Channel):
         # Unregister from video bridge
         if self._bridge is not None:
             self._bridge.remove_session(session.id)
-        # Stop recording
-        handle = self._recording_handles.pop(session.id, None)
-        if handle and self._recorder:
-            result = self._recorder.stop(handle)
-            logger.info(
-                "Recording stopped: %s (%d frames, %.1fs)",
-                result.id,
-                result.frame_count,
-                result.duration_seconds,
-            )
+        # A recording that fails to stop is logged: the session leaves all the same.
+        self._stop_recording(session.id)
         binding_info = self._session_bindings.pop(session.id, None)
         if self._video_pipeline is not None:
             self._video_pipeline.reset(session.id)
@@ -470,18 +463,7 @@ class VideoChannel(VideoHooksMixin, FrameworkAwareChannel, Channel):
         if self._scheduled_tasks:
             await asyncio.gather(*self._scheduled_tasks, return_exceptions=True)
         self._scheduled_tasks.clear()
-        # Stop active recordings
-        if self._recorder:
-            for handle in self._recording_handles.values():
-                result = self._recorder.stop(handle)
-                logger.info(
-                    "Recording stopped (close): %s (%d frames, %.1fs)",
-                    result.id,
-                    result.frame_count,
-                    result.duration_seconds,
-                )
-            self._recorder.close()
-        self._recording_handles.clear()
+        recording_error = self._stop_all_recordings()
         # Close video pipeline
         await self._video_resources.close()
         # Close video bridge
@@ -494,6 +476,57 @@ class VideoChannel(VideoHooksMixin, FrameworkAwareChannel, Channel):
         self._last_vision_ts.clear()
         self._room_vision.clear()
         self._session_ready_pending.clear()
+        if recording_error is not None:
+            raise recording_error
+
+    # -------------------------------------------------------------------------
+    # Session recording
+    def _start_recording(self, session: VideoSession) -> None:
+        if not (self._recorder and self._recording_config):
+            return
+        handle = self._recorder.start(session, self._recording_config)
+        self._recording_handles[session.id] = handle
+        logger.info("Recording started: %s for session %s", handle.id, session.id[:8])
+
+    def _stop_recording(self, session_id: str) -> Exception | None:
+        """Stop a session's recording; return, after logging it, what it raised.
+
+        The recorder stores the file as configured even when finishing it
+        fails, so the caller only decides whether to report the failure.
+        """
+        handle = self._recording_handles.pop(session_id, None)
+        if handle is None or self._recorder is None:
+            return None
+        try:
+            result = self._recorder.stop(handle)
+        except Exception as exc:
+            logger.exception("Recording %s failed to stop", handle.id)
+            return exc
+        logger.info(
+            "Recording stopped: %s (%d frames, %.1fs)",
+            result.id,
+            result.frame_count,
+            result.duration_seconds,
+        )
+        return None
+
+    def _stop_all_recordings(self) -> Exception | None:
+        """Stop every open recording, then close the recorder, whatever fails.
+
+        One recording failing to stop must not leave the next ones, nor the
+        recorder's own close, undone: they would stay in the clear. Returns
+        the first failure, for ``close()`` to raise once the channel is closed.
+        """
+        if self._recorder is None:
+            self._recording_handles.clear()
+            return None
+        errors = [self._stop_recording(session_id) for session_id in list(self._recording_handles)]
+        try:
+            self._recorder.close()
+        except Exception as exc:
+            logger.exception("Video recorder failed to close")
+            errors.append(exc)
+        return next((error for error in errors if error is not None), None)
 
     # -------------------------------------------------------------------------
     # Public helpers

@@ -569,13 +569,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `storage_encrypted_at_rest=True` the file stays as written and
   `metadata["encryption"]` is `"storage"`. With neither, the recording is
   written unencrypted, as before: unlike the audio and room recorders, the
-  video recorders do not refuse to start.
+  video recorders do not refuse to start. `VideoChannel` follows suit: a
+  recording that fails to stop no longer stops `kit.close()` from stopping
+  the next ones and closing the recorder, which left them in the clear; the
+  first failure is raised once the channel is closed. `kit.leave()` logs
+  such a failure and still unbinds the session. A recording the recorder
+  refuses to start, such as one whose `storage` contains `..`, fails
+  `kit.join()` before the session is bound; it used to stay bound,
+  receiving frames, with no recording.
 
-- A WAV recording whose finalisation fails leaves no plaintext behind when
+- A WAV recording whose finalisation raises leaves no plaintext behind when
   `encryption` is configured (RFC §17.6, RMK-569). The files it had written
   never reached the cipher and stayed on the storage in the clear, while the
   result listed none. They are now deleted, as a file the cipher refuses
-  is.
+  is. A `stop()` that times out still leaves its files to be finished later
+  in the clear.
 
 ## [0.108.0] — 2026-10-24
 
