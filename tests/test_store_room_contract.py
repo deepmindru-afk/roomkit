@@ -4,6 +4,7 @@ is an event ``index``)."""
 
 from __future__ import annotations
 
+import copy
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -75,30 +76,40 @@ async def test_a_room_s_private_state_is_kept_apart_from_its_metadata(
 ) -> None:
     """RMK-631: what a room keeps for the runtime under a key (its register of
     authors, RFC §10.1 step 12) is the store's, apart from the room's
-    metadata, which clients may read: a reader's copy is its own, writing a
-    key moves the copy the metadata still holds under it, ``None`` removes
-    it, and the room's deletion takes them all."""
+    metadata, which clients may read: what a writer and a reader hold are
+    their own copies, writing a key removes the copy the metadata still holds
+    under that key and no other, ``None`` removes the key, and the room's
+    deletion takes them all."""
     legacy = {"version": 3, "names": {"a" * 16: "b" * 16 + ":1"}}
+    stale = {"results": []}
     room = await contract_store.create_room(
-        Room(id=uuid4().hex, metadata={"topic": "billing", AUTHOR_REGISTER: legacy})
+        Room(
+            id=uuid4().hex,
+            metadata={"topic": "billing", AUTHOR_REGISTER: legacy, "_pending": stale},
+        )
     )
     register = {"version": 3, "names": {"c" * 16: "d" * 16 + ":1 e" + "e" * 15 + ":2"}}
     pending = {"results": [{"task": "t1", "output": {"text": "done"}}]}
+    written = copy.deepcopy(pending)
     try:
         assert await contract_store.get_private_state(room.id, AUTHOR_REGISTER) is None
         await contract_store.set_private_state(room.id, AUTHOR_REGISTER, register)
-        await contract_store.set_private_state(room.id, "pending", pending)
-        held = await contract_store.get_private_state(room.id, "pending")
+        moved = await contract_store.get_room(room.id)
+        assert moved is not None
+        assert moved.metadata == {"topic": "billing", "_pending": stale}
+        await contract_store.set_private_state(room.id, "_pending", written)
+        written["results"][0]["output"]["text"] = "changed"  # a writer's copy is its own
+        held = await contract_store.get_private_state(room.id, "_pending")
         assert held == pending
         assert held is not None
-        held["results"][0]["output"]["text"] = "changed"  # a reader's copy is its own
+        held["results"][0]["output"]["text"] = "changed"  # so is a reader's
 
-        assert await contract_store.get_private_state(room.id, "pending") == pending
+        assert await contract_store.get_private_state(room.id, "_pending") == pending
         assert await contract_store.get_private_state(room.id, AUTHOR_REGISTER) == register
         kept = await contract_store.get_room(room.id)
         assert kept is not None and kept.metadata == {"topic": "billing"}
-        await contract_store.set_private_state(room.id, "pending", None)
-        assert await contract_store.get_private_state(room.id, "pending") is None
+        await contract_store.set_private_state(room.id, "_pending", None)
+        assert await contract_store.get_private_state(room.id, "_pending") is None
         assert await contract_store.get_private_state(room.id, AUTHOR_REGISTER) == register
     finally:
         await contract_store.delete_room(room.id)
