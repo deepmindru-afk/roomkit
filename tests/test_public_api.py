@@ -5,12 +5,14 @@ from __future__ import annotations
 import importlib
 import json
 import re
+import sys
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
 import roomkit
+from roomkit.voice import tts as voice_tts
 from tests.api_signatures import breaks_since_snapshot, call_breaks, object_breaks
 
 _PACKAGE_ROOT = Path(roomkit.__file__).parent
@@ -114,14 +116,16 @@ def _resolves(module: ModuleType, name: str) -> bool:
     """Whether ``name`` resolves on ``module``; an absent optional dependency counts."""
     try:
         getattr(module, name)
-    except ModuleNotFoundError as missing:
+    except ImportError as missing:
+        # A lazy name whose optional dependency is absent, or installed without
+        # what the module imports from it (a module's own ImportError).
         _raise_unless_optional(missing)
     except AttributeError:
         return False
     return True
 
 
-def _raise_unless_optional(missing: ModuleNotFoundError) -> None:
+def _raise_unless_optional(missing: ImportError) -> None:
     if (missing.name or "").startswith("roomkit"):
         raise missing
 
@@ -206,3 +210,15 @@ def test_a_member_change_breaks_a_caller(
     old: dict[str, list[str]], new: dict[str, list[str]] | None, broken: bool
 ) -> None:
     assert bool(object_breaks("roomkit.X", old, new)) is broken
+
+
+def test_a_lazy_name_whose_optional_dependency_fails_to_import_counts_as_optional(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fish Audio's module raises a plain ImportError of its own when msgpack
+    is missing; the name resolves as one whose dependency is absent."""
+    monkeypatch.setitem(sys.modules, "msgpack", None)
+    for module in ("roomkit.voice.tts.fish_audio", "roomkit.voice.tts._fish_audio_ws"):
+        monkeypatch.delitem(sys.modules, module, raising=False)
+
+    assert _resolves(voice_tts, "FishAudioTTSProvider")

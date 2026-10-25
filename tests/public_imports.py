@@ -7,16 +7,18 @@ and an underscore name is internal everywhere. A package itself is public:
 ``import roomkit.voice.stt`` and ``from roomkit.voice import stt`` follow the
 rule, ``import roomkit.voice.stt.deepgram`` does not.
 
-``check(paths)`` reads every line of the given files that starts a ``from
-roomkit... import`` or ``import roomkit...`` statement, in code, in a
-docstring, at a doctest prompt or in a fenced block at any indent, and every
-inline code span that holds one; ``check(paths, docstrings=True)`` reads only
-the triple-quoted strings of Python files, as the API reference renders them
-from roomkit's own sources. It returns one finding per import that names a
-non-public path, or that does not resolve. ``__all__`` is read from the source, so a name a
-package exports only when its optional dependency is installed counts as
-public; whether a name resolves is checked by importing it, and a name whose
-optional dependency the environment lacks is left out.
+``check(paths)`` reads the import statements of a Python file's code, and
+in its docstrings, as in a Markdown or text file, every line that starts a
+``from roomkit... import`` or ``import roomkit...`` statement (at a doctest
+prompt or in a fenced block at any indent) and every inline code span that
+holds one. ``check(paths, docstrings=True)`` reads only the docstrings of
+Python files, as the API reference renders them from roomkit's own sources,
+and skips private modules (``_x.py``), which it does not render. It returns
+one finding per import that names a non-public path, or that does not
+resolve. ``__all__`` is read from the source, so a name a package exports
+only when its optional dependency is installed counts as public; whether a
+name resolves is checked by importing it, and a name whose optional
+dependency the environment lacks is left out.
 
 ``test_public_imports.py`` runs it on roomkit's examples, README, AGENTS.md,
 ``llms.txt``, ``docs/c7`` and the docstrings under ``src/roomkit``; ``make
@@ -28,6 +30,7 @@ docs`` runs it on the docs site's pages::
 from __future__ import annotations
 
 import ast
+import bisect
 import importlib
 import re
 import sys
@@ -85,9 +88,8 @@ def check(
 def _files(paths: Iterable[Path]) -> Iterator[Path]:
     for path in paths:
         if path.is_dir():
-            for child in sorted(path.rglob("*")):
-                if child.is_file() and child.suffix in _SUFFIXES:
-                    yield child
+            found = [child for suffix in _SUFFIXES for child in path.rglob(f"*{suffix}")]
+            yield from sorted(found, key=str)
         elif path.is_file():
             yield path
 
@@ -96,24 +98,40 @@ def _imports(path: Path, *, docstrings: bool) -> Iterator[tuple[int, str, str | 
     """``(line, module, name)`` per imported roomkit name; ``name`` is None for
     ``import roomkit.x``."""
     text = path.read_text(encoding="utf-8", errors="replace")
+    newlines = [match.start() for match in re.finditer("\n", text)]
     if path.suffix != ".py":
-        yield from _read(text, 0, spans=True)
-    elif not docstrings:
-        yield from _read(text, 0, spans=False)
-    else:
-        for string in _TRIPLE_QUOTED.finditer(text):
-            yield from _read(string.group(1), text.count("\n", 0, string.start(1)), spans=True)
+        yield from _read(text, newlines, 0, len(text))
+        return
+    if docstrings and path.stem.startswith("_") and not path.stem.startswith("__"):
+        return
+    if not docstrings:
+        yield from _code(text, newlines)
+    for string in _TRIPLE_QUOTED.finditer(text):
+        yield from _read(text, newlines, string.start(1), string.end(1))
 
 
-def _read(text: str, offset: int, *, spans: bool) -> Iterator[tuple[int, str, str | None]]:
-    """The imports ``text`` holds, its first line at ``offset``: each statement
-    line, and with ``spans`` each inline code span."""
-    for statement in _STATEMENT.finditer(text):
-        line = offset + text.count("\n", 0, statement.start())
+def _code(text: str, newlines: list[int]) -> Iterator[tuple[int, str, str | None]]:
+    """The import statements of Python code; code that does not parse is read
+    line by line instead."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        yield from _read(text, newlines, 0, len(text), spans=False)
+        return
+    yield from _tree_imports(tree, 0)
+
+
+def _read(
+    text: str, newlines: list[int], start: int, end: int, *, spans: bool = True
+) -> Iterator[tuple[int, str, str | None]]:
+    """The imports ``text[start:end]`` shows: each line that starts an import
+    statement, and with ``spans`` each inline code span."""
+    for statement in _STATEMENT.finditer(text, start, end):
+        line = bisect.bisect_left(newlines, statement.start())
         yield from _code_imports(statement.group("statement"), line)
     if spans:
-        for span in _INLINE.finditer(text):
-            yield from _code_imports(span.group(1), offset + text.count("\n", 0, span.start()))
+        for span in _INLINE.finditer(text, start, end):
+            yield from _code_imports(span.group(1), bisect.bisect_left(newlines, span.start()))
 
 
 def _code_imports(code: str, offset: int) -> Iterator[tuple[int, str, str | None]]:
@@ -123,6 +141,10 @@ def _code_imports(code: str, offset: int) -> Iterator[tuple[int, str, str | None
         tree = ast.parse(textwrap.dedent(code))
     except SyntaxError:
         return
+    yield from _tree_imports(tree, offset)
+
+
+def _tree_imports(tree: ast.AST, offset: int) -> Iterator[tuple[int, str, str | None]]:
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.level == 0 and _is_roomkit(node.module):
             for alias in node.names:
@@ -145,14 +167,14 @@ def _problem(module: str, name: str | None) -> str | None:
         return _unresolved(module, None)
     if _is_package(f"{module}.{name}") or (name == "*" and _is_package(module)):
         return _unresolved(module, None)
+    if name in exported(module):
+        return _unresolved(module, name)
     if name.startswith("_"):
         return "an underscore name is internal"
-    if name not in exported(module):
-        elsewhere = public_paths(name)
-        hint = f"; public as {', '.join(elsewhere)}" if elsewhere else "; exported nowhere"
-        unresolved = _unresolved(module, name)
-        return f"{unresolved}{hint}" if unresolved else f"not public at {module}{hint}"
-    return _unresolved(module, name)
+    elsewhere = public_paths(name)
+    hint = f"; public as {', '.join(elsewhere)}" if elsewhere else "; exported nowhere"
+    unresolved = _unresolved(module, name)
+    return f"{unresolved}{hint}" if unresolved else f"not public at {module}{hint}"
 
 
 def _unresolved(module: str, name: str | None) -> str | None:
@@ -160,17 +182,17 @@ def _unresolved(module: str, name: str | None) -> str | None:
     does or needs an optional dependency the environment lacks."""
     try:
         loaded = importlib.import_module(module)
-    except ModuleNotFoundError as missing:
+    except ImportError as missing:
         if (missing.name or "").startswith("roomkit"):
             return f"does not resolve: no module {missing.name}"
-        return None
-    except ImportError:
         return None
     if name is None:
         return None
     try:
         getattr(loaded, name)
-    except ModuleNotFoundError as missing:
+    except ImportError as missing:
+        # A lazy name whose optional dependency is missing, or a dependency
+        # that installed without what the module imports from it.
         if (missing.name or "").startswith("roomkit"):
             return f"does not resolve: no module {missing.name}"
         return None

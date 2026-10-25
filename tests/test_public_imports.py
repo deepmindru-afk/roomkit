@@ -12,6 +12,7 @@ site's pages.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -96,6 +97,17 @@ def test_a_docstring_is_read_and_the_code_around_it_is_not(tmp_path: Path) -> No
             '"""Swap one line::\n\n    from roomkit.models.event import TextContent\n"""\n',
             "not public at roomkit.models.event",
         ),
+        ("page.md", "```python\nfrom roomkit import __version__\n```\n", None),
+        (
+            "example.py",
+            "from roomkit.models.event import \\\n    TextContent\n",
+            "not public at roomkit.models.event",
+        ),
+        (
+            "example.py",
+            "from roomkit.models.event import (  # one of them)\n    TextContent,\n)\n",
+            "not public at roomkit.models.event",
+        ),
     ],
     ids=[
         "public names",
@@ -110,6 +122,9 @@ def test_a_docstring_is_read_and_the_code_around_it_is_not(tmp_path: Path) -> No
         "an underscore name",
         "a name that does not resolve",
         "a docstring in an example",
+        "a dunder its package lists",
+        "a backslash continuation",
+        "a parenthesis in a comment",
     ],
 )
 def test_an_import_is_public_only_from_a_package_that_lists_it(
@@ -124,3 +139,17 @@ def test_an_import_is_public_only_from_a_package_that_lists_it(
         assert found == []
     else:
         assert len(found) == 1 and problem in found[0].problem, found
+
+
+def test_a_name_whose_optional_dependency_fails_to_import_is_left_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fish Audio's module raises a plain ImportError of its own when msgpack
+    is missing: the check leaves the name out, as for a missing module."""
+    monkeypatch.setitem(sys.modules, "msgpack", None)
+    for module in ("roomkit.voice.tts.fish_audio", "roomkit.voice.tts._fish_audio_ws"):
+        monkeypatch.delitem(sys.modules, module, raising=False)
+    page = tmp_path / "page.md"
+    page.write_text("```python\nfrom roomkit.voice.tts import FishAudioTTSProvider\n```\n")
+
+    assert check([page]) == []

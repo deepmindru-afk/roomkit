@@ -351,7 +351,7 @@ def _packages() -> list[tuple[str, Any]]:
 def _resolve(module: Any, name: str) -> Any:
     try:
         return getattr(module, name)
-    except ModuleNotFoundError as missing:
+    except ImportError as missing:
         _raise_unless_optional(missing)
         return _OPTIONAL
     except AttributeError:
@@ -365,7 +365,7 @@ def _is_roomkit(obj: Any) -> bool:
     return module == "roomkit" or module.startswith("roomkit.")
 
 
-def _raise_unless_optional(missing: ModuleNotFoundError) -> None:
+def _raise_unless_optional(missing: ImportError) -> None:
     if (missing.name or "").startswith("roomkit"):
         raise missing
 
