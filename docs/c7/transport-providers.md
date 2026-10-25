@@ -379,7 +379,15 @@ nothing to it, streamed or not, whatever it is subscribed to.
 on a connection that is not registered for that organization (another's,
 an unscoped one, none) raises `ValueError` and changes nothing, as does a
 scoped `register_connection()` of an id another organization holds. Unset,
-the calls act as before.
+the calls act as before. A registration that changes the organization of an
+id still known, to none included, drops the rooms it was subscribed to, and
+a connection evicted after repeated send failures is forgotten as
+`unregister_connection()` forgets it.
+
+Connection ids are one namespace for every organization: generate them on
+the host server (a UUID per socket), never take one a client chose. A
+refused registration tells that an id is taken, as a refused room id does;
+an id no client can choose tells nothing.
 
 ## Phone Number Utilities
 

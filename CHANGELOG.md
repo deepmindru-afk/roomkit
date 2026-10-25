@@ -670,7 +670,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection registered for another organization, or unscoped, raises
   `ValueError` and changes nothing, so another tenant cannot take a socket
   over. A subscription to another organization's room is not refused: it
-  delivers nothing.
+  delivers nothing. A registration that changes an id's organization, to
+  none included, drops the rooms the id followed, and a connection evicted
+  after repeated send failures is forgotten, rooms and organization, as
+  `unregister_connection()` forgets it (it kept its rooms, which an id
+  registered again inherited). Connection ids are one namespace for every
+  organization: the host server generates them, never a client.
 
 - `start_task()`, `submit_feedback()` and `steer()` take the organization
   the caller acts for (RFC §17.2, RMK-487). A tenant's host could start a

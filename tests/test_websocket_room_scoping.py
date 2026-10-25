@@ -467,3 +467,49 @@ class TestOrganizationScope:
         assert acme.seen == ["acme-room"]
         assert ws.rooms_for("acme-socket") == {"lobby"}
         await kit.close()
+
+    @pytest.mark.parametrize(
+        ("before", "registered_for", "rooms"),
+        [
+            pytest.param("acme", None, {"lobby"}, id="scoped-then-unscoped"),
+            pytest.param("unregistered", "globex", {"lobby"}, id="subscribed-then-scoped"),
+            pytest.param("acme", "acme", {"acme-room", "lobby"}, id="same-organization"),
+        ],
+    )
+    async def test_a_registration_that_changes_the_scope_drops_the_old_subscriptions(
+        self, before: str, registered_for: str | None, rooms: set[str]
+    ) -> None:
+        """A new scope on an id still known starts with no subscription: what
+        the id followed before is no room of the new registration's."""
+        kit, ws = await _two_rooms_on_a_socket_channel()
+        old, new = _Socket(), _Socket()
+        if before == "unregistered":
+            ws.subscribe("c", "acme-room")
+        else:
+            ws.register_connection("c", old.send, room_id="acme-room", organization_id=before)
+
+        ws.register_connection("c", new.send, room_id="lobby", organization_id=registered_for)
+        await _say_in(kit, "acme-room")
+
+        assert ws.rooms_for("c") == rooms
+        assert new.seen == (["acme-room"] if "acme-room" in rooms else [])
+        await kit.close()
+
+    async def test_an_evicted_connection_is_forgotten_with_its_rooms(self) -> None:
+        """As unregister_connection() forgets it: an id registered again after
+        the eviction starts with no room and no organization."""
+        kit, ws = await _two_rooms_on_a_socket_channel()
+        new = _Socket()
+
+        async def gone(conn_id: str, event: RoomEvent) -> None:
+            raise ConnectionError("closed")
+
+        ws.register_connection("c", gone, room_id="acme-room", organization_id="acme")
+        for _ in range(WebSocketChannel._MAX_CONSECUTIVE_ERRORS):
+            await _say_in(kit, "acme-room")
+        assert ws.rooms_for("c") == set()
+
+        ws.register_connection("c", new.send, room_id="lobby")
+        await _say_in(kit, "acme-room")
+        assert new.seen == []
+        await kit.close()
