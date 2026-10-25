@@ -42,7 +42,6 @@ budget of its own.
 from __future__ import annotations
 
 import contextvars
-import logging
 from collections.abc import Generator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
@@ -52,8 +51,6 @@ from typing import TYPE_CHECKING
 from roomkit.core.exceptions import ReentrantCallError, ReentryLoopCapError
 from roomkit.core.locks import _has_room_lock
 from roomkit.tools.context import _live_turn_chain_depth
-
-logger = logging.getLogger("roomkit.framework")
 
 if TYPE_CHECKING:
     from roomkit.core._queued_injections import QueuedInjections
@@ -226,13 +223,6 @@ def charge_direct_change(change: Entry, room_id: str, call: str) -> None:
     """
     if not change.charged or change.draw():
         return
-    logger.warning(
-        "%s() from an ASYNC hook's body in room %s is past the reentry budget that "
-        "body runs on: refused, nothing written",
-        call,
-        room_id,
-        extra={"room_id": room_id},
-    )
     raise ReentryLoopCapError(
         f"{call}() from an ASYNC hook's body in room {room_id} is past the reentry budget "
         "that body runs on: nothing written"

@@ -13,6 +13,7 @@ therefore stops, at the reentry cap or the chain-depth limit.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -1238,6 +1239,27 @@ class TestADirectChangeFromAHook:
             await asyncio.wait_for(_settled(kit), 5)
             stored = await kit.store.get_event(target.id)
             assert (failures, stored.metadata if stored else None) == ([], {"n": 59})
+        finally:
+            await kit.close()
+
+    async def test_a_cap_error_a_body_lets_escape_is_logged_as_a_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The hook engine logs a ``ReentryLoopCapError`` a body does not
+        catch as a warning, without a traceback: the loop it stops is the
+        hook's, not a failure of the framework."""
+        kit = await _room(RoomKit(max_chain_depth=1))
+
+        @kit.hook(HookTrigger.ON_EVENT_UPDATED, execution=HookExecution.ASYNC, name="again")
+        async def again(event: RoomEvent, ctx: RoomContext) -> None:
+            await kit.update_event("r1", event.id, metadata={"n": event.metadata["n"] + 1})
+
+        try:
+            first = await kit.send_event("r1", "sms", TextContent(body="v"))
+            with caplog.at_level(logging.WARNING, logger="roomkit"):
+                await asyncio.wait_for(kit.update_event("r1", first.id, metadata={"n": 0}), 5)
+            [record] = [r for r in caplog.records if "again" in r.getMessage()]
+            assert (record.levelno, record.exc_info) == (logging.WARNING, None)
         finally:
             await kit.close()
 

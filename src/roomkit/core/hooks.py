@@ -12,6 +12,7 @@ from typing import Any, ClassVar, Protocol, cast
 from roomkit.core._changes import holds_change
 from roomkit.core._instructions import kept_metadata
 from roomkit.core._reentrance import ReentryBudget, after_delivery
+from roomkit.core.exceptions import ReentryLoopCapError
 from roomkit.core.locks import unlocked_context
 from roomkit.core.task_utils import held_runs, start_named
 from roomkit.core.visibility import answer_scope, narrower_scope
@@ -1508,6 +1509,17 @@ class HookEngine:
                 await self._emit_hook_timeout(room_id, hook, trigger)
                 if span_id is not None:
                     self._telemetry.end_span(span_id, status="error", error_message="timeout")
+            except ReentryLoopCapError as capped:
+                # The hook's own loop, stopped at its cascade's cap: not a
+                # failure of the framework, nor of the room.
+                logger.warning(
+                    "Async hook %s stopped at the reentry cap: %s",
+                    hook.name,
+                    capped,
+                    extra={"room_id": room_id},
+                )
+                if span_id is not None:
+                    self._telemetry.end_span(span_id, status="error", error_message="capped")
             except Exception:
                 logger.exception(
                     "Async hook %s failed",
