@@ -212,7 +212,9 @@ reached = await kit.steer(Cancel(reason="stop pressed"), "agent", room_id="room-
 rules (a `Cancel` reaches every turn of the room, another directive the most
 recent one) and answers the loops reached. A channel without steering (an ACP
 agent) takes a `Cancel` as its turn's cancel, counted as one. `agent.steer()`
-reaches the loops of the process it is called in.
+reaches the loops of the process it is called in. With `organization_id=`
+(RFC §17.2), a `room_id` of another organization raises `RoomNotFoundError`,
+and only the turns of that organization's rooms are reached.
 
 ## Tool Calling
 
@@ -1290,6 +1292,9 @@ Collect user quality ratings:
 await kit.submit_feedback("room-1", rating=0.9, comment="Very helpful", dimension="helpfulness")
 # Stored as Observation in ConversationStore, fires ON_FEEDBACK hook
 ```
+
+With `organization_id=` (RFC §17.2), another organization's room raises
+`RoomNotFoundError`, nothing stored or fired.
 
 ## Tool Call Events
 

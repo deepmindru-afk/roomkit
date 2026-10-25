@@ -370,6 +370,17 @@ organization first (RFC §17.2): another organization's room raises
 `RoomNotFoundError`, no connection is registered and no `channel_connected`
 event is emitted.
 
+The channel's own registry is synchronous and reads no room.
+`register_connection(..., organization_id=...)` registers the connection for
+the organization: a room of another organization, or of none, delivers
+nothing to it, streamed or not, whatever it is subscribed to.
+`subscribe()`, `unsubscribe()`, `kit.subscribe_websocket()` and
+`kit.unsubscribe_websocket()` take `organization_id=` too, and a scoped call
+on a connection that is not registered for that organization (another's,
+an unscoped one, none) raises `ValueError` and changes nothing, as does a
+scoped `register_connection()` of an id another organization holds. Unset,
+the calls act as before.
+
 ## Phone Number Utilities
 
 ```python

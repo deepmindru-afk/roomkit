@@ -212,8 +212,10 @@ await kit.cancel_task(task.id)
   channel the `work_in_background` tool; the task runs on its worker (itself,
   another agent, an external agent) in a child room, handed the room's last
   12 messages (`delegate(brief=..., conversation=12)`).
-- `start_task(room_id, agent_id, task, hand_back=None)` starts the same task
-  from the host, for any agent of the room, an `ACPChannel` included.
+- `start_task(room_id, agent_id, task, hand_back=None, organization_id=None)`
+  starts the same task from the host, for any agent of the room, an
+  `ACPChannel` included; another organization's room raises
+  `RoomNotFoundError`, nothing started (RFC §17.2).
 - `hand_back="relay"`: the agent is told the result and says it in a turn of
   its own, at the front of the queue. `"post"`: the result is posted as the
   agent's message, as it is, with no generation; it waits at the front of the

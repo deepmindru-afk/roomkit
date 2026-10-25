@@ -2095,7 +2095,9 @@ reached = await kit.steer(Cancel(reason="stop pressed"), "agent", room_id="room-
 rules (a `Cancel` reaches every turn of the room, another directive the most
 recent one) and answers the loops reached. A channel without steering (an ACP
 agent) takes a `Cancel` as its turn's cancel, counted as one. `agent.steer()`
-reaches the loops of the process it is called in.
+reaches the loops of the process it is called in. With `organization_id=`
+(RFC §17.2), a `room_id` of another organization raises `RoomNotFoundError`,
+and only the turns of that organization's rooms are reached.
 
 ## Tool Calling
 
@@ -3173,6 +3175,9 @@ Collect user quality ratings:
 await kit.submit_feedback("room-1", rating=0.9, comment="Very helpful", dimension="helpfulness")
 # Stored as Observation in ConversationStore, fires ON_FEEDBACK hook
 ```
+
+With `organization_id=` (RFC §17.2), another organization's room raises
+`RoomNotFoundError`, nothing stored or fired.
 
 ## Tool Call Events
 
@@ -5195,8 +5200,10 @@ await kit.cancel_task(task.id)
   channel the `work_in_background` tool; the task runs on its worker (itself,
   another agent, an external agent) in a child room, handed the room's last
   12 messages (`delegate(brief=..., conversation=12)`).
-- `start_task(room_id, agent_id, task, hand_back=None)` starts the same task
-  from the host, for any agent of the room, an `ACPChannel` included.
+- `start_task(room_id, agent_id, task, hand_back=None, organization_id=None)`
+  starts the same task from the host, for any agent of the room, an
+  `ACPChannel` included; another organization's room raises
+  `RoomNotFoundError`, nothing started (RFC §17.2).
 - `hand_back="relay"`: the agent is told the result and says it in a turn of
   its own, at the front of the queue. `"post"`: the result is posted as the
   agent's message, as it is, with no generation; it waits at the front of the
@@ -6082,6 +6089,17 @@ kit.unsubscribe_websocket("ws-client", "conn-1", "room-2")
 organization first (RFC §17.2): another organization's room raises
 `RoomNotFoundError`, no connection is registered and no `channel_connected`
 event is emitted.
+
+The channel's own registry is synchronous and reads no room.
+`register_connection(..., organization_id=...)` registers the connection for
+the organization: a room of another organization, or of none, delivers
+nothing to it, streamed or not, whatever it is subscribed to.
+`subscribe()`, `unsubscribe()`, `kit.subscribe_websocket()` and
+`kit.unsubscribe_websocket()` take `organization_id=` too, and a scoped call
+on a connection that is not registered for that organization (another's,
+an unscoped one, none) raises `ValueError` and changes nothing, as does a
+scoped `register_connection()` of an id another organization holds. Unset,
+the calls act as before.
 
 ## Phone Number Utilities
 
@@ -7516,11 +7534,11 @@ kit = RoomKit(
 | `delegate(room_id, agent_id, task, ..., organization_id=None)` | Delegate to background agent |
 | `setup_background(agent, worker?, hand_back?)` | Give an agent (or the id of one the kit holds) the `work_in_background` tool: its long work runs as a task (RFC §23.4) |
 | `setup_task_tools(agent)` | Give an agent (or the id of one the kit holds) `task_status` and `cancel_task`, served by the room's owner: the room's own tasks only (RFC §23.4) |
-| `await start_task(room_id, agent_id, task, hand_back?)` | Start an agent's background task from the host, for any agent of the room |
+| `await start_task(room_id, agent_id, task, hand_back?, organization_id?)` | Start an agent's background task from the host, for any agent of the room |
 | `send_greeting(room_id, channel_id?, greeting?, ..., organization_id=None)` | Send greeting |
 | `send_event(room_id, channel_id, content, ...)` | Send event directly: `INBOUND` from a transport, `OUTBOUND` from an intelligence channel; from the room's own work (a hook, a parse, a delivery, a turn) it draws on that work's reentry budget (RFC §10.5, §9.5.1) |
 | `await post(room_id, content, *, participant_id?, addressed_to=(), metadata?, channel_id?, organization_id?, idempotency_key?, chain_depth=0)` | Write to the room's people in the host's own name, from a `HostChannel` attached on a room's first post (refused for a room it was detached from, or closed); solicits no agent unless addressed; speaks as a participant the host channel reaches (`ParticipantNotFoundError` for any other id); a key the channel holds returns the original, sending nothing again (RFC §10.5) |
-| `await steer(directive, channel_id, *, room_id=None, turn_id=None)` | Steer the running turns of an intelligence channel the kit started, wherever they run; answers the loops reached (RFC §21.3, §10.6.8) |
+| `await steer(directive, channel_id, *, room_id=None, turn_id=None, organization_id=None)` | Steer the running turns of an intelligence channel the kit started, wherever they run; answers the loops reached (RFC §21.3, §10.6.8) |
 | `await channel_call(channel_id, room_id, verb, *, organization_id=None, **arguments)` | Run a per-room verb of a channel attached to the room, on the executor holding the room's state (an ACP agent's `set_config_option`, `close_session`, `session_config`, `config_options`); what the room keeps for the channel is stored in its metadata, written by this call alone (RFC §10.6.3, §6.4) |
 | `await answer_input(request_id, value)` / `await reject_input(request_id, reason)` | Answer or reject a turn's human-input request, wherever its tool runs; an early answer is held 60 s, a second one returns `False` (RFC §10.6.5) |
 | `commit_event(room_id, event, organization_id?)` | Commit a record no member receives, outside the pipeline: stored as given, its `delivery_results` included, its thread parent rooted as every event's, its index counted delivered, no hook, no broadcast; never a replay, a key its channel holds raises `IdempotencyKeyTakenError` (RFC §10.5) |
