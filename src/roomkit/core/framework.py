@@ -104,6 +104,7 @@ from roomkit.core.task_utils import (
 )
 from roomkit.core.transcoder import DefaultContentTranscoder
 from roomkit.identity.base import IdentityResolver
+from roomkit.models._keys import _no_blank_key
 from roomkit.models._visibility import parse_given_visibility, parse_visibility
 from roomkit.models.channel import ChannelBinding, ChannelOutput, RateLimit
 from roomkit.models.context import RoomContext
@@ -1417,6 +1418,8 @@ class RoomKit(
         visibility = parse_visibility(visibility)
         if response_visibility is not None:
             response_visibility = parse_visibility(response_visibility)
+        # A blank key is no key (RFC §13.4), as the event's model reads it.
+        idempotency_key = _no_blank_key(idempotency_key)
 
         # An instruction the pipeline would refuse (RFC §10.1.1) is refused
         # here, loudly, before anything is read: this API's contract is the
@@ -1428,8 +1431,8 @@ class RoomKit(
                     "An INSTRUCTION must name an agent it directs (addressed_to): "
                     "an intelligence channel the kit registers"
                 )
-            # An empty key is no key, as on the inbound path.
-            if idempotency_key:
+            # An empty or blank key is no key, as on the inbound path.
+            if idempotency_key is not None:
                 raise ValueError("An INSTRUCTION is never stored and takes no idempotency_key")
             # The parameter's word alone: a metadata key of the same name is
             # dropped, never honoured (the instruction is never stored).

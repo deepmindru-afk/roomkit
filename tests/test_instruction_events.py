@@ -269,9 +269,11 @@ async def test_no_transport_receives_it_whatever_visibility_the_caller_asked():
     await kit.close()
 
 
-@pytest.mark.parametrize("idempotency_key", [None, ""], ids=["no-key", "empty-key"])
+@pytest.mark.parametrize(
+    "idempotency_key", [None, "", "   "], ids=["no-key", "empty-key", "blank-key"]
+)
 async def test_send_event_directs_an_agent_the_same_way(idempotency_key: str | None):
-    """An empty key is no key, as on the inbound path."""
+    """An empty or blank key is no key, as on the inbound path (RFC §13.4)."""
     kit, speaker, _provider = await _kit()
 
     await kit.send_event(

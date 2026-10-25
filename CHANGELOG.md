@@ -472,6 +472,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses a key of spaces `empty_idempotency_key`, as it refuses an empty
   one.
 
+- `send_event()` of an `INSTRUCTION` with an `idempotency_key` of spaces no
+  longer raises `ValueError` (RFC §13.4, RMK-942): a blank key is no key, as
+  an empty one already was there, and the instruction directs its agent.
+
 - **Postgres reads and drops the names of its own schema only** (RMK-942).
   0.108.0 scoped its new schema guards to `current_schema()`; the older ones
   still resolved names through `search_path`, so beside another deployment
