@@ -7,7 +7,7 @@ own SDK client included (Azure, OpenRouter) and ``create_vllm_provider``; and
 by the other clients built on the ``openai`` SDK, whose endpoint a host's
 users name too: the OpenAI, Azure, xAI and Meta image providers and
 ``OpenAIVisionProvider``; and by the requests beside a completion, such as
-LiteLLM's model listing (RMK-453).
+LiteLLM's and OpenRouter's model listings (RMK-453).
 """
 
 from __future__ import annotations
@@ -129,7 +129,7 @@ def _answer(request: httpx.Request) -> httpx.Response:
     listing to a listing, a completion otherwise."""
     if request.url.path.endswith("/images/generations"):
         return httpx.Response(200, json=_IMAGES)
-    if request.url.path.endswith("/model/info"):
+    if request.url.path.endswith(("/model/info", "/models")):
         return httpx.Response(200, json={"data": []})
     return httpx.Response(200, json=_COMPLETION)
 
@@ -191,6 +191,13 @@ _CALLS: dict[str, _Client] = {
     "litellm models": _Client(
         lambda origin, t: LiteLLMAIProvider(
             LiteLLMConfig(api_key="k", model="m", base_url=origin), transport=t
+        ),
+        _list,
+    ),
+    "openrouter models": _Client(
+        lambda origin, t: OpenRouterAIProvider(
+            OpenRouterConfig(api_key="k", model="vendor/model", base_url=f"{origin}/api/v1"),
+            transport=t,
         ),
         _list,
     ),

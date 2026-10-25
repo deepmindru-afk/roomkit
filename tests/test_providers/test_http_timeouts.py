@@ -63,7 +63,7 @@ from roomkit.providers.voicemeup.sms import VoiceMeUpSMSProvider
 from roomkit.providers.xai.ai import XAIAIProvider
 from roomkit.providers.xai.config import XAIConfig, XAIImageConfig
 from roomkit.providers.xai.image import XAIImageProvider
-from tests.http_timeout_fakes import RecordingAsyncClient, read_and_close
+from tests.http_timeout_fakes import read_and_close
 
 # Distinctive on purpose: equal values would let a swapped connect/read pass.
 TIMEOUT = 42.0
@@ -272,15 +272,6 @@ async def _xai_image() -> Any:
     return mod.AsyncOpenAI.call_args.kwargs["timeout"]
 
 
-async def _openrouter_models_fetch() -> Any:
-    with patch.dict("sys.modules", {"openai": _sdk_module()}):
-        provider = OpenRouterAIProvider(OpenRouterConfig(api_key="k", model="m", **_TIMEOUTS))
-    RecordingAsyncClient.calls.clear()
-    with patch("httpx.AsyncClient", RecordingAsyncClient):
-        await provider._fetch_models_json()
-    return RecordingAsyncClient.calls[-1]["timeout"]
-
-
 CASES: dict[str, Builder] = {
     "twilio-sms": _twilio_sms,
     "twilio-rcs": _twilio_rcs,
@@ -309,7 +300,6 @@ CASES: dict[str, Builder] = {
     "openai-image": _openai_image,
     "azure-image": _azure_image,
     "xai-image": _xai_image,
-    "openrouter-models-fetch": _openrouter_models_fetch,
 }
 
 

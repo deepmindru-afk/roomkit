@@ -517,13 +517,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the client. `examples/openai_outbound_policy.py` refuses a metadata
   address to an image provider too.
 
-- **`LiteLLMAIProvider.list_models()` goes through the provider's
-  `transport=`** (RMK-453). It read the proxy's `/model/info` with an
-  `httpx.AsyncClient` of its own, so a host's policy never judged that
-  request, made to the endpoint the user names. It is now made by the
-  provider's SDK client, with its key, timeout and transport, and fails
-  with the SDK's errors (`openai.APIStatusError`, `APIConnectionError`), as
-  its completions do, where it raised httpx's.
+- **`LiteLLMAIProvider.list_models()` and `OpenRouterAIProvider.list_models()`
+  go through the provider's `transport=`** (RMK-453). They read the proxy's
+  `/model/info` and OpenRouter's `/models` with an `httpx.AsyncClient` of
+  their own, so a host's policy never judged that request, made to the
+  `base_url` the config names. It is now made by the provider's SDK client,
+  with its key, headers, timeout and transport, and fails with the SDK's
+  errors (`openai.APIStatusError`, `APIConnectionError`), as the
+  completions do, where it raised httpx's.
 
 ## [0.108.0] — 2026-10-24
 

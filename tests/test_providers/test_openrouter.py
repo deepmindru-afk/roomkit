@@ -281,11 +281,11 @@ class TestOpenRouterCatalog:
 
     @pytest.mark.asyncio
     async def test_list_models_maps_and_merges(self) -> None:
+        # Read over the wire, through the provider's SDK client and its key.
         from roomkit.providers.openrouter.ai import OpenRouterAIProvider
 
-        provider = OpenRouterAIProvider.__new__(OpenRouterAIProvider)
-        provider._fetch_models_json = AsyncMock(  # type: ignore[method-assign]
-            return_value=[
+        payload = {
+            "data": [
                 {
                     "id": "openai/gpt-5.5",
                     "name": "OpenAI: GPT-5.5",
@@ -294,9 +294,22 @@ class TestOpenRouterCatalog:
                 },
                 {"id": "some/unknown-model"},
             ]
-        )
+        }
+        seen: list[httpx.Request] = []
 
-        models = {m.id: m for m in await provider.list_models()}
+        def openrouter(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json=payload)
+
+        provider = OpenRouterAIProvider(_config(), transport=httpx.MockTransport(openrouter))
+        try:
+            models = {m.id: m for m in await provider.list_models()}
+        finally:
+            await provider.close()
+
+        [request] = seen
+        assert str(request.url) == "https://openrouter.ai/api/v1/models"
+        assert request.headers["authorization"] == "Bearer or-test-key"
         assert models["openai/gpt-5.5"].display_name == "OpenAI: GPT-5.5"
         assert models["openai/gpt-5.5"].supports_vision is True
         # Unknown live id passes through with id only.

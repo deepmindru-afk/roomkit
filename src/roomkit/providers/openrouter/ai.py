@@ -178,18 +178,15 @@ class OpenRouterAIProvider(OpenAIAIProvider):
         return self._listing(live)
 
     async def _fetch_models_json(self) -> list[dict[str, Any]]:
-        """GET the raw ``/models`` payload and return its ``data`` array."""
-        # httpx ships with the openai SDK; imported lazily so the curated
-        # catalog (available_models) stays usable without the HTTP stack.
-        import httpx
+        """GET the raw ``/models`` payload and return its ``data`` array.
 
-        url = f"{self._config.base_url.rstrip('/')}/models"
-        headers = {"Authorization": f"Bearer {self._config.api_key.get_secret_value()}"}
-        async with httpx.AsyncClient(timeout=http_timeout(self._config)) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            payload = response.json()
-        data = payload.get("data", [])
+        Through the provider's own SDK client, as its completions are: the
+        same key, headers, timeout and ``transport=``, so a host's policy
+        judges this request too. The SDK's errors are raised, as for any
+        other call. ``cast_to=object`` keeps the JSON raw: the SDK's
+        ``Model`` type is what cannot read these items."""
+        payload = await self._client.get("/models", cast_to=object)
+        data = payload.get("data", []) if isinstance(payload, dict) else []
         return data if isinstance(data, list) else []
 
     @staticmethod
