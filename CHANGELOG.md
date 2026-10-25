@@ -32,26 +32,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   room's metadata, where the base class keeps it and from which `set`
   removes the copy. `InMemoryStore`, `SQLiteStore` (table `private_state`,
   schema 12) and `PostgresStore` (table `private_state`, rows of a room
-  deleted with it) keep it apart. The room's register of authors is its first key (see
-  Security). A custom store keeps working: the base class keeps each key in
-  the room's metadata, as before, and warns once per store that it is
-  readable there.
+  deleted with it) keep it apart. The room's register of authors is its
+  first key (see Security). A custom store keeps working: the base class
+  keeps each key in the room's metadata, as before, and warns once per
+  store that it is readable there.
 
 - **An agent's answer text, published live as `TEXT_DELTA`** (RFC §6.4,
   RMK-951). The live pipe reaches only a room's streaming transports, and a
   delegated turn's text, collected for its result, reached no one until the
   turn ended, while its tool calls were already published live in the child
-  room. `AIChannel` now publishes its answer's text as `TEXT_DELTA`
-  ephemerals (`text`, `round`, `channel_id`) in the room it speaks in, child
-  rooms included, coalesced on the new `text_coalesce_ms` (80) and
-  `text_coalesce_chars` (256), flushed before a round's tool-call events.
+  room. `AIChannel` now publishes its answer's text as
+  `EphemeralEventType.TEXT_DELTA` ephemerals (`text`, `round`,
+  `channel_id`) in the room it speaks in, child rooms included, coalesced
+  on the new `AIChannel(text_coalesce_ms=80, text_coalesce_chars=256)`,
+  flushed before a round's tool-call events.
   Like every turn ephemeral, it reaches no one the answer would not reach
   (RFC §8.4). A 400-token answer takes 13 publishes; the cost is within 0.3 %
   of a turn.
 
 - **A test catches a public signature change that can break a caller.**
   `tests/public_api_signatures.json` holds the signatures of the classes and
-  functions the packages export (913 objects, 4 677 members): parameters and
+  functions the packages export (1 078 objects, 6 182 members): parameters and
   their defaults, sync or async, properties, enum values. `test_public_api.py`
   fails on a name, member or parameter removed or renamed, a parameter made
   required or moved, a default changed, a method made async or an enum value
@@ -64,10 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   imported from that package; a module path (`roomkit.voice.stt.deepgram`)
   is internal and may move, an underscore name is internal everywhere
   (README, "Public API"; the docs site's Public API page says how a break is
-  announced). 146 names that examples, the docs or applications import were
-  in no `__all__` and are now exported, each from its package, so the API
-  guards pin them: every STT and TTS provider and its config from
-  `roomkit.voice.stt` / `roomkit.voice.tts` (new `__all__` for
+  announced). 172 names that examples, the docs, the API reference or
+  applications use were in no `__all__` and are now exported, each from
+  its package, so the API guards pin them (149 classes and functions, 23
+  constants and type aliases), among them every STT and TTS provider and
+  its config from `roomkit.voice.stt` / `roomkit.voice.tts` (new `__all__` for
   `roomkit.voice.stt`), the voice and video backends from
   `roomkit.voice.backends` / `roomkit.video.backends` (new `__all__` for
   both), the realtime transports from `roomkit.voice.realtime`, the
@@ -81,14 +83,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fence` and `turn_report_claim` from `roomkit.tools`, and others.
   Gemini's transcript types and Qwen3's clone reference are exported under
   vendor names (`GeminiTranscript`, `GeminiTranscriptWord`,
-  `GeminiTranscriptSegment`, `Qwen3VoiceCloneConfig`). 18 more that the API
-  reference documented are exported: `InboundRoomRouter`,
+  `GeminiTranscriptSegment`, `Qwen3VoiceCloneConfig`). Among those the API
+  reference documented: `InboundRoomRouter`,
   `DefaultInboundRoomRouter` and `DeliveryContext` from `roomkit`,
   `build_handoff_tool`, `RCSDeliveryResult`, the Buzz and Discord parsers
   from `roomkit.sources`, the Meta, Azure MAI, Voxtral, Azure Speech and
   Fish Audio errors from `roomkit.voice.stt` / `roomkit.voice.tts`,
-  `MockVoiceCall`, `TwilioWebSocketBackend` and `AuthCallback`. Six more
-  are exported on the maintainer's decision: `HookEngine` (what
+  `MockVoiceCall`, `TwilioWebSocketBackend` and `AuthCallback`. Among
+  those an application holds or writes: `HookEngine` (what
   `kit.hook_engine` is) and `HookRegistration` (what `add_room_hook()`
   returns) from `roomkit`, `room_tasks` from `roomkit.tasks`, and
   `compose`, `addressed` and `judgments_of`, the building blocks of a custom
@@ -99,14 +101,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`ModuleNotFoundError: No module named 'httpx'`), `dir()`, `help()` and
   `inspect.getmembers()` list only what the package has bound and never
   import a lazy name (a missing extra cannot fail them), and a type checker
-  reads the real class and reports a name the package does not export. Every module path that imported keeps
-  importing; the `roomkit.voice.get_*()` lookups keep working and are
-  internal. `tests/test_public_imports.py` fails on an example, a document or a
-  docstring under `src/` that imports a roomkit name from anywhere else, and
-  `make docs` runs the same check on the docs site.
+  reads the real class and reports a name the package does not export.
+  Every module path that imported keeps importing (see Changed for what that
+  path now promises); the `roomkit.voice.get_*()` lookups keep working and
+  are internal. `tests/test_public_imports.py` fails on an example, a
+  document or a docstring under `src/` that imports a roomkit name from
+  anywhere else, and `make docs` runs the same check on the docs site.
 
-- `kit.post()` and `HostChannel`: the host writes to a room's people in its
-  own name (RFC §10.5, RMK-947). A notice, a workflow's question, a reminder
+- `kit.post()` and `HostChannel` (exported from `roomkit` and
+  `roomkit.channels`): the host writes to a room's people in its own name
+  (RFC §10.5, RMK-947). A notice, a workflow's question, a reminder
   is the application's words, not an agent's: it comes from a transport of
   type `HOST` (new `ChannelType.HOST`), never delivered to, so the room reads
   it as a party's message and broadcasts it to its transports. `post()`
@@ -119,7 +123,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reached through SMS only, an agent channel's) raises
   `ParticipantNotFoundError` before anything is written, the first post's
   attach included. `chain_depth=` names the chain the post continues, as
-  `send_event()`'s does (RMK-954).
+  `send_event()`'s does (RMK-954). `channel_id=` speaks from another
+  registered `HostChannel`, and `organization_id=` refuses another
+  organization's room with `RoomNotFoundError` (RFC §17.2).
   `idempotency_key=` makes a replay return the event its key committed,
   texting nothing again, read before the reentry budget from the room's own
   work; a blank key is no key. A room that never bound the host channel gets
@@ -140,10 +146,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channel used for this was refused by a Discussion room and turned the
   host's words into an agent's output; a `SYSTEM` source dropped the author.
   `deliver()` remains the way in for the room's agents.
+  `examples/host_post.py` texts a customer from a shop's backend.
   Rolling upgrade: a version before this one cannot read a stored `"host"`
   channel type. Its store reads of the room's bindings and events raise
   `ValidationError` once a post wrote one, so every worker sharing a store
   must run this version before any of them posts.
+
+- **A session's video recording can be encrypted at rest** (RFC §17.6,
+  RMK-568). `VideoRecordingConfig` had no encryption setting, so
+  `PyAVVideoRecorder` and `OpenCVVideoRecorder` wrote a session's video in
+  the clear with no way to configure otherwise. It now takes `encryption`,
+  a `RecordingEncryption` (from `roomkit.voice.pipeline`), and
+  `storage_encrypted_at_rest`, the fields `RecordingConfig` and
+  `MediaRecordingConfig` already carry. With `encryption`, each finished
+  file goes through the cipher's `encrypt_file()` at `stop()`, and at
+  `close()` for a recording still open: the result's `url` and
+  `size_bytes` are the encrypted artifact's and `metadata["encryption"]`
+  names the cipher, and a file the cipher cannot encrypt is deleted. A file
+  whose flush or close raises is encrypted all the same before the error
+  propagates, and `close()` logs a recording that fails and goes on with
+  the next. With `storage_encrypted_at_rest=True` and no `encryption`, the
+  file stays as written and `metadata["encryption"]` is `"storage"`. With
+  neither, the recording is written unencrypted, as before: unlike the
+  audio and room recorders, the video recorders do not refuse to start
+  (see Security for `VideoChannel`). `examples/pyav_video_recorder.py
+  --encrypt` stores its MP4 encrypted.
 
 ### Changed
 
@@ -172,11 +199,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kit is a `MagicMock` and installs a built-in strategy gives it
   `kit.claim_room_strategy = AsyncMock()`.
 
-- **A package's `__all__` decides what a star import binds** (RMK-948).
-  `from roomkit.channels import *` no longer binds `ChannelType`,
-  `ChannelCapabilities`, `ChannelMediaType` or the `*_CAPABILITIES`
-  constants, and `from roomkit.video.backends import *` no longer binds its
-  `get_*()` lookups; each still imports by name. `roomkit.sources` no
+- **BREAKING — a name is public only where a package's `__all__` lists
+  it, and `__all__` decides what a star import binds** (RMK-948). A module
+  path (`roomkit.voice.stt.deepgram`, `roomkit.models.event`) is internal
+  even when it holds a public name: it keeps importing in this release, and
+  may move or be renamed in any release (README, "Public API"; see Added
+  for the rule and the names now exported).
+  `from roomkit.channels import *` binds 37 names where it bound 62: no
+  longer `ChannelType`, `ChannelCapabilities`, `ChannelMediaType` or the
+  eleven `*_CAPABILITIES` constants, and
+  `from roomkit.video.backends import *` no longer binds its five `get_*()`
+  lookups; each still imports by name. `roomkit.sources` no
   longer holds `typing.Any`. A star import resolves every name `__all__`
   lists, the lazy ones included: on a core install,
   `from roomkit.voice.tts import *`, `roomkit.voice.realtime` and
@@ -184,35 +217,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (httpx, fastapi, numpy), as `from roomkit.voice import *` already did, and
   `from roomkit.voice.realtime import *` needs fastapi even with the `dev`
   extra. The attribute `roomkit.tools.fence` is now the function `fence`,
-  not the submodule: `from roomkit.tools.fence import named_blocks` still
-  works. None of these is a public import path, so none is BREAKING.
-
-- **BREAKING — an ASYNC hook that writes into its room after every event
-  stops at the reentry cap** (RFC §8.3, §9.5.1, §10.1 step 16, RMK-954). An
-  `AFTER_BROADCAST` hook, and a change's `ON_EVENT_UPDATED` or
-  `ON_EVENT_DELETED` hook, runs once the event's delivery set has run, and
-  each call it made into its room was a new arrival with a budget of its
-  own: a hook that posted after every event, its own posts included, looped
-  without bound (2,000 posts in 3.9 s; with an agent answering each post,
-  1,000 model calls). While the hook's body runs, a call it makes into its
-  room now draws one pass on the reentry budget of the cascade that fired
-  it, as a delivery's call does, and so does a message it sends that opens
-  a room. Past `10 × max_chain_depth` passes, `send_event()` and `post()`
-  store the event `BLOCKED` with `reentry_loop_cap`, no hook run, and return
-  it, and `process_inbound()` returns `blocked=True,
-  reason="reentry_loop_cap"`. A task the hook starts that calls once the
-  body has returned is work of its own: depth 0 and a budget of its own. A
-  hook that posts once per event, a notice or a receipt, draws one pass of
-  that event's cascade and is unaffected.
-  Who meets it: a hook whose calls into its room, with the answers and hooks
-  those calls set off, run more than `10 × max_chain_depth` passes (50 by
-  default) for one message, a judge that posts back to the agent after each
-  of its answers for instance: past the cap, its post is stored `BLOCKED`
-  and the agent is not asked again.
-  Migrate: run the work in a task the hook starts, which begins fresh, and
-  pass the chain it continues, `kit.post(..., chain_depth=answer.chain_depth
-  + 1)` or `send_event(..., chain_depth=...)`, so its round trips with the
-  agent end at `max_chain_depth`.
+  not the submodule, and so is what `import roomkit.tools.fence as m` binds;
+  `from roomkit.tools.fence import named_blocks` still works.
+  Migrate: import every roomkit name from the package whose `__all__` lists
+  it (`from roomkit.voice.stt import DeepgramSTTProvider`, not
+  `from roomkit.voice.stt.deepgram import DeepgramSTTProvider`); a name a
+  star import no longer binds is imported by name from its package
+  (`from roomkit.models import ChannelType`), and `Any` from `typing`;
+  `from roomkit.tools import fence, named_blocks` replaces the submodule;
+  a star import of `roomkit.voice.tts`, `roomkit.voice.realtime` or
+  `roomkit.video.avatar` on a core install names what it uses, or installs
+  those extras.
 
 - **BREAKING — what an ASYNC hook sends into its room, and the
   `update_event()`, `delete_event()` and `regenerate_response()` it makes
@@ -225,7 +240,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every event, its own posts included, looped without bound (2,000 posts in
   3.9 s; with an agent answering each post, 1,000 model calls), and so did
   one that updated, deleted or regenerated on every change, in a Discussion
-  room too (stopped at 200 runs by the probe).
+  room too (200 runs when it was stopped).
   Each cascade now keeps two counters of `10 × max_chain_depth`: its own
   passes (its answers, chained streams and injected events) and, apart, the
   calls of all its ASYNC hooks' bodies together. While a hook's body runs, a
@@ -289,9 +304,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RFC §10.5), where the in-memory store committed a second record under the
   key. A `send_event()` of the room's own work (a hook, a parse, a
   delivery) with a key its channel holds is a replay read before its
-  cascade's reentry budget: it returns what the key committed and draws no
-  pass, past the cap too, where 0.108.0 stored a `BLOCKED` record under
-  the taken key; only a new event is stored `BLOCKED` past the cap. A message past the cap stays refused first thing,
+  cascade's reentry budget: it returns what the key committed and draws
+  nothing from the budget, neither a pass nor, from an ASYNC hook's body, a
+  hook call (RMK-954, above), past the cap too, where 0.108.0 stored a
+  `BLOCKED` record under the taken key; only a new event is stored
+  `BLOCKED` past the cap. A message past the cap stays refused first thing,
   its key unread. An event under an id the store holds keeps the
   database's own error, `asyncpg.UniqueViolationError` or
   `sqlite3.IntegrityError`, the key held with it or not.
@@ -345,9 +362,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON writes in exponent form (`1e+16`), is read back there as the integer
   it equals, and is then that integer, a recipient. An integer stays the
   address its digits write: `12345` and `"12345"` name one conversation, at
-  attach, in routing and in every store's lookup. One rule reads it,
-  `read_recipient()` in `roomkit.channels.addressing`, which the stores'
-  lookup now reads too.
+  attach, in routing and in every store's lookup: one rule reads a
+  recipient at each of them, and the stores' lookup now reads it too.
   Migrate: a binding persisted with a float under its channel's recipient
   key is refused `no_recipient` from this release until it holds an `int`
   (a chat id) or a string (a phone number in E.164, an email address).
@@ -390,15 +406,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can be given.
 
 ### Fixed
-
-- **A WebSocket connection evicted after repeated send failures is
-  forgotten with its rooms** (RMK-491). The eviction dropped only the
-  connection's sender: the id kept its subscriptions (and, scoped, its
-  organization), and a registration of the same id, by any host, inherited
-  the rooms the evicted socket followed. It is now forgotten as
-  `unregister_connection()` forgets it: an id registered again after an
-  eviction receives only the room it registers for. A host that registered
-  an evicted id again and relied on its old rooms subscribes them again.
 
 - **`uninstall_strategy` posts a discussion's task results before it detaches
   their agents** (RFC §19.7.5 rule 19, RMK-780). A result handed back with
@@ -445,23 +452,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer could carry to what that binding declared, an SMS's text and media
   in a WebSocket room, without rich text, typing or reactions.
 
-- **A turn's live ephemerals reach no one its answer would not reach**
-  (RFC §8.4, §10.6.3, RMK-952). A turn's reasoning (`THINKING_*`), its tool
-  calls' full arguments (`TOOL_CALL_START`) and result previews
-  (`TOOL_CALL_END`), and any ephemeral its channel published were sent to
-  every subscriber of the room, whatever the answer's visibility: an agent
-  attached with `visibility="intelligence"`, or answering a message whose
-  `response_visibility` kept its answer from the customer, still showed its
-  reasoning to a customer's browser subscribed to the room. The room owner
-  now publishes a turn's ephemerals only when its answer reaches the whole
-  room: the trigger's answer scope restricts nothing, and the agent's binding,
-  read when each ephemeral is published, lets it write with the visibility
-  `all`, so a binding narrowed mid-turn, or after it while work it began still
-  publishes, stops them at once; otherwise none. What a turn's work publishes
-  after it follows that turn's trigger, never a later turn's. Framework events
-  are unaffected. A custom `OwnerEvents` decides with the new
-  `reaches_room(room_id, channel_id)`, whose default, `False`, publishes none.
-
 - **A blank idempotency key is no key** (RFC §13.4, RMK-942). The pipeline
   skipped an empty key while the stores indexed it: a second message from a
   channel carrying `idempotency_key=""` was refused by SQLite with
@@ -470,11 +460,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `InboundMessage` now read a key that is empty or blank as `None`, so no
   store indexes it, whatever path committed the event. `kit.deliver()`
   refuses a key of spaces `empty_idempotency_key`, as it refuses an empty
-  one.
-
-- `send_event()` of an `INSTRUCTION` with an `idempotency_key` of spaces no
-  longer raises `ValueError` (RFC §13.4, RMK-942): a blank key is no key, as
-  an empty one already was there, and the instruction directs its agent.
+  one. `send_event()` of an `INSTRUCTION` with a key of spaces no longer
+  raises `ValueError`: the key is no key, as an empty one already was
+  there, and the instruction directs its agent.
 
 - **Postgres reads and drops the names of its own schema only** (RMK-942).
   0.108.0 scoped its new schema guards to `current_schema()`; the older ones
@@ -652,15 +640,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before). `examples/openai_outbound_policy.py` refuses a metadata address
   to an image provider too.
 
-- **`LiteLLMAIProvider.list_models()` and `OpenRouterAIProvider.list_models()`
-  go through the provider's `transport=`** (RMK-453). They read the proxy's
-  `/model/info` and OpenRouter's `/models` with an `httpx.AsyncClient` of
-  their own, so a host's policy never judged that request, made to the
-  `base_url` the config names. It is now made by the provider's SDK client,
-  with its key, headers, timeout and transport, and fails with the SDK's
-  errors (`openai.APIStatusError`, `APIConnectionError`), as the
-  completions do, where it raised httpx's. A 200 whose body is not JSON
-  still raises `json.JSONDecodeError`.
+- **BREAKING — `LiteLLMAIProvider.list_models()` and
+  `OpenRouterAIProvider.list_models()` go through the provider's
+  `transport=`, and fail with the SDK's errors** (RMK-453). They read the
+  proxy's `/model/info` and OpenRouter's `/models` with an
+  `httpx.AsyncClient` of their own, so a host's policy never judged that
+  request, made to the `base_url` the config names. It is now made by the
+  provider's SDK client, with its key, headers, timeout and transport, and
+  fails with the SDK's errors (`openai.APIStatusError`,
+  `APIConnectionError`), as the completions do, where it raised httpx's. A
+  200 whose body is not JSON still raises `json.JSONDecodeError`.
+  Migrate: a caller that caught `httpx.HTTPStatusError` or `httpx.HTTPError`
+  around `list_models()` catches `openai.APIStatusError` and
+  `openai.APIConnectionError`.
 
 - **BREAKING — `WavFileRecorder` refuses a `storage` containing `..`**
   (RFC §12.3.7, §17.6, RMK-569): `start()` raises `ValueError`, as
@@ -670,27 +662,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clear, while the result reported `"encryption": "storage"`. The voice
   pipeline logs the refusal and the call goes on unrecorded, as for any
   refused start. An empty `storage` still records into the temp directory.
-  Migration: pass a path without `..`, e.g. `str(Path(storage).resolve())`.
+  Migrate: pass a path without `..`, e.g. `str(Path(storage).resolve())`.
 
-- **A session's video recording can be encrypted at rest** (RFC §17.6,
-  RMK-568). `VideoRecordingConfig` had no encryption setting, so
-  `PyAVVideoRecorder` and `OpenCVVideoRecorder` wrote a session's video in
-  the clear with no way to configure otherwise. It now takes `encryption`
-  and `storage_encrypted_at_rest`, the fields `RecordingConfig` and
-  `MediaRecordingConfig` already carry. With `encryption`, each finished file
-  goes through `encrypt_file()` at `stop()`, and at `close()` for a
-  recording still open: the result's `url` and `size_bytes` are the
-  encrypted artifact's and `metadata["encryption"]` names the cipher, and a
-  file the cipher cannot encrypt is deleted. A file whose flush or close
-  raises is encrypted all the same before the error propagates, and
-  `close()` logs a recording that fails and goes on with the next. With
-  `storage_encrypted_at_rest=True` and no `encryption`, the file stays as
-  written and `metadata["encryption"]` is `"storage"`. With neither, the
-  recording is written unencrypted, as before: unlike the audio and room
-  recorders, the video recorders do not refuse to start. `VideoChannel`
-  follows suit: a recording that fails to stop no longer stops
-  `kit.close()` from stopping the next ones and closing the recorder, which
-  left them in the clear; the first failure is raised once the channel is
+- **`VideoChannel` stops every recording, and binds no session whose
+  recording is refused** (RFC §17.6, RMK-568). A recording that failed to
+  stop kept `kit.close()` from stopping the next ones and closing the
+  recorder, which left them in the clear: each is now stopped and the
+  recorder closed, and the first failure is raised once the channel is
   closed. `kit.leave()` logs such a failure and still unbinds the session.
   A recording the recorder refuses to start, such as one whose `storage`
   contains `..`, fails `kit.join()` before the session is bound; it used to
@@ -703,10 +681,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is. A `stop()` that times out still leaves its files to be finished later
   in the clear.
 
-- **The room's register of authors leaves the room's metadata** (RFC §10.1
-  step 12, RMK-631). The register (`room.metadata["author_register"]`, which
-  ranks the senders whose names read alike) held digests of the room's id
-  with each sender's id and name. The room's id is not secret and a phone
+- **BREAKING — the room's register of authors leaves the room's metadata**
+  (RFC §10.1 step 12, RMK-631). The register
+  (`room.metadata["author_register"]`, which ranks the senders whose names
+  read alike) held digests of the room's id with each sender's id and
+  name. The room's id is not secret and a phone
   number or a name is a small space: from the metadata alone, trying every
   number of one exchange found a sender in 11 ms (1.8 million tries a
   second, 5 s for an area code), the sender of a turn hidden from the reader
@@ -732,6 +711,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   base class keeping the register in the room's metadata as before and
   warning once that it is readable there: implement `get_private_state()`
   and `set_private_state()` to keep it private.
+  Migrate: a hook that read `room.metadata["author_register"]` reads
+  `RoomContext.author_register`; upgrade every process sharing a store
+  together, and copy a SQLite file before the upgrade to roll it back.
 
 - Membership calls take the organization the caller acts for (RFC §17.2,
   §5.5, RMK-488). A tenant's host that knew another tenant's room id could
@@ -750,6 +732,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs, anything is queued, a turn starts or a child room is created.
   Unset, no room is read for the scope, as before.
 
+- **BREAKING — a turn's live ephemerals reach no one its answer would not
+  reach** (RFC §8.4, §10.6.3, RMK-952). A turn's reasoning (`THINKING_*`),
+  its tool calls' full arguments (`TOOL_CALL_START`) and result previews
+  (`TOOL_CALL_END`), and any ephemeral its channel published were sent to
+  every subscriber of the room, whatever the answer's visibility: an agent
+  attached with `visibility="intelligence"`, or answering a message whose
+  `response_visibility` kept its answer from the customer, still showed its
+  reasoning to a customer's browser subscribed to the room. The room owner
+  now publishes a turn's ephemerals only when its answer reaches the whole
+  room: the trigger's answer scope restricts nothing, and the agent's binding,
+  read when each ephemeral is published, lets it write with the visibility
+  `all`, so a binding narrowed mid-turn, or after it while work it began still
+  publishes, stops them at once; otherwise none. What a turn's work publishes
+  after it follows that turn's trigger, never a later turn's. Framework events
+  are unaffected. A custom `OwnerEvents` decides with the new
+  `reaches_room(room_id, channel_id)`, whose default, `False`, publishes none.
+  Migrate: a custom `OwnerEvents` given to `TurnClient(events=)` implements
+  `reaches_room()`, or publishes no turn ephemeral.
+
+- **BREAKING — a WebSocket connection evicted after repeated send failures
+  is forgotten with its rooms** (RMK-491). The eviction dropped only the
+  connection's sender: the id kept its subscriptions (and, scoped, its
+  organization), and a registration of the same id, by any host, inherited
+  the rooms the evicted socket followed. It is now forgotten as
+  `unregister_connection()` forgets it: an id registered again after an
+  eviction receives only the room it registers for.
+  Migrate: a host that registers an evicted id again subscribes it to the
+  rooms it followed (`subscribe()`, `kit.subscribe_websocket()`).
+
 - Ephemeral events and a WebSocket connection take the organization the
   caller acts for (RFC §17.2, §8.4, RMK-491). A tenant's host could publish
   typing, presence, receipts, reactions or tool calls into another tenant's
@@ -762,19 +773,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WebSocketChannel.register_connection()`, `subscribe()`, `unsubscribe()`
   and `unregister_connection()`, and `kit.subscribe_websocket()`,
   `unsubscribe_websocket()` and `disconnect_websocket()`, read no room:
-  they take `organization_id=None` too. A connection registered for an organization
-  receives nothing from a room of another organization, or of none,
+  they take `organization_id=None` too. A connection registered for an
+  organization receives nothing from a room of another organization, or of none,
   streamed or not, whatever it is subscribed to; a scoped
   `register_connection()`, `subscribe()`, `unsubscribe()` or
   `unregister_connection()` (and the kit's doors) on a connection
   registered for another organization, or unscoped, raises `ValueError` and
   changes nothing, so another tenant can neither take a socket over nor
-  disconnect it. A subscription to another organization's room is not refused: it
-  delivers nothing. A registration that changes an id's organization, to
-  none included, drops the rooms the id followed, and a stream under way
-  sends nothing to an id unregistered or registered again since it
-  started, a reconnection of the same organization included, which gets
-  neither the rest of the stream nor its `stream_end`: a new registration
+  disconnect it. A subscription to another organization's room is not
+  refused: it delivers nothing. A registration that changes an id's
+  organization, to none included, drops the rooms the id followed, and a
+  stream under way sends nothing to an id unregistered or registered again
+  since it started, a reconnection of the same organization included, which
+  gets neither the rest of the stream nor its `stream_end`: a new registration
   never saw the stream's start. Each send checks the registration as it
   starts, and a send failure of a registration gone no longer counts
   against the id's new one.
