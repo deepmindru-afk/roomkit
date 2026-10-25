@@ -70,11 +70,14 @@ class RegenerateMixin(HelpersMixin):
     _discussions: dict[str, Any]  # rooms a discussion holds (RFC §19.7.5)
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
+    get_room: Any  # RoomLifecycleMixin
     _get_router: Any  # see RegenerateHost
     _enqueue_exec: Any  # see RegenerateHost
     _finish_cascade: Any  # see RegenerateHost
 
-    async def regenerate_target(self, room_id: str) -> RoomEvent | None:
+    async def regenerate_target(
+        self, room_id: str, *, organization_id: str | None = None
+    ) -> RoomEvent | None:
         """The event :meth:`regenerate_response` would re-run the agent on.
 
         The primitive's own choice, from the primitive's own read: the newest
@@ -102,7 +105,13 @@ class RegenerateMixin(HelpersMixin):
         trigger there. A host that must not answer that message twice hands
         this event's id back as ``regenerate_response(trigger_id=...)``,
         which refuses a selection that moved instead of regenerating it.
+
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): another organization's room raises :class:`RoomNotFoundError`
+        before anything of it is read.
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         context, found = await self._regenerate_target(room_id)
         if context.room.status in _REFUSING_STATUSES:
             raise RoomClosedError(f"Room {room_id} does not accept new events")
@@ -158,7 +167,11 @@ class RegenerateMixin(HelpersMixin):
         return context, (trigger, source_binding)
 
     async def regenerate_response(
-        self, room_id: str, *, trigger_id: str | None = None
+        self,
+        room_id: str,
+        *,
+        trigger_id: str | None = None,
+        organization_id: str | None = None,
     ) -> InboundResult | None:
         """Re-run the room's intelligence channel on the last inbound message.
 
@@ -234,10 +247,18 @@ class RegenerateMixin(HelpersMixin):
         outside it, so a hook that regenerates after every answer stops at
         the cap.
 
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): another organization's room is refused before any turn is
+        planned or queued, and before the call draws on any budget.
+
         Raises:
+            RoomNotFoundError: *organization_id* is set and the room is
+                missing or another organization's; nothing is run or written.
             ReentryLoopCapError: made from an ASYNC hook's body past the
                 budget that body runs on; nothing is run or written.
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         change = self._room_work.direct_change(room_id)
         charge_direct_change(change, room_id, "regenerate_response")
         discussion = self._discussions.get(room_id)

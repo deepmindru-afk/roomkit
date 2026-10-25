@@ -58,8 +58,9 @@ class GreetingMixin(HelpersMixin):
     _greeting_gates: dict[str, asyncio.Event]
     _greeting_gate_counts: dict[str, int]
 
-    # Cross-mixin method — attribute annotation avoids MRO shadowing
+    # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _commit_and_deliver: Any  # LaneExecutionMixin
+    get_room: Any  # RoomLifecycleMixin
 
     async def send_greeting(
         self,
@@ -70,6 +71,7 @@ class GreetingMixin(HelpersMixin):
         greeting: str | None = None,
         session: VoiceSession | None = None,
         channel_type: ChannelType | None = None,
+        organization_id: str | None = None,
     ) -> None:
         """Deliver a greeting and store it as assistant history.
 
@@ -92,7 +94,16 @@ class GreetingMixin(HelpersMixin):
             session: The voice session to deliver into (passed by the
                 auto-greet handler from the ``SessionStartedEvent``).
             channel_type: The channel type that started the session.
+            organization_id: The organization the caller acts for (RFC
+                §17.2): the room is read with it before an agent is looked
+                up. Unset, no room is read for the scope.
+
+        Raises:
+            RoomNotFoundError: *organization_id* is set and the room is
+                missing or another organization's; nothing is said or stored.
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         found = await self._greeting_agent(room_id, agent_id or channel_id)
         if found is None:
             return  # No agent found — nothing to greet with

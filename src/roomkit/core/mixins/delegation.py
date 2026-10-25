@@ -342,6 +342,7 @@ class DelegationMixin(HelpersMixin):
         brief: str | None = None,
         conversation: int = 0,
         hand_back: str = "relay",
+        organization_id: str | None = None,
     ) -> DelegatedTask:
         """Delegate a task to an agent in a child room.
 
@@ -389,6 +390,9 @@ class DelegationMixin(HelpersMixin):
                 agent, without a turn of its model. ``"post"`` needs *notify*
                 (or *agent_id*) to name an intelligence channel attached to
                 the room, and a background task.
+            organization_id: The organization the caller acts for (RFC
+                §17.2): the parent room is read with it before anything is
+                created or run.
 
         Returns:
             A :class:`DelegatedTask` handle. When *wait* is ``True``,
@@ -396,7 +400,8 @@ class DelegationMixin(HelpersMixin):
             to block for the result, or let it run fire-and-forget.
 
         Raises:
-            RoomNotFoundError: If the parent room doesn't exist.
+            RoomNotFoundError: If the parent room doesn't exist, or is
+                another organization's.
             ChannelNotRegisteredError: If the agent channel isn't registered.
             ValueError: An unknown *hand_back*, a ``"post"`` the notified
                 channel cannot take, or a negative *conversation*.
@@ -406,7 +411,7 @@ class DelegationMixin(HelpersMixin):
 
         # Validate: nothing starts on a closing kit (RFC §19.7.3).
         check_open(self, "delegation")
-        parent_room = await self.get_room(room_id)
+        parent_room = await self.get_room(room_id, organization_id=organization_id)
         if agent_id not in self._channels:
             raise ChannelNotRegisteredError(f"Agent channel '{agent_id}' not registered")
         notify_channel = notify or agent_id

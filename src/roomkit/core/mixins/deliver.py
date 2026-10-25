@@ -51,6 +51,9 @@ class DeliverMixin(HelpersMixin):
     _delivery_strategy: DeliveryStrategy | None
     _delivery_backend: DeliveryBackend | None
 
+    # Cross-mixin method — attribute annotation avoids MRO shadowing
+    get_room: Any  # RoomLifecycleMixin
+
     async def deliver(
         self,
         room_id: str,
@@ -64,6 +67,7 @@ class DeliverMixin(HelpersMixin):
         session_id: str | None = None,
         chain_depth: int = 0,
         instruction: bool = False,
+        organization_id: str | None = None,
     ) -> DeliveryOutcome:
         """Bring *content* into a room from outside it, for the room's agents.
 
@@ -119,11 +123,21 @@ class DeliverMixin(HelpersMixin):
                 *addressed_to* and no *idempotency_key* (§10.1.1), or the
                 ``system`` intent in a realtime session (§12.4). The strategy
                 and the delivery hooks apply unchanged.
+            organization_id: The organization the caller acts for (RFC
+                §17.2): the room is read with it before any hook runs or
+                anything is queued. Unset, no room is read for the scope.
 
         Returns:
             Queue acceptance or the actual execution outcome. ``sent`` does not
             imply turn completion. Inspect ``inbound`` for text turn details.
+
+        Raises:
+            RoomNotFoundError: *organization_id* is set and the room is
+                missing or another organization's; nothing is delivered,
+                queued or fired.
         """
+        if organization_id is not None:
+            await self.get_room(room_id, organization_id=organization_id)
         resolved = resolve_strategy(strategy) or self._delivery_strategy
         if resolved is None:
             resolved = Immediate()

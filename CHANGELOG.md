@@ -642,6 +642,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raises `RoomNotFoundError`, its roster neither read nor written, no event
   and no hook. Unset, the call is unscoped, as before.
 
+- `deliver()`, `send_greeting()`, `regenerate_target()`,
+  `regenerate_response()` and `delegate()` take the organization the caller
+  acts for (RFC §17.2, RMK-490). A tenant's host could deliver into another
+  tenant's room, make its agent greet or answer again, read the message a
+  regeneration replays, or delegate from it. With `organization_id=`,
+  another organization's room raises `RoomNotFoundError` before any hook
+  runs, anything is queued, a turn starts or a child room is created.
+  Unset, no room is read for the scope, as before.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

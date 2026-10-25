@@ -15,12 +15,16 @@ import pytest
 
 from roomkit import Access, AgentResponsePolicy, RoomKit, RoomTimers
 from roomkit.channels import SMSChannel
+from roomkit.channels.agent import Agent
+from roomkit.channels.ai import AIChannel
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.inbound_router import InboundRoomRouter
+from roomkit.delivery.memory import InMemoryDeliveryBackend
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelType
+from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.event import TextContent
 from roomkit.models.identity import Identity
+from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.sms.mock import MockSMSProvider
 from tests.test_framework import SimpleChannel
 
@@ -471,4 +475,95 @@ class TestScopedMembership:
 
         members = await kit.list_members("globex-room", organization_id=organization_id)
         assert [(member.id, member.display_name) for member in members] == [("alice", "Alice")]
+        await kit.close()
+
+
+async def _globex_with_agents(**options: Any) -> tuple[RoomKit, list[MockAIProvider]]:
+    """Globex's room, its agent having answered one message, and a worker
+    registered for a delegation."""
+    agent = MockAIProvider(responses=["answer"])
+    worker = MockAIProvider(responses=["done"])
+    kit = RoomKit(**options)
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(Agent("ai", provider=agent, greeting="Hello!", auto_greet=False))
+    kit.register_channel(AIChannel("worker", provider=worker))
+    await kit.create_room(room_id="globex-room", organization_id="globex")
+    await kit.attach_channel("globex-room", "sms1")
+    await kit.attach_channel("globex-room", "ai", category=ChannelCategory.INTELLIGENCE)
+    await kit.process_inbound(_message(), room_id="globex-room")
+    return kit, [agent, worker]
+
+
+async def _globex_state(kit: RoomKit, providers: list[MockAIProvider]) -> tuple[Any, ...]:
+    """What a turn or a delivery may leave: events, rooms, model calls."""
+    return (
+        await kit.store.list_events("globex-room"),
+        [room.id for room in await kit.store.list_rooms()],
+        [len(provider.calls) for provider in providers],
+    )
+
+
+_TURNS: dict[str, Callable[[RoomKit, str | None], Awaitable[Any]]] = {
+    "deliver": lambda kit, org: kit.deliver("globex-room", "from acme", organization_id=org),
+    "send_greeting": lambda kit, org: kit.send_greeting("globex-room", organization_id=org),
+    "regenerate_target": lambda kit, org: kit.regenerate_target(
+        "globex-room", organization_id=org
+    ),
+    "regenerate_response": lambda kit, org: kit.regenerate_response(
+        "globex-room", organization_id=org
+    ),
+    "delegate": lambda kit, org: kit.delegate(
+        "globex-room", "worker", "Summarize the room.", wait=True, organization_id=org
+    ),
+}
+
+
+class TestScopedTurnsAndDeliveries:
+    """Another organization's room is not made to speak, delivered to, read
+    for a regeneration or delegated from (RFC §17.2, RMK-490)."""
+
+    @pytest.mark.parametrize("verb", sorted(_TURNS))
+    async def test_another_organizations_room_is_not_found_and_nothing_runs(
+        self, verb: str
+    ) -> None:
+        kit, providers = await _globex_with_agents()
+        before = await _globex_state(kit, providers)
+
+        with pytest.raises(RoomNotFoundError):
+            await _TURNS[verb](kit, "acme")
+
+        assert await _globex_state(kit, providers) == before
+        await kit.close()
+
+    async def test_a_queued_delivery_to_another_organization_never_reaches_the_queue(
+        self,
+    ) -> None:
+        backend = InMemoryDeliveryBackend()
+        kit, _ = await _globex_with_agents(delivery_backend=backend)
+
+        with pytest.raises(RoomNotFoundError):
+            await kit.deliver("globex-room", "from acme", organization_id="acme")
+
+        assert await backend.get_queue_depth() == 0
+        await kit.close()
+
+    @pytest.mark.parametrize("organization_id", ["globex", None], ids=["own", "unscoped"])
+    async def test_the_rooms_own_organization_or_none_runs_each_verb(
+        self, organization_id: str | None
+    ) -> None:
+        kit, (agent, worker) = await _globex_with_agents()
+
+        target = await kit.regenerate_target("globex-room", organization_id=organization_id)
+        assert target is not None and target.content.body == "hi"
+        regenerated = await kit.regenerate_response("globex-room", organization_id=organization_id)
+        assert regenerated is not None and len(agent.calls) == 2
+        await kit.send_greeting("globex-room", organization_id=organization_id)
+        bodies = [e.content.body for e in await kit.get_timeline("globex-room")]
+        assert "Hello!" in bodies
+        outcome = await kit.deliver("globex-room", "a nudge", organization_id=organization_id)
+        assert outcome.status == "sent" and len(agent.calls) == 3
+        task = await kit.delegate(
+            "globex-room", "worker", "Summarize.", wait=True, organization_id=organization_id
+        )
+        assert task.parent_room_id == "globex-room" and len(worker.calls) == 1
         await kit.close()
