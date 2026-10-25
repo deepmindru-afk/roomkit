@@ -210,12 +210,15 @@ class OpenAIImageProvider(ImageProvider):
 
     def _failure_status(self, exc: Exception) -> Literal["failed", "unknown"]:
         """``unknown`` when the vendor may have run, and billed, the request: a
-        transport failure once it left, or after an SDK retry (an earlier
-        attempt may have left). One that never left (a connect failure, a
-        host's policy refusing the address as one) ``failed`` (RFC §25.2)."""
+        transport failure once it left, or any failure after an SDK retry,
+        status included (an earlier attempt may have left). One that never
+        left (a connect failure, a host's policy refusing the address as one)
+        ``failed`` (RFC §25.2)."""
+        if self._sdk_retries > 0:
+            return "unknown"
         if not isinstance(exc, self._api_connection_error):
             return "failed"
-        return "failed" if never_sent(exc, self._httpx, retries=self._sdk_retries) else "unknown"
+        return "failed" if never_sent(exc, self._httpx, retries=0) else "unknown"
 
     @staticmethod
     def _validated_size(size: str) -> str:

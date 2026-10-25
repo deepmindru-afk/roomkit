@@ -168,7 +168,9 @@ class XAIImageProvider(ImageProvider):
         except self._api_status_error as exc:
             raise ProviderError(
                 str(exc),
-                retryable=exc.status_code in PAID_GENERATION_RETRYABLE,
+                # The SDK retries 408, 409, 429 and 5xx itself: with retries, a
+                # final one follows an attempt that may have run (RFC §25.2).
+                retryable=exc.status_code in PAID_GENERATION_RETRYABLE and self._sdk_retries == 0,
                 provider="xai",
                 status_code=exc.status_code,
             ) from exc

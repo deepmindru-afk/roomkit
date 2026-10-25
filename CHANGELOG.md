@@ -493,8 +493,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`max_retries` above 0), the error raised is the last attempt's, after
   attempts that may have left: an Azure attempt is then `unknown`, and an
   `XAIImageProvider` or `MetaImageProvider` error not retryable, whatever
-  the last failure. A timeout retried into a connect failure was marked
-  retryable by xAI and Meta.
+  the last failure, an error status included. A timeout retried into a
+  connect failure, a 429 or a 503 was marked retryable by xAI and Meta, and
+  into an error status `failed` by Azure.
 
 ### Security
 

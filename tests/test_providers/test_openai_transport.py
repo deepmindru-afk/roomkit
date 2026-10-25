@@ -236,17 +236,21 @@ class _PublicOnly(httpx.AsyncBaseTransport):
 
 
 class _Scripted(httpx.AsyncBaseTransport):
-    """Fails each request with the next of *failures*, then answers."""
+    """Fails each request with the next step of *script*, a transport error
+    raised or an error status answered, then answers."""
 
-    def __init__(self, *failures: type[httpx.TransportError]) -> None:
-        self._failures = list(failures)
+    def __init__(self, *script: type[httpx.TransportError] | int) -> None:
+        self._script = list(script)
         self.requests = 0
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.requests += 1
-        if self._failures:
-            raise self._failures.pop(0)("scripted", request=request)
-        return _answer(request)
+        if not self._script:
+            return _answer(request)
+        step = self._script.pop(0)
+        if isinstance(step, int):
+            return httpx.Response(step, json={"error": {"message": "scripted"}})
+        raise step("scripted", request=request)
 
 
 def _refusing() -> httpx.AsyncBaseTransport:
@@ -333,16 +337,20 @@ async def test_an_image_attempt_is_unknown_once_its_request_may_have_left(
     assert attempt.status == status
 
 
+@pytest.mark.parametrize(
+    "last", [httpx.ConnectError, 429, 503, 500], ids=["connect-error", "429", "503", "500"]
+)
 @pytest.mark.parametrize("kind", ["azure image", "xai image", "meta image"])
 async def test_a_retried_image_request_stays_ambiguous_whatever_its_last_failure(
-    kind: str, monkeypatch: pytest.MonkeyPatch
+    kind: str, last: type[httpx.TransportError] | int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With the SDK's retries (``max_retries``), the error raised is the last
-    attempt's: the first timed out, and may have run and been billed. A
-    connect failure last does not make the request unsent: the attempt is
-    ``unknown`` and the error is not retryable (RFC §25.2)."""
+    attempt's: the first timed out, and may have run and been billed. A last
+    attempt that could not connect, or that the vendor refused, does not
+    make the request unbilled: the attempt is ``unknown`` and the error is
+    not retryable (RFC §25.2)."""
     monkeypatch.setattr("openai._base_client.INITIAL_RETRY_DELAY", 0.0)
-    transport = _Scripted(httpx.ReadTimeout, httpx.ConnectError)
+    transport = _Scripted(httpx.ReadTimeout, last)
     client = _CALLS[kind]
     provider = client.build("https://models.example", transport, max_retries=1)
     try:
