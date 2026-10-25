@@ -24,6 +24,7 @@ from roomkit.providers.azure.ai import AzureAIProvider
 from roomkit.providers.azure.config import AzureAIConfig, AzureImageConfig
 from roomkit.providers.azure.image import AzureImageProvider
 from roomkit.providers.deepseek import DeepSeekAIProvider, DeepSeekConfig
+from roomkit.providers.image.base import ImageGenerationError
 from roomkit.providers.litellm import LiteLLMAIProvider, LiteLLMConfig
 from roomkit.providers.meta.config import MetaImageConfig
 from roomkit.providers.meta.image import MetaImageProvider
@@ -205,13 +206,19 @@ _CALLS: dict[str, _Client] = {
 
 
 class _PublicOnly(httpx.AsyncBaseTransport):
-    """A host's policy: refuses a private or reserved address, then hands on."""
+    """A host's policy: refuses a private or reserved address, then hands on.
+
+    The refusal is raised as a connect failure, which the clients read as a
+    request that never left."""
 
     def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
         self._inner = inner
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        validate_public_url(str(request.url), resolve_dns=False)
+        try:
+            validate_public_url(str(request.url), resolve_dns=False)
+        except ValueError as refusal:
+            raise httpx.ConnectError(str(refusal), request=request) from refusal
         return await self._inner.handle_async_request(request)
 
 
@@ -260,3 +267,26 @@ async def test_a_policy_in_the_transport_refuses_a_private_endpoint_before_any_r
         cause = cause.__cause__
     assert isinstance(cause, ValueError)
     assert "169.254.169.254" in str(cause)
+
+
+@pytest.mark.parametrize("kind", ["openai image", "azure image"])
+async def test_an_image_request_the_policy_refused_is_reported_never_sent(kind: str) -> None:
+    """Nothing reached the vendor, so nothing ran or was billed: the attempt
+    is ``failed``, not ``unknown`` (RFC §25.2)."""
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return _answer(request)
+
+    client = _CALLS[kind]
+    provider = client.build("https://169.254.169.254", _PublicOnly(httpx.MockTransport(handler)))
+    try:
+        with pytest.raises(ImageGenerationError) as caught:
+            await client.call(provider)
+    finally:
+        await provider.close()
+
+    assert sent == []
+    [attempt] = caught.value.attempts
+    assert attempt.status == "failed"

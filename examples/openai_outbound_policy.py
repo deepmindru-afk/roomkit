@@ -26,6 +26,7 @@ from shared import setup_logging
 
 from roomkit.providers import validate_public_url
 from roomkit.providers.ai import AIContext, AIMessage, ProviderError
+from roomkit.providers.image import ImageGenerationError
 from roomkit.providers.openai import (
     OpenAIAIProvider,
     OpenAIConfig,
@@ -62,14 +63,20 @@ class PublicOnly(httpx.AsyncBaseTransport):
     """Refuses a request to a private or reserved address, then hands it on.
 
     The demo skips DNS (``resolve_dns=False``) to run offline; a production
-    policy resolves the name and connects to the address it judged.
+    policy resolves the name and connects to the address it judged. The
+    refusal is raised as ``httpx.ConnectError``, which the providers read as
+    a request that never left: an image attempt is reported ``failed``, not
+    ``unknown`` (possibly billed).
     """
 
     def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
         self._inner = inner
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        validate_public_url(str(request.url), resolve_dns=False)
+        try:
+            validate_public_url(str(request.url), resolve_dns=False)
+        except ValueError as refusal:
+            raise httpx.ConnectError(str(refusal), request=request) from refusal
         return await self._inner.handle_async_request(request)
 
 
@@ -100,8 +107,9 @@ async def draw(base_url: str) -> None:
     try:
         [image] = await images.generate("an origami fox")
         logger.info("%s drew a %s", base_url, image.mime_type)
-    except ProviderError as exc:
-        logger.info("%s refused: %s", base_url, root_cause(exc))
+    except ImageGenerationError as exc:
+        [attempt] = exc.attempts  # "failed": nothing left, nothing was billed
+        logger.info("%s refused, %s: %s", base_url, attempt.status, root_cause(exc))
     finally:
         await images.close()
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from roomkit.providers.ai.base import (
     AIImagePart,
@@ -16,6 +16,7 @@ from roomkit.providers.image.base import (
     ImageProgressCallback,
     ImageProvider,
     ImageResult,
+    never_sent,
     notify_image_progress,
     parse_data_uri,
     parse_size,
@@ -56,6 +57,7 @@ class OpenAIImageProvider(ImageProvider):
                 "Install it with: pip install roomkit[openai]"
             ) from exc
         self._config = config
+        self._httpx = _httpx
         self._api_status_error = _openai.APIStatusError
         self._api_connection_error = (_openai.APIConnectionError, _httpx.TransportError)
         self._client = _openai.AsyncOpenAI(
@@ -192,7 +194,7 @@ class OpenAIImageProvider(ImageProvider):
                 cancelled.add_note(f"Failed to report unknown image outcome: {exc}")
             raise
         except Exception as exc:
-            attempt.status = "unknown" if isinstance(exc, self._api_connection_error) else "failed"
+            attempt.status = self._failure_status(exc)
             attempt.error = str(exc)
             attempt.status_code = getattr(exc, "status_code", None)
             if on_progress:
@@ -203,6 +205,15 @@ class OpenAIImageProvider(ImageProvider):
         if on_progress:
             await notify_image_progress(on_progress, attempt, provider=self._provider_name)
         return attempt.results
+
+    def _failure_status(self, exc: Exception) -> Literal["failed", "unknown"]:
+        """``unknown`` when the vendor may have run, and billed, the request: a
+        transport failure once it left. One that never left (a connect
+        failure, a host's policy refusing the address as one) ``failed``
+        (RFC §25.2)."""
+        if isinstance(exc, self._api_connection_error) and not never_sent(exc, self._httpx):
+            return "unknown"
+        return "failed"
 
     @staticmethod
     def _validated_size(size: str) -> str:

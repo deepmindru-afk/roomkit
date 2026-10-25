@@ -31,6 +31,7 @@ class AzureImageProvider(OpenAIImageProvider):
     ) -> None:
         """*transport* carries every request, as for :class:`OpenAIImageProvider`."""
         try:
+            import httpx as _httpx
             import openai as _openai
         except ImportError as exc:
             raise ImportError(
@@ -38,6 +39,7 @@ class AzureImageProvider(OpenAIImageProvider):
                 "Install it with: pip install roomkit[azure]"
             ) from exc
         self._config = config
+        self._httpx = _httpx
         self._api_status_error = _openai.APIStatusError
         self._api_connection_error = _openai.APIConnectionError
         self._client = _openai.AsyncAzureOpenAI(

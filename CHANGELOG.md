@@ -484,6 +484,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WebSocketRealtimeTransport(host=, port=)`, which takes neither: the
   application serves the sockets.
 
+- An `OpenAIImageProvider` or `AzureImageProvider` attempt whose request
+  never left, a connect failure or a host's policy refusing the address as
+  one (`httpx.ConnectError`), is reported `failed` (RMK-453, RFC §25.2). It
+  was `unknown`, as if the vendor might have run and billed it, for every
+  connection error. A failure once the request left stays `unknown`. xAI
+  and Meta already told the two apart.
+
 ### Security
 
 - **An MCP alias runs on the server it names** (RFC §21.2, RMK-493).

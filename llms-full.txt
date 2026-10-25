@@ -3586,7 +3586,10 @@ The OpenAI, Azure, xAI and Meta providers run on the `openai` SDK and take
 `transport=` (an `httpx.AsyncBaseTransport`) as the OpenAI AI provider does:
 every request, an edit's included, goes through it, the seam for a policy
 that judges the address dialled when users name `base_url`
-(`examples/openai_outbound_policy.py`).
+(`examples/openai_outbound_policy.py`). A policy that refuses by raising
+`httpx.ConnectError` is read as a request that never left: OpenAI's and
+Azure's attempt is `failed`, not `unknown` (possibly billed), and xAI's and
+Meta's error is retryable, as for any connect failure.
 
 ```python
 from roomkit.providers.xai import XAIImageConfig, XAIImageProvider
