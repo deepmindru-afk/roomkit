@@ -180,7 +180,8 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   its digests hash the room's id with each sender's id and name, and trying
   every phone number or name finds the senders. `get` returns the caller's
   own copy, `None` for an unknown room or key; `set` writes nothing for a
-  room the store lacks, removes the key when `value` is `None`, and removes
+  room the store lacks, one deleted while it writes included, removes the
+  key when `value` is `None`, and removes
   the copy the metadata may still hold under the key, in one write; the
   room's deletion takes its private state. The keys are the
   implementation's, and each reserves the same key in the room's metadata:

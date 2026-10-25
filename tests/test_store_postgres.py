@@ -1202,6 +1202,36 @@ async def test_init_moves_the_author_registers_to_the_private_state(store) -> No
     assert pending is not None and pending.metadata == {"author_register": later}
 
 
+async def test_a_private_state_write_racing_the_room_s_deletion_writes_nothing(store) -> None:
+    """RMK-631: a write of a room's private state while the room is being
+    deleted waits for the deletion, then writes nothing, as for a room the
+    store does not hold, rather than raise the foreign key's violation."""
+    import asyncpg
+
+    await store.create_room(Room(id="r1"))
+    deleter = await asyncpg.connect(POSTGRES_DSN)
+    try:
+        async with deleter.transaction():
+            await deleter.execute("DELETE FROM rooms WHERE id = 'r1'")
+            write = asyncio.create_task(
+                store.set_private_state("r1", "author_register", {"version": 3, "names": {}})
+            )
+            await _until_blocked_by(deleter)
+        await asyncio.wait_for(write, 2)
+    finally:
+        await deleter.close()
+    assert await store.get_private_state("r1", "author_register") is None
+
+
+async def _until_blocked_by(holder: Any) -> None:
+    """Return once a session waits on a lock *holder*'s transaction holds."""
+    deadline = asyncio.get_running_loop().time() + 2
+    blocked = "SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))"
+    async with asyncio.timeout_at(deadline):
+        while not await holder.fetchval(blocked, holder.get_server_pid()):
+            await asyncio.sleep(0.005)
+
+
 @pytest.mark.parametrize("write", ["commit_event", "add_event", "add_event_auto_index"])
 async def test_a_held_id_is_the_driver_s_refusal_whatever_the_index_order(
     store, write: str

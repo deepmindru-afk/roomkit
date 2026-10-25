@@ -63,15 +63,21 @@ from roomkit.store.postgres_schema import (
 logger = logging.getLogger("roomkit.store.postgres")
 
 _SET_PRIVATE_STATE = """
-WITH written AS (
+WITH held AS MATERIALIZED (SELECT id FROM rooms WHERE id = $1 FOR KEY SHARE),
+written AS (
     INSERT INTO private_state (room_id, key, value)
-    SELECT id, $2, $3::jsonb FROM rooms WHERE id = $1
+    SELECT id, $2, $3::jsonb FROM held
     ON CONFLICT (room_id, key) DO UPDATE SET value = EXCLUDED.value
 )
-UPDATE rooms SET metadata = metadata - $2::text WHERE id = $1 AND metadata ? $2::text
+UPDATE rooms SET metadata = metadata - $2::text
+WHERE id IN (SELECT id FROM held) AND metadata ? $2::text
 """
 """A room's private state written under a key, and the copy its metadata
-may still hold under the key removed, in one statement."""
+may still hold under the key removed, in one statement. The room's row is
+held against deletion as it is read, once for both writes, before the
+update changes it: a deletion that commits first leaves no row to write for,
+and nothing is written, rather than the foreign key's violation of a room
+read before it was deleted."""
 _DROP_PRIVATE_STATE = """
 WITH dropped AS (DELETE FROM private_state WHERE room_id = $1 AND key = $2)
 UPDATE rooms SET metadata = metadata - $2::text WHERE id = $1 AND metadata ? $2::text
