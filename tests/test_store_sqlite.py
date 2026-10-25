@@ -416,11 +416,11 @@ class TestPersistence:
         assert [e.content.body for e in hits] == ["zebra fresh"]
         assert kept is not None and kept.content == secret.content
 
-    async def test_a_v11_file_moves_its_author_registers_out_of_the_metadata(
+    async def test_a_v11_file_moves_its_author_registers_to_its_private_state(
         self, tmp_path
     ) -> None:
         """RMK-631: a room's register of authors leaves its metadata, which
-        clients may read, for the store's own table; a malformed one is
+        clients may read, for the room's private state; a malformed one is
         dropped, as a reader reads it absent."""
         path = tmp_path / "v11.db"
         register = {"version": 3, "names": {"a" * 16: "b" * 16 + ":1"}}
@@ -431,13 +431,19 @@ class TestPersistence:
         await store.create_room(Room(id="r2", metadata={"author_register": "junk"}))
         await store.close()
         conn = sqlite3.connect(path)
-        conn.executescript("DROP TABLE author_registers; PRAGMA user_version=11;")
+        conn.executescript("DROP TABLE private_state; PRAGMA user_version=11;")
         conn.close()
 
         store = SQLiteStore(path)
         try:
-            moved, kept = await store.get_author_register("r1"), await store.get_room("r1")
-            junk, emptied = await store.get_author_register("r2"), await store.get_room("r2")
+            moved, kept = (
+                await store.get_private_state("r1", "author_register"),
+                await store.get_room("r1"),
+            )
+            junk, emptied = (
+                await store.get_private_state("r2", "author_register"),
+                await store.get_room("r2"),
+            )
         finally:
             await store.close()
         assert moved == register

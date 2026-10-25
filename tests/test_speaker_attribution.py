@@ -325,7 +325,12 @@ class TestTheRoomFixesARank:
         stored = await kit.store.list_events("r1")
         ranks = [_rank(e) for e in stored if e.source.channel_id == "sms1"]
         assert ranks == [1, 2]
-        assert len(_sources(await kit.store.get_author_register("r1") or {"names": {}})) == 2
+        assert (
+            len(
+                _sources(await kit.store.get_private_state("r1", AUTHOR_REGISTER) or {"names": {}})
+            )
+            == 2
+        )
 
     async def test_a_registered_name_holds_against_an_impostor_who_speaks_first(self) -> None:
         kit, provider = await _kit(["a1", "a2", "a3"])
@@ -382,7 +387,12 @@ class TestTheRoomFixesARank:
             'Alice (2): "hold the refund"',
             'Bob: "which one?"',
         ]
-        assert len(_sources(await kit.store.get_author_register("r1") or {"names": {}})) == 3
+        assert (
+            len(
+                _sources(await kit.store.get_private_state("r1", AUTHOR_REGISTER) or {"names": {}})
+            )
+            == 3
+        )
 
     async def test_a_rank_a_sender_supplies_is_not_kept(self) -> None:
         kit, _provider = await _kit(["a1", "a2"])
@@ -442,7 +452,7 @@ class TestTheRoomFixesARank:
         await _say(kit, "+15551234567", "Alice", "hello")
 
         stored = await kit.store.list_events("r1")
-        register = await kit.store.get_author_register("r1")
+        register = await kit.store.get_private_state("r1", AUTHOR_REGISTER)
         assert AUTHOR_REGISTER not in (await kit.get_room("r1")).metadata
         assert [_rank(e) for e in stored if e.source.channel_id == "sms1"] == [1]
         assert "15551234567" not in str(register) and "alice" not in str(register)

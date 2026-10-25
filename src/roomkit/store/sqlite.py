@@ -175,9 +175,11 @@ CREATE TABLE IF NOT EXISTS idempotency(
     PRIMARY KEY(room_id, channel_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_idempotency_room_key ON idempotency(room_id, key);
-CREATE TABLE IF NOT EXISTS author_registers(
-    room_id TEXT PRIMARY KEY,
-    data TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS private_state(
+    room_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY(room_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_events_room_idempotency
     ON events(room_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
@@ -606,23 +608,25 @@ def _migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_v11_to_v12(conn: sqlite3.Connection) -> None:
-    """A room's register of authors leaves its metadata, which clients may
-    read, for a table of its own (RFC §10.1 step 12): its digests name the
-    room's senders to whoever tries every phone number or name. One that is
-    not a map is dropped, as its readers read it absent."""
+    """A room's private state (RFC §14.1) gets a table of its own, apart from
+    its metadata, which clients may read, and the room's register of authors
+    moves there (RFC §10.1 step 12): its digests name the room's senders to
+    whoever tries every phone number or name. One that is not a map is
+    dropped, as its readers read it absent."""
     try:
         conn.execute("BEGIN IMMEDIATE")
         if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 12:
             conn.execute("COMMIT")
             return
         conn.execute(
-            """CREATE TABLE IF NOT EXISTS author_registers(
-                   room_id TEXT PRIMARY KEY, data TEXT NOT NULL)"""
+            """CREATE TABLE IF NOT EXISTS private_state(
+                   room_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+                   PRIMARY KEY(room_id, key))"""
         )
         conn.execute(
-            """INSERT OR IGNORE INTO author_registers(room_id, data)
-               SELECT id, json_extract(data, '$.metadata.author_register') FROM rooms
-               WHERE json_type(data, '$.metadata.author_register') = 'object'"""
+            """INSERT OR IGNORE INTO private_state(room_id, key, value)
+               SELECT id, 'author_register', json_extract(data, '$.metadata.author_register')
+               FROM rooms WHERE json_type(data, '$.metadata.author_register') = 'object'"""
         )
         conn.execute(
             """UPDATE rooms SET data = json_remove(data, '$.metadata.author_register')
@@ -1049,34 +1053,45 @@ class SQLiteStore(ConversationStore):
             )
         return cur.rowcount > 0
 
-    async def get_author_register(self, room_id: str) -> dict[str, Any] | None:
-        return await self._run(self._x_get_author_register, room_id)
+    async def get_private_state(self, room_id: str, key: str) -> dict[str, Any] | None:
+        return await self._run(self._x_get_private_state, room_id, key)
 
-    def _x_get_author_register(self, room_id: str) -> dict[str, Any] | None:
+    def _x_get_private_state(self, room_id: str, key: str) -> dict[str, Any] | None:
         row = (
             self._db()
-            .execute("SELECT data FROM author_registers WHERE room_id = ?", (room_id,))
+            .execute(
+                "SELECT value FROM private_state WHERE room_id = ? AND key = ?", (room_id, key)
+            )
             .fetchone()
         )
-        return json.loads(row["data"]) if row is not None else None
+        return json.loads(row["value"]) if row is not None else None
 
-    async def set_author_register(self, room_id: str, register: dict[str, Any]) -> None:
-        await self._run(self._x_set_author_register, room_id, json.dumps(register))
+    async def set_private_state(
+        self, room_id: str, key: str, value: dict[str, Any] | None
+    ) -> None:
+        written = json.dumps(value) if value is not None else None
+        await self._run(self._x_set_private_state, room_id, key, written)
 
-    def _x_set_author_register(self, room_id: str, data: str) -> None:
+    def _x_set_private_state(self, room_id: str, key: str, value: str | None) -> None:
         conn = self._db()
         with _write_transaction(conn):
-            conn.execute(
-                """INSERT INTO author_registers(room_id, data)
-                   SELECT id, ? FROM rooms WHERE id = ?
-                   ON CONFLICT(room_id) DO UPDATE SET data = excluded.data""",
-                (data, room_id),
-            )
-            conn.execute(
-                """UPDATE rooms SET data = json_remove(data, '$.metadata.author_register')
-                   WHERE id = ? AND json_type(data, '$.metadata.author_register') IS NOT NULL""",
-                (room_id,),
-            )
+            row = conn.execute("SELECT data FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            if row is None:
+                return
+            if value is None:
+                conn.execute(
+                    "DELETE FROM private_state WHERE room_id = ? AND key = ?", (room_id, key)
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO private_state(room_id, key, value) VALUES(?, ?, ?)
+                       ON CONFLICT(room_id, key) DO UPDATE SET value = excluded.value""",
+                    (room_id, key, value),
+                )
+            room = json.loads(row["data"])
+            if key in room.get("metadata", {}):
+                del room["metadata"][key]
+                conn.execute("UPDATE rooms SET data = ? WHERE id = ?", (json.dumps(room), room_id))
 
     async def patch_room_metadata(
         self,
@@ -1121,7 +1136,7 @@ class SQLiteStore(ConversationStore):
                 "voice_deliveries",
                 "event_sequences",
                 "events_fts",
-                "author_registers",
+                "private_state",
             ):
                 conn.execute(f"DELETE FROM {table} WHERE room_id = ?", (room_id,))  # nosec B608  # fragments are internal, values parameterised
         return existed

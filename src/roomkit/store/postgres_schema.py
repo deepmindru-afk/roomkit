@@ -604,12 +604,15 @@ CREATE TABLE IF NOT EXISTS voice_deliveries (
     PRIMARY KEY (room_id, key_hash)
 );
 
--- A room's register of authors (RFC §10.1 step 12), apart from its metadata,
--- which clients may read: its digests name the room's senders to whoever
--- tries every phone number or name.
-CREATE TABLE IF NOT EXISTS author_registers (
-    room_id TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
-    data    JSONB NOT NULL
+-- A room's private state (RFC §14.1), apart from its metadata, which clients
+-- may read: the keys the runtime keeps for itself, the register of authors
+-- among them (§10.1 step 12), whose digests name the room's senders to
+-- whoever tries every phone number or name.
+CREATE TABLE IF NOT EXISTS private_state (
+    room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    key     TEXT NOT NULL,
+    value   JSONB NOT NULL,
+    PRIMARY KEY (room_id, key)
 );
 
 -- schema version
@@ -647,22 +650,23 @@ BEGIN
     END IF;
 END $$;
 
--- A room's register of authors leaves its metadata for its own table, once;
+-- A room's register of authors leaves its metadata for its private state, once;
 -- one that is not an object is dropped, as its readers read it absent. The
 -- metadata loses only the copy the table now holds: one a process from
 -- before writes meanwhile, or wrote since a move, stays for the room's next
--- named turn to merge (a register only adds), never dropped with the ranks
--- it gave. Version 4 records the move as done.
+-- turn whose author is recorded to merge (a register only adds), never
+-- dropped with the ranks it gave. Version 4 records the move as done.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version >= 4) THEN
-        INSERT INTO author_registers (room_id, data)
-            SELECT id, metadata -> 'author_register' FROM rooms
+        INSERT INTO private_state (room_id, key, value)
+            SELECT id, 'author_register', metadata -> 'author_register' FROM rooms
             WHERE jsonb_typeof(metadata -> 'author_register') = 'object'
-            ON CONFLICT (room_id) DO NOTHING;
+            ON CONFLICT (room_id, key) DO NOTHING;
         UPDATE rooms r SET metadata = r.metadata - 'author_register'
-            FROM author_registers a
-            WHERE a.room_id = r.id AND r.metadata -> 'author_register' = a.data;
+            FROM private_state p
+            WHERE p.room_id = r.id AND p.key = 'author_register'
+              AND r.metadata -> 'author_register' = p.value;
         UPDATE rooms SET metadata = metadata - 'author_register'
             WHERE jsonb_typeof(metadata -> 'author_register') <> 'object';
         INSERT INTO schema_version (version) VALUES (4);

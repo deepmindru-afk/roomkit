@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import sys
 from abc import ABC, abstractmethod
@@ -33,21 +34,6 @@ logger = logging.getLogger("roomkit.store")
 
 # Page size of the fallback scan over rooms (find_room_id_by_participant).
 _ROOM_PAGE = 100
-
-AUTHOR_REGISTER = "author_register"
-"""The room metadata key the room's register of authors was kept under
-before the stores kept it apart (RFC §10.1 step 12): a store without
-:meth:`ConversationStore.get_author_register` of its own keeps it there
-still, and the shipped stores move it out."""
-
-
-def author_register_copy(register: dict[str, Any]) -> dict[str, Any]:
-    """A copy of *register* its reader may extend without touching the
-    stored one: its values are strings or maps of strings, so a copy of each
-    map suffices, where a deep copy would cost a room's every source."""
-    return {
-        key: dict(value) if isinstance(value, dict) else value for key, value in register.items()
-    }
 
 
 def link_target(
@@ -284,38 +270,48 @@ class ConversationStore(ABC):
         """
         yield
 
-    # The room's register of authors (RFC §6.4, §10.1 step 12). Not abstract:
-    # a store written before it keeps the register where it was.
+    # A room's private state (RFC §14.1): the keys the runtime keeps for
+    # itself, the register of authors among them (§10.1 step 12). Not
+    # abstract: a store written before it keeps them where they were.
 
-    _register_warned: bool = False
+    _private_state_warned: bool = False
 
-    async def get_author_register(self, room_id: str) -> dict[str, Any] | None:
-        """The room's register of authors, or ``None`` when it holds none or
-        the room does not exist; the caller's own copy.
+    async def get_private_state(self, room_id: str, key: str) -> dict[str, Any] | None:
+        """The value the room keeps for itself under *key*, apart from its
+        metadata; ``None`` when the room does not exist or holds none. The
+        caller's own copy (RFC §14.4).
 
-        The register hashes the room's id, which is not secret, with its
-        senders' ids and names: whoever reads it finds a sender by trying
-        every phone number or name. A store keeps it apart from the room's
-        metadata, which clients may read. This default reads it from the
-        metadata, where it was kept before, and warns once: override this
-        method and :meth:`set_author_register` to keep it private.
+        What a key holds is the runtime's, never a client's: the room's
+        register of authors, whose digests name the room's senders to
+        whoever tries every phone number or name, is one. A store keeps it
+        apart from the room's metadata, which clients may read. This default
+        reads it from the metadata, where it was kept before, and warns once:
+        override this method and :meth:`set_private_state` to keep it
+        private.
         """
-        _warn_register_in_metadata(self)
+        _warn_private_state_in_metadata(self)
         room = await self.get_room(room_id)
-        value = None if room is None else room.metadata.get(AUTHOR_REGISTER)
-        return value if isinstance(value, dict) else None
+        value = None if room is None else room.metadata.get(key)
+        return copy.deepcopy(value) if isinstance(value, dict) else None
 
-    async def set_author_register(self, room_id: str, register: dict[str, Any]) -> None:
-        """Write the room's register of authors apart from its metadata, and
-        remove the copy the metadata may still hold (a room stored before it
-        moved), in one write. Writes nothing for a room the store does not
-        hold. Called under the room lock (RFC §13.5).
+    async def set_private_state(
+        self, room_id: str, key: str, value: dict[str, Any] | None
+    ) -> None:
+        """Keep *value* under *key* for the room, apart from its metadata, or
+        remove the key when *value* is ``None``; the copy the room's metadata
+        may still hold under the key (a room stored before the key moved) is
+        removed in the same write. Writes nothing for a room the store does
+        not hold. The caller holds the room lock (RFC §13.5), and the room's
+        deletion takes its private state.
 
-        This default writes it to the room's metadata, where it was kept
-        before (:meth:`get_author_register`).
+        This default writes the key in the room's metadata, where it was kept
+        before (:meth:`get_private_state`).
         """
-        _warn_register_in_metadata(self)
-        await self.patch_room_metadata(room_id, {AUTHOR_REGISTER: register})
+        _warn_private_state_in_metadata(self)
+        if value is None:
+            await self.patch_room_metadata(room_id, {}, unset=[key])
+        else:
+            await self.patch_room_metadata(room_id, {key: value})
 
     # Room operations
 
@@ -1418,17 +1414,18 @@ class ConversationStore(ABC):
         return None
 
 
-def _warn_register_in_metadata(store: ConversationStore) -> None:
-    """Say once per store that it keeps the register of authors in the rooms'
-    metadata, where its digests name the senders to whoever reads them."""
-    if store._register_warned:
+def _warn_private_state_in_metadata(store: ConversationStore) -> None:
+    """Say once per store that it keeps the rooms' private state in their
+    metadata, where the register of authors' digests name the senders to
+    whoever reads them."""
+    if store._private_state_warned:
         return
-    store._register_warned = True
+    store._private_state_warned = True
     logger.warning(
-        "%s keeps each room's register of authors in the room's metadata, which "
-        "clients may read: its digests name the room's senders to whoever tries "
-        "every phone number or name. Implement get_author_register() and "
-        "set_author_register() to keep it apart.",
+        "%s keeps each room's private state, the register of authors among it, in "
+        "the room's metadata, which clients may read: the register's digests name "
+        "the room's senders to whoever tries every phone number or name. Implement "
+        "get_private_state() and set_private_state() to keep it apart.",
         type(store).__name__,
     )
 

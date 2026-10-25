@@ -60,7 +60,7 @@ def _make_mock_kit(
     kit.get_room = AsyncMock(return_value=room)
     kit.store.list_bindings = AsyncMock(return_value=bindings)
     kit.store.list_events = AsyncMock(return_value=[])
-    kit.store.get_author_register = AsyncMock(return_value=None)
+    kit.store.get_private_state = AsyncMock(return_value=None)
     kit.store.add_event = AsyncMock()
     kit.store.add_event_auto_index = AsyncMock(side_effect=lambda room_id, event: event)
     kit.store.commit_event = AsyncMock(side_effect=lambda room_id, event: event)

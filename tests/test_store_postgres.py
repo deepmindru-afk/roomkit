@@ -1156,10 +1156,10 @@ async def test_init_records_when_a_room_stored_paused_before_paused_at_paused(st
     assert active.paused_at is None
 
 
-async def test_init_moves_the_author_registers_out_of_the_metadata(store) -> None:
+async def test_init_moves_the_author_registers_to_the_private_state(store) -> None:
     """RMK-631: a store from before keeps a room's register of authors in
-    its metadata, which clients may read; init() moves it to the store's own
-    table, once, and drops a malformed one. A copy that is not what it moved
+    its metadata, which clients may read; init() moves it to the room's
+    private state, once, and drops a malformed one. A copy that is not what it moved
     (a process from before wrote it meanwhile) stays for the room's next
     turn to merge: dropped, its ranks would be given again."""
     from roomkit.store.postgres import PostgresStore
@@ -1172,15 +1172,26 @@ async def test_init_moves_the_author_registers_out_of_the_metadata(store) -> Non
     async with store._pool.acquire() as conn:
         await conn.execute("DELETE FROM schema_version WHERE version >= 4")
         await conn.execute(
-            "INSERT INTO author_registers (room_id, data) VALUES ('r3', $1::jsonb)", register
+            "INSERT INTO private_state (room_id, key, value)"
+            " VALUES ('r3', 'author_register', $1::jsonb)",
+            register,
         )
 
     upgraded = PostgresStore(dsn=POSTGRES_DSN)
     await upgraded.init(min_size=1, max_size=2)
     try:
-        moved, kept = await upgraded.get_author_register("r1"), await upgraded.get_room("r1")
-        junk, emptied = await upgraded.get_author_register("r2"), await upgraded.get_room("r2")
-        held, pending = await upgraded.get_author_register("r3"), await upgraded.get_room("r3")
+        moved, kept = (
+            await upgraded.get_private_state("r1", "author_register"),
+            await upgraded.get_room("r1"),
+        )
+        junk, emptied = (
+            await upgraded.get_private_state("r2", "author_register"),
+            await upgraded.get_room("r2"),
+        )
+        held, pending = (
+            await upgraded.get_private_state("r3", "author_register"),
+            await upgraded.get_room("r3"),
+        )
     finally:
         await upgraded.close()
     assert moved == register

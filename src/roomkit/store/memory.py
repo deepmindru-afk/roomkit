@@ -25,10 +25,8 @@ from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import (
-    AUTHOR_REGISTER,
     ConversationStore,
     address_linked,
-    author_register_copy,
     committed_state,
     deletes_edits,
     edits_target,
@@ -76,8 +74,9 @@ class InMemoryStore(ConversationStore):
         self._room_tasks: dict[str, list[str]] = {}
         self._observations: dict[str, Observation] = {}
         self._room_observations: dict[str, list[str]] = {}
-        # room -> its register of authors, apart from the room's metadata
-        self._author_registers: dict[str, dict[str, Any]] = {}
+        # room -> key -> the value the runtime keeps for itself, apart from
+        # the room's metadata (the register of authors among them)
+        self._private_state: dict[str, dict[str, dict[str, Any]]] = {}
         # Per-room locks for atomic index assignment
         self._room_locks: dict[str, asyncio.Lock] = {}
         self._voice_deliveries: dict[tuple[str, str], VoiceDeliveryRecord] = {}
@@ -226,17 +225,23 @@ class InMemoryStore(ConversationStore):
     async def room_exists(self, room_id: str) -> bool:
         return room_id in self._rooms
 
-    async def get_author_register(self, room_id: str) -> dict[str, Any] | None:
-        register = self._author_registers.get(room_id)
-        return author_register_copy(register) if register is not None else None
+    async def get_private_state(self, room_id: str, key: str) -> dict[str, Any] | None:
+        value = self._private_state.get(room_id, {}).get(key)
+        return copy.deepcopy(value) if value is not None else None
 
-    async def set_author_register(self, room_id: str, register: dict[str, Any]) -> None:
+    async def set_private_state(
+        self, room_id: str, key: str, value: dict[str, Any] | None
+    ) -> None:
         room = self._rooms.get(room_id)
         if room is None:
             return
-        self._author_registers[room_id] = author_register_copy(register)
-        if AUTHOR_REGISTER in room.metadata:
-            metadata = {k: v for k, v in room.metadata.items() if k != AUTHOR_REGISTER}
+        state = self._private_state.setdefault(room_id, {})
+        if value is None:
+            state.pop(key, None)
+        else:
+            state[key] = copy.deepcopy(value)
+        if key in room.metadata:
+            metadata = {k: v for k, v in room.metadata.items() if k != key}
             self._rooms[room_id] = room.model_copy(update={"metadata": metadata})
 
     async def get_delivered_index(self, room_id: str) -> int:
@@ -261,7 +266,7 @@ class InMemoryStore(ConversationStore):
             return False
         self._unindex_room(room_id)
         del self._rooms[room_id]
-        self._author_registers.pop(room_id, None)
+        self._private_state.pop(room_id, None)
         # Clean up events
         event_ids = self._room_events.pop(room_id, [])
         for eid in event_ids:

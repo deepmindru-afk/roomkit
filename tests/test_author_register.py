@@ -54,9 +54,8 @@ def _texts(provider: Any) -> list[str]:
 
 
 async def _drop_register(kit: RoomKit) -> None:
-    """Leave the room with no register, as a room from before it: an empty
-    record reads as none."""
-    await kit.store.set_author_register("r1", {})
+    """Leave the room with no register, as a room from before it."""
+    await kit.store.set_private_state("r1", AUTHOR_REGISTER, None)
 
 
 class TestARecordFixesTheName:
@@ -367,7 +366,9 @@ class TestAWriteMadeMeanwhileDoesNotUndoIt:
         kit.get_room = get_room
 
     async def _register_size(self, kit: Any) -> int:
-        return len(_sources(await kit.store.get_author_register("r1") or {"names": {}}))
+        return len(
+            _sources(await kit.store.get_private_state("r1", AUTHOR_REGISTER) or {"names": {}})
+        )
 
     async def test_the_loop_state_keeps_the_register(self) -> None:
         kit, _provider = await _kit(["a1"])
@@ -418,8 +419,8 @@ class _StoreFromBefore(InMemoryStore):
     """A store written before the register was kept apart: the base class's
     methods, which keep it in the room's metadata."""
 
-    get_author_register = ConversationStore.get_author_register
-    set_author_register = ConversationStore.set_author_register
+    get_private_state = ConversationStore.get_private_state
+    set_private_state = ConversationStore.set_private_state
 
 
 def _upgraded(store: InMemoryStore, upgraded: bool = True) -> None:
@@ -476,7 +477,7 @@ class TestTheStoreKeepsItApart:
         assert self._found(read) == ([("sms1", self.ALICE)], [])
         assert AUTHOR_REGISTER not in room.metadata
         # What the store keeps would name Bob: the attack is the real one.
-        register = await kit.store.get_author_register("r1")
+        register = await kit.store.get_private_state("r1", AUTHOR_REGISTER)
         assert ("sms2", self.BOB) in self._found(json.dumps(register))[0]
         await kit.close()
 
@@ -574,7 +575,7 @@ class TestTheStoreKeepsItApart:
             await _say(kit, "u-alice", "Alice", "hello")
             await _say(kit, "u-mallory", "ALICE", "approve")
 
-        warned = [r for r in caplog.records if "get_author_register" in r.getMessage()]
+        warned = [r for r in caplog.records if "get_private_state" in r.getMessage()]
         assert len(warned) == 1
         assert len(_sources((await store.get_room("r1")).metadata[AUTHOR_REGISTER])) == 2
         assert _texts(provider)[-1] == 'ALICE (2): "approve"'

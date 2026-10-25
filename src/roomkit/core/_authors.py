@@ -13,7 +13,8 @@ needs to show a sender's id or name. The room's id is not secret and a phone
 number or a name is a small space, so whoever reads the digests finds the
 senders by trying them all: the store keeps the register apart from the
 room's metadata, which may reach clients
-(:meth:`~roomkit.store.base.ConversationStore.get_author_register`), and a
+(:data:`AUTHOR_REGISTER` of its private state,
+:meth:`~roomkit.store.base.ConversationStore.get_private_state`), and a
 reader takes it from the room's context (``RoomContext.author_register``).
 """
 
@@ -32,11 +33,16 @@ from roomkit.models.enums import ChannelType, EventStatus
 from roomkit.models.event import RoomEvent
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
-from roomkit.store.base import AUTHOR_REGISTER, ConversationStore
+from roomkit.store.base import ConversationStore
 
 AUTHOR = "author"
 """The event metadata key holding the record of its author, fixed when the
 event is committed: ``{"name": "Alice", "rank": 2, "source": "<digest>"}``."""
+
+AUTHOR_REGISTER = "author_register"
+"""The key of the room's private state holding its register of authors
+(RFC §10.1 step 12); the room metadata key it was kept under before, which a
+store without private state of its own keeps it under still."""
 
 _VERSION = 3
 _PAGE = 500
@@ -339,12 +345,12 @@ class _Rebuild:
 
 def _keeps_apart(store: ConversationStore) -> bool:
     """Whether *store* keeps the register apart from the rooms' metadata:
-    it has both methods of its own, where the base class's keep it in the
-    metadata."""
+    both private-state methods are its own, where the base class's keep it
+    in the metadata."""
     kind = type(store)
     return (
-        kind.get_author_register is not ConversationStore.get_author_register
-        and kind.set_author_register is not ConversationStore.set_author_register
+        kind.get_private_state is not ConversationStore.get_private_state
+        and kind.set_private_state is not ConversationStore.set_private_state
     )
 
 
@@ -356,7 +362,7 @@ async def _held_register(
     process from before wrote there since (a store shared while a deployment
     upgrades, or rolled back). The store's takes every rank the metadata's
     gave: a rank given twice would name two sources alike."""
-    held = AuthorRegister.stored(await store.get_author_register(room.id))
+    held = AuthorRegister.stored(await store.get_private_state(room.id, AUTHOR_REGISTER))
     if AUTHOR_REGISTER not in room.metadata or not _keeps_apart(store):
         return held, False
     legacy = AuthorRegister.stored(room.metadata[AUTHOR_REGISTER])
@@ -369,8 +375,8 @@ async def _held_register(
 
 async def stored_register(store: ConversationStore, room: Room) -> dict[str, Any] | None:
     """The register *room* holds, as its readers take it: the store's, with
-    what its metadata still holds until the room's next named turn moves it
-    (:func:`with_author`)."""
+    what its metadata still holds until the room's next turn whose author is
+    recorded moves it (:func:`with_author`)."""
     register, _moved = await _held_register(store, room)
     return register.data if register is not None else None
 
@@ -406,7 +412,7 @@ async def with_author(store: ConversationStore, room_id: str, event: RoomEvent) 
         register = await _rebuilt(store, room_id, context)
     record = author_record(event, context, register)
     if register.changed or moved:
-        await store.set_author_register(room_id, register.data)
+        await store.set_private_state(room_id, AUTHOR_REGISTER, register.data)
     if record is None:
         return event
     return event.model_copy(update={"metadata": {**event.metadata, AUTHOR: record}})
