@@ -1,0 +1,319 @@
+"""The kit's calls a scenario names, made on the Python core.
+
+Each call takes the RFC's name and arguments (roomkit-specs
+``conformance/README.md``, "Calls"); its result is written in the RFC's
+serialized form, and an error it raises is named by its RFC meaning
+("Errors"), with the table of roomkit-rs ``docs/rfc-gaps.md`` G-085.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Any
+
+from pydantic import TypeAdapter
+
+from roomkit import HostChannel, RoomKit
+from roomkit.core.exceptions import (
+    ChangeRefusedError,
+    ChannelNotFoundError,
+    ChannelNotRegisteredError,
+    ParticipantNotFoundError,
+    ProcessTimeoutError,
+    ReentrantCallError,
+    ReentryLoopCapError,
+    RoomClosedError,
+    RoomNotFoundError,
+    TransitionRefusedError,
+)
+from roomkit.models.delivery import InboundMessage, InboundResult
+from roomkit.models.enums import (
+    Access,
+    ChannelCategory,
+    ChannelType,
+    EventDirection,
+    EventType,
+    HookExecution,
+    HookTrigger,
+)
+from roomkit.models.event import EventContent, EventSource, RoomEvent
+from roomkit.models.room import Room, RoomTimers
+from tests.conformance._script import ScriptedChannel, complete_event, hook_handler
+
+if TYPE_CHECKING:
+    from tests.conformance._harness import Harness
+
+_CONTENT = TypeAdapter(EventContent)
+
+# The Python class of each error the suite names (README, "Errors").
+_ERRORS: tuple[tuple[type[Exception], str], ...] = (
+    (RoomNotFoundError, "room_not_found"),
+    (RoomClosedError, "room_closed"),
+    (ChannelNotRegisteredError, "channel_not_registered"),
+    (ChannelNotFoundError, "channel_not_bound"),
+    (ChangeRefusedError, "change_refused"),
+    (TransitionRefusedError, "transition_refused"),
+    (ProcessTimeoutError, "process_timeout"),
+    (ParticipantNotFoundError, "participant_not_found"),
+    (ReentrantCallError, "reentrant"),
+    (ReentryLoopCapError, "reentry_loop_cap"),
+    (ValueError, "invalid_argument"),
+)
+
+
+class UnmappedError(Exception):
+    """A call raised something the suite has no name for: a defect to look at."""
+
+
+class ChannelNotBoundError(Exception):
+    """A detach the room does not bind, which the Python API answers ``False``."""
+
+
+def error_of(error: Exception) -> dict[str, Any]:
+    """The suite's name of *error*, with its reason when it has one."""
+    if isinstance(error, ChannelNotBoundError):
+        return {"name": "channel_not_bound"}
+    for cls, name in _ERRORS:
+        if isinstance(error, cls):
+            reason = getattr(error, "reason", None)
+            return {"name": name, "reason": reason} if reason else {"name": name}
+    raise UnmappedError(f"{type(error).__name__}: {error}") from error
+
+
+def dump(value: Any) -> Any:
+    """A result in the RFC's serialized form."""
+    if isinstance(value, InboundResult):
+        return {
+            "event": dump(value.event),
+            "blocked": value.blocked,
+            "reason": value.reason,
+            "error": None if value.error is None else str(value.error),
+            "response_metadata": value.response_metadata,
+            "delivery_results": {k: dump(v) for k, v in (value.delivery_results or {}).items()},
+        }
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, list):
+        return [dump(item) for item in value]
+    return value
+
+
+Call = Callable[[RoomKit, "Harness", Mapping[str, Any]], Awaitable[Any]]
+
+
+def _org(spec: Mapping[str, Any]) -> dict[str, Any]:
+    return {"organization_id": spec["organization_id"]} if "organization_id" in spec else {}
+
+
+async def _process_inbound(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    message = InboundMessage.model_validate(spec["message"])
+    return await kit.process_inbound(message, room_id=spec.get("room_id"), **_org(spec))
+
+
+_SEND_ARGS = (
+    "participant_id",
+    "visibility",
+    "response_visibility",
+    "addressed_to",
+    "parent_event_id",
+    "idempotency_key",
+    "metadata",
+    "chain_depth",
+    "standalone",
+)
+
+
+async def _send_event(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    kwargs = {key: spec[key] for key in _SEND_ARGS if key in spec}
+    if "event_type" in spec:
+        kwargs["event_type"] = EventType(spec["event_type"])
+    return await kit.send_event(
+        spec["room_id"],
+        spec["channel_id"],
+        _CONTENT.validate_python(spec["content"]),
+        **kwargs,
+        **_org(spec),
+    )
+
+
+_POST_ARGS = (
+    "participant_id",
+    "addressed_to",
+    "metadata",
+    "channel_id",
+    "idempotency_key",
+    "chain_depth",
+)
+
+
+async def _post(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    kwargs = {key: spec[key] for key in _POST_ARGS if key in spec}
+    return await kit.post(
+        spec["room_id"], _CONTENT.validate_python(spec["content"]), **kwargs, **_org(spec)
+    )
+
+
+async def _commit_event(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    record = complete_event(
+        spec["event"],
+        spec["room_id"],
+        {"channel_id": "system", "channel_type": "system", "direction": "inbound"},
+    )
+    return await kit.commit_event(spec["room_id"], record, **_org(spec))
+
+
+async def _update_event(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    kwargs: dict[str, Any] = {}
+    if "content" in spec:
+        kwargs["content"] = _CONTENT.validate_python(spec["content"])
+    if "source" in spec:
+        kwargs["source"] = EventSource.model_validate(spec["source"])
+    if "metadata" in spec:
+        kwargs["metadata"] = spec["metadata"]
+    return await kit.update_event(spec["room_id"], spec["event_id"], **kwargs, **_org(spec))
+
+
+async def _delete_event(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    kwargs = {"cascade_replies": spec["cascade_replies"]} if "cascade_replies" in spec else {}
+    return await kit.delete_event(spec["room_id"], spec["event_id"], **kwargs, **_org(spec))
+
+
+async def _create_room(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    return await create_room(kit, spec["room"])
+
+
+async def create_room(kit: RoomKit, room: Mapping[str, Any]) -> Room:
+    kwargs: dict[str, Any] = {"room_id": room["id"]}
+    if "metadata" in room:
+        kwargs["metadata"] = room["metadata"]
+    if room.get("organization_id") is not None:
+        kwargs["organization_id"] = room["organization_id"]
+    if "timers" in room:
+        kwargs["timers"] = RoomTimers.model_validate(room["timers"])
+    return await kit.create_room(**kwargs)
+
+
+async def _attach_channel(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    return await attach_channel(kit, spec["room_id"], spec, **_org(spec))
+
+
+async def attach_channel(
+    kit: RoomKit, room_id: str, binding: Mapping[str, Any], **org: Any
+) -> Any:
+    kwargs: dict[str, Any] = dict(org)
+    if "category" in binding:
+        kwargs["category"] = ChannelCategory(binding["category"])
+    if "access" in binding:
+        kwargs["access"] = Access(binding["access"])
+    for key in ("visibility", "muted", "metadata", "participant_id"):
+        if key in binding:
+            kwargs[key] = binding[key]
+    return await kit.attach_channel(room_id, binding["channel_id"], **kwargs)
+
+
+async def _detach_channel(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    if not await kit.detach_channel(spec["room_id"], spec["channel_id"], **_org(spec)):
+        raise ChannelNotBoundError()
+    return None
+
+
+async def _mute(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    return await kit.mute(spec["room_id"], spec["channel_id"], **_org(spec))
+
+
+async def _unmute(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    return await kit.unmute(spec["room_id"], spec["channel_id"], **_org(spec))
+
+
+async def _set_access(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    return await kit.set_access(
+        spec["room_id"], spec["channel_id"], Access(spec["access"]), **_org(spec)
+    )
+
+
+async def _set_visibility(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    return await kit.set_visibility(
+        spec["room_id"], spec["channel_id"], spec["visibility"], **_org(spec)
+    )
+
+
+async def _close_room(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    return await kit.close_room(spec["room_id"], **_org(spec))
+
+
+async def _archive_room(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    return await kit.archive_room(spec["room_id"], **_org(spec))
+
+
+async def _check_timers(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    return await kit.check_room_timers(spec["room_id"], **_org(spec))
+
+
+async def _register_channel(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    register_channel(kit, harness, spec["channel"])
+
+
+def register_channel(kit: RoomKit, harness: Harness, channel: Mapping[str, Any]) -> None:
+    if channel["type"] == ChannelType.HOST:
+        kit.register_channel(HostChannel(channel["id"]))
+        return
+    kit.register_channel(ScriptedChannel(channel, harness))
+
+
+async def _unregister_channel(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    kit.unregister_channel(spec["channel_id"])
+
+
+async def _register_hook(kit: RoomKit, harness: Harness, spec: Mapping[str, Any]) -> Any:
+    register_hook(kit, harness, spec["hook"])
+
+
+def register_hook(kit: RoomKit, harness: Harness, hook: Mapping[str, Any]) -> None:
+    kwargs: dict[str, Any] = {
+        "execution": HookExecution(hook.get("execution", "sync")),
+        "priority": hook.get("priority", 0),
+        "name": hook["name"],
+        "fail_closed": hook.get("fail_closed", False),
+        "needs_lock": hook.get("needs_lock", True),
+    }
+    if "timeout_ms" in hook:
+        kwargs["timeout"] = hook["timeout_ms"] / 1000
+    if "channel_types" in hook:
+        kwargs["channel_types"] = {ChannelType(t) for t in hook["channel_types"]}
+    if "channel_ids" in hook:
+        kwargs["channel_ids"] = set(hook["channel_ids"])
+    if "directions" in hook:
+        kwargs["directions"] = {EventDirection(d) for d in hook["directions"]}
+    kit.hook(HookTrigger(hook["trigger"]), **kwargs)(hook_handler(hook, harness))
+
+
+CALLS: dict[str, Call] = {
+    "process_inbound": _process_inbound,
+    "send_event": _send_event,
+    "post": _post,
+    "commit_event": _commit_event,
+    "update_event": _update_event,
+    "delete_event": _delete_event,
+    "create_room": _create_room,
+    "attach_channel": _attach_channel,
+    "detach_channel": _detach_channel,
+    "mute": _mute,
+    "unmute": _unmute,
+    "set_access": _set_access,
+    "set_visibility": _set_visibility,
+    "close_room": _close_room,
+    "archive_room": _archive_room,
+    "check_timers": _check_timers,
+    "register_channel": _register_channel,
+    "unregister_channel": _unregister_channel,
+    "register_hook": _register_hook,
+}
+
+
+def result_event_id(result: Any) -> str | None:
+    """The id of the event a call's result names, for ``$label`` references."""
+    if isinstance(result, InboundResult):
+        return None if result.event is None else result.event.id
+    if isinstance(result, RoomEvent):
+        return result.id
+    return None

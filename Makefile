@@ -1,4 +1,4 @@
-.PHONY: audit install lint format typecheck security test test-changed api-snapshot coverage stress llms-full check-models update-llamacpp all clean docs docs-imports docs-serve llms-sync llms-check deploy deploy-status release
+.PHONY: audit install lint format typecheck security test test-changed api-snapshot coverage stress llms-full check-models update-llamacpp all clean docs docs-imports docs-serve llms-sync llms-check conformance-sync deploy deploy-status release
 
 install:
 	uv sync --extra dev
@@ -116,6 +116,22 @@ llms-sync: llms-full
 llms-check:
 	@cmp -s llms.txt $(DOCS_DIR)/docs/llms.txt && cmp -s llms-full.txt $(DOCS_DIR)/docs/llms-full.txt \
 		|| { echo "$(DOCS_DIR)/docs/llms*.txt differ from roomkit's: run 'make llms-sync' and commit the copies"; exit 1; }
+
+# The shared conformance suite (roomkit-specs conformance/): its scenarios at
+# one roomkit-specs commit, copied into tests/conformance/scenarios with that
+# commit recorded in tests/conformance/SPECS_COMMIT, so CI needs no sibling
+# checkout. The copy is never edited here: change the scenarios in
+# roomkit-specs, commit them there, and sync again. SPECS_REF names the commit.
+SPECS_DIR ?= ../roomkit-specs
+SPECS_REF ?= HEAD
+
+conformance-sync:
+	@commit=$$(git -C $(SPECS_DIR) rev-parse --verify "$(SPECS_REF)^{commit}") && \
+	rm -rf tests/conformance/scenarios && \
+	git -C $(SPECS_DIR) archive --format=tar "$$commit" conformance/scenarios \
+		| tar -x --strip-components=1 -C tests/conformance && \
+	echo "$$commit" > tests/conformance/SPECS_COMMIT && \
+	echo "tests/conformance synced from roomkit-specs $$commit"
 
 # --- Website deployment ---
 

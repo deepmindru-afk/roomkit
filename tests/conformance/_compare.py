@@ -1,0 +1,162 @@
+"""How a run's records are compared with a scenario's expectations.
+
+roomkit-specs ``conformance/README.md`` ("Expectations", "Normalization",
+"Matching") defines it: each record is normalized, then matched against what
+the scenario's ``expect`` names; what it does not name is not compared.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+from tests.conformance._match import MISSING, framework_mismatches, mismatches
+from tests.conformance._normalize import Normalizer, Observed, is_lifecycle_record
+
+# A call's outcome, checked against what its step or its action expects.
+Check = tuple[str, Mapping[str, Any] | None, dict[str, Any]]
+
+
+def compare(expect: Mapping[str, Any], observed: Observed, checks: list[Check]) -> list[str]:
+    """Every mismatch between what the run produced and what it should have."""
+    normalizer = Normalizer(observed)
+    found: list[str] = []
+    for path, expected, outcome in checks:
+        found.extend(outcome_mismatches(expected, outcome, normalizer, path))
+    found.extend(_lifecycle_never_delivered(observed))
+    comparison = _Comparison(normalizer, observed, expect)
+    comparison.records()
+    comparison.hooks()
+    comparison.channel_calls()
+    comparison.side_effects()
+    return found + comparison.found
+
+
+class _Comparison:
+    """The comparison of a run's records, the rooms named by their aliases."""
+
+    def __init__(self, normalizer: Normalizer, observed: Observed, expect: Mapping[str, Any]):
+        self.normalizer = normalizer
+        self.observed = observed
+        self.expect = expect
+        self.rooms = {normalizer.room(room_id): room_id for room_id in observed.timelines}
+        self.found: list[str] = []
+
+    def _room(self, alias: str) -> str:
+        return self.rooms.get(alias, alias)
+
+    def _check(self, expected: Any, actual: Any, path: str) -> None:
+        self.found.extend(mismatches(expected, self.normalizer.value(actual), path))
+
+    def records(self) -> None:
+        for alias, expected in self.expect.get("timeline", {}).items():
+            events = self.observed.timelines.get(self._room(alias), [])
+            kept = [event for event in events if not is_lifecycle_record(event)]
+            self._check(expected, kept, f"timeline.{alias}")
+        for alias, expected in self.expect.get("rooms", {}).items():
+            self._check(
+                expected, self.observed.rooms.get(self._room(alias), MISSING), f"rooms.{alias}"
+            )
+        for alias, channels in self.expect.get("bindings", {}).items():
+            held = self.observed.bindings.get(self._room(alias), {})
+            for channel_id, expected in channels.items():
+                actual = held.get(channel_id, MISSING)
+                self._check(expected, actual, f"bindings.{alias}.{channel_id}")
+        grouped: dict[str, list[Any]] = {}
+        for event in self.normalizer.value(self.observed.framework_events):
+            grouped.setdefault(event.get("room_id", "*"), []).append(event)
+        for alias, events in self.expect.get("framework_events", {}).items():
+            actual = grouped.get(alias, [])
+            self.found.extend(framework_mismatches(events, actual, f"framework_events.{alias}"))
+
+    def hooks(self) -> None:
+        for name, expected in self.expect.get("hooks", {}).items():
+            self._check(expected, self.observed.hooks.get(name, []), f"hooks.{name}")
+        if "hook_order" in self.expect:
+            named = set(self.expect["hook_order"])
+            order = [name for name in self.observed.hook_order if name in named]
+            self._check(self.expect["hook_order"], order, "hook_order")
+
+    def channel_calls(self) -> None:
+        for kind in ("deliveries", "turns"):
+            recorded = getattr(self.observed, kind)
+            for alias, channels in self.expect.get(kind, {}).items():
+                per_room = recorded.get(self._room(alias), {})
+                for channel_id, expected in channels.items():
+                    actual = per_room.get(channel_id, [])
+                    self._check(expected, actual, f"{kind}.{alias}.{channel_id}")
+
+    def side_effects(self) -> None:
+        for kind in ("observations", "tasks"):
+            recorded = getattr(self.observed, kind)
+            for alias, expected in self.expect.get(kind, {}).items():
+                self._check(expected, recorded.get(self._room(alias), []), f"{kind}.{alias}")
+        for label, expected in self.expect.get("actions", {}).items():
+            outcomes = self.observed.actions.get(label, [])
+            path = f"actions.{label}"
+            self.found.extend(_outcomes_of(expected, outcomes, self.normalizer, path))
+
+
+def outcome_mismatches(
+    expected: Mapping[str, Any] | None,
+    outcome: dict[str, Any],
+    normalizer: Normalizer,
+    path: str,
+) -> list[str]:
+    """How a call's outcome differs from what is expected of it."""
+    error = outcome["error"]
+    expected = expected or {}
+    if "error" in expected:
+        want = expected["error"]
+        want = want if isinstance(want, dict) else {"name": want}
+        if error is None:
+            return [f"{path}: expected the error {want}, the call returned {outcome['result']!r}"]
+        return mismatches(want, error, f"{path}.error")
+    if error is not None:
+        return [f"{path}: unexpected error {error}"]
+    if "result" in expected:
+        return mismatches(
+            expected["result"], normalizer.value(outcome["result"]), f"{path}.result"
+        )
+    return []
+
+
+def _outcomes_of(
+    expected: Any, outcomes: list[dict[str, Any]], normalizer: Normalizer, path: str
+) -> list[str]:
+    """A label's outcomes, in order, or in any order under ``$unordered``."""
+    unordered = isinstance(expected, dict)
+    wanted = expected["$unordered"] if unordered else expected
+    if len(outcomes) != len(wanted):
+        return [f"{path}: expected {len(wanted)} runs, got {len(outcomes)}"]
+    if not unordered:
+        found: list[str] = []
+        for position, (want, got) in enumerate(zip(wanted, outcomes, strict=True)):
+            found.extend(outcome_mismatches(want, got, normalizer, f"{path}[{position}]"))
+        return found
+    remaining = list(outcomes)
+    for want in wanted:
+        match = next(
+            (got for got in remaining if not outcome_mismatches(want, got, normalizer, path)), None
+        )
+        if match is None:
+            return [f"{path}: no outcome matches {want!r}"]
+        remaining.remove(match)
+    return []
+
+
+def _lifecycle_never_delivered(observed: Observed) -> list[str]:
+    """A lifecycle record (§5.1) is never delivered, nor handed to a turn."""
+    records = {
+        event["id"]
+        for events in observed.timelines.values()
+        for event in events
+        if is_lifecycle_record(event)
+    }
+    found: list[str] = []
+    for kind in ("deliveries", "turns"):
+        for room_id, channels in getattr(observed, kind).items():
+            for channel_id, events in channels.items():
+                if any(event.get("id") in records for event in events):
+                    found.append(f"{kind}.{room_id}.{channel_id}: lifecycle record delivered")
+    return found
