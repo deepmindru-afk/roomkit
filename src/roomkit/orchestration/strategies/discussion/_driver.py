@@ -422,7 +422,7 @@ class TurnDriver:
         # Held by the kit, apart from the driver: a stop while it commits does
         # not lose the result (a closing kit cuts it); a failure is logged there.
         posting = (
-            hold_task(room.kit, room.post(turn.posted), context=contextvars.Context())
+            hold_task(room.kit, room.posts.post(turn.posted), context=contextvars.Context())
             if turn.posted is not None
             else None
         )
@@ -519,7 +519,7 @@ class TurnDriver:
         self._turn = None
         if turn.posted is not None:
             # A result its turn never posted: posted all the same (rule 19).
-            self._room.post_later(turn.posted)
+            self._room.posts.post_later(turn.posted)
         await self._ended(turn)
 
     # -- Stopping, waiting, ending --

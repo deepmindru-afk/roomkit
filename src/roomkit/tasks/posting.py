@@ -17,6 +17,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from roomkit._text import quoted
+from roomkit.core.exceptions import ChannelNotFoundError
 from roomkit.models.enums import EventStatus, EventType, TaskStatus
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 
@@ -83,16 +84,31 @@ async def post_result(
 async def send_posted(kit: RoomKit, event: RoomEvent) -> None:
     """Commit a posted result, *event*, as its agent's message: through the
     room's pipeline (``BEFORE_BROADCAST``, the agent's right to write,
-    storage, broadcast), addressed to no one. A closing framework posts
-    nothing, logged: a post held as it closes is cut once started."""
+    storage, broadcast), addressed to no one, keyed by *event*'s id, the
+    id the result was taken under. A second post of it is a replay (RFC
+    §13.4), one whose agent is detached since included: a process that
+    uninstalled the discussion posted the result it listed, then detached
+    the agent (RFC §19.7.5 rule 19). A closing framework posts nothing,
+    logged: a post held as it closes is cut once started.
+
+    Raises:
+        ChannelNotFoundError: the agent is not attached, and never posted it.
+    """
     if kit._closed:
         logger.info("Result in room %s not posted: closing", event.room_id)
         return
-    await kit.send_event(
-        event.room_id,
-        event.source.channel_id,
-        event.content,
-        chain_depth=event.chain_depth,
-        metadata=event.metadata,
-        addressed_to=[],
-    )
+    agent = event.source.channel_id
+    try:
+        await kit.send_event(
+            event.room_id,
+            agent,
+            event.content,
+            chain_depth=event.chain_depth,
+            metadata=event.metadata,
+            addressed_to=[],
+            idempotency_key=event.id,
+        )
+    except ChannelNotFoundError:
+        if not await kit.store.check_idempotency(event.room_id, event.id, channel_id=agent):
+            raise
+        logger.info("Result %s in room %s posted already", event.id, event.room_id)

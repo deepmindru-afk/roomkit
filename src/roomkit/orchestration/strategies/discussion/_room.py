@@ -23,12 +23,10 @@ from typing import TYPE_CHECKING, Any
 from roomkit._media import content_words
 from roomkit.core.hooks import HookRegistration
 from roomkit.core.locks import _has_room_lock
-from roomkit.core.task_utils import hold_task
 from roomkit.models.enums import EventStatus, EventType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.steering import Cancel
-from roomkit.tasks.posting import send_posted
 from roomkit.turns.wire import CommittedEvent
 
 from ._config import DiscussionConfig
@@ -44,6 +42,7 @@ from ._people import (
     records_people,
     sees,
 )
+from ._posts import ResultPosts
 from ._queue import Ask, Entry, Pending, SpeakQueueState
 from ._shared import SharedQueue
 from .models import SpeakQueue, SpeakQueueChange, SpeakQueueEvent
@@ -67,13 +66,6 @@ text the event commits with (rule 4); the silence check just before it."""
 
 _STOP_WAIT = 5.0
 """How long stopping waits for the announcements still queued."""
-
-
-_FLOOR_POLL = 0.05
-"""How often a result to post looks whether the floor is free."""
-
-_POST_WAIT = 5.0
-"""How long an uninstall waits for the task results being posted."""
 
 
 class DiscussionRoom:
@@ -106,11 +98,8 @@ class DiscussionRoom:
         self.driver: TurnDriver | None = TurnDriver(self) if strategy is not None else None
         self._last_fire: asyncio.Task[None] | None = None
         self._announcing: set[asyncio.Task[None]] = set()
-        self._unposted: dict[str, RoomEvent] = {}
-        """Task results to post off their turn, by event id, until a post
-        takes them (rule 19)."""
-        self._sending: set[asyncio.Task[None]] = set()
-        """The posts of task results under way."""
+        self.posts = ResultPosts(kit, room_id, self._floor_free)
+        """The task results to post as the agents' messages (rule 19)."""
 
     @classmethod
     def installed(cls, kit: Any, room_id: str, strategy: Discussion) -> DiscussionRoom:
@@ -292,18 +281,18 @@ class DiscussionRoom:
         queue (who listens, who asked whom, the turns given, whether it is
         over) and the configuration forgotten. The lease stays this process's
         until both are gone, so no other process gives a turn meanwhile. The
-        task results this process holds are posted before it returns, while
-        their agents are still bound: an uninstall detaches them next (rule
-        19)."""
+        task results the discussion took and has not committed, here or in
+        another process, are posted before it returns, while their agents are
+        still bound: an uninstall detaches them next (rule 19)."""
         self.forgotten = self.closed = True
         if self.driver is not None:
             await self.driver.stop()
         async with self.kit._lock_manager.locked(self.room_id):
             state = await self.shared.read()
-            mine = [e for e in state.entries if e.holder == self.shared.me]
+            listed = await self.posts.take_listed()
             await self.shared.forget()
-        self.drop_instructions(mine)
-        await self._post_unposted()
+        self.drop_instructions([e for e in state.entries if e.holder == self.shared.me])
+        await self.posts.post_all(listed)
         await self._finish_announcing()
 
     def handle(self, agent_id: str) -> str:
@@ -400,8 +389,11 @@ class DiscussionRoom:
         if not self.drives or agent not in self.agents:
             return False
         async with self.editing() as state:
+            if self.shared.config is not None:
+                # Listed until committed: any process uninstalling posts it.
+                await self.posts.keep(event)
             if self._takes_nothing(state):
-                self.post_later(event)
+                self.posts.post_later(event)
                 return True
             self.instructions[event.id] = event
             state.queue_instruction(
@@ -699,74 +691,18 @@ class DiscussionRoom:
             posted = self.instructions.get(entry.instruction) if entry.post else None
             self.forget_instruction(entry.instruction, keep or self.state)
             if posted is not None:
-                self.post_later(posted)
+                self.posts.post_later(posted)
                 continue
             self.fire(SpeakQueueChange.INSTRUCTION_DROPPED, [entry.agent], entry.instruction)
 
+    def _floor_free(self) -> bool:
+        """Whether no turn runs in this process: a result to post waits for it."""
+        return self.driver is None or self.driver.speaking is None
+
     def post_held(self) -> None:
         """Post every task result this process holds for a queued turn, the
-        queue being gone: another process uninstalled the discussion (rule 19).
-        The one a post turn is committing goes on by itself."""
-        posting = self.driver.posting if self.driver is not None else None
-        for event_id, event in list(self.instructions.items()):
-            if event.type != EventType.MESSAGE:
-                continue  # an instruction: its turn is the agent's, now gone
-            self.instructions.pop(event_id, None)
-            if posting is None or event_id != posting.id:
-                self.post_later(event)
-
-    def post_later(self, posted: RoomEvent) -> None:
-        """Post a task's result its own turn will not post, once no turn runs,
-        in a task the kit holds: a closing kit posts nothing, and an uninstall
-        posts it itself, before the agents leave (rule 19)."""
-        if self.kit._closed:
-            return
-        self._unposted[posted.id] = posted
-        # A context of its own: the room lock may be held here, and is
-        # reentrant per context.
-        hold_task(self.kit, self._post_when_free(posted.id), context=contextvars.Context())
-
-    async def _post_when_free(self, event_id: str) -> None:
-        while self.driver is not None and self.driver.speaking is not None:
-            await asyncio.sleep(_FLOOR_POLL)
-        posted = self._unposted.pop(event_id, None)
-        if posted is not None:  # else an uninstall posted it
-            await self.post(posted)
-
-    async def post(self, posted: RoomEvent) -> None:
-        """Commit *posted*, a task's result, as its agent's message, in a task
-        the kit holds; an uninstall waits for it before the agents leave."""
-        task = asyncio.current_task()
-        if task is not None:
-            self._sending.add(task)
-        try:
-            await send_posted(self.kit, posted)
-        finally:
-            if task is not None:
-                self._sending.discard(task)
-
-    async def _post_unposted(self) -> None:
-        """Post the task results waiting for the floor, the turns stopped, in
-        the caller's task, which holds the room lock or takes it: committed
-        while their agents are still bound (rule 19). A failed post is logged
-        and never blocks the uninstall. A post already under way is waited
-        for, briefly, unless the caller holds the room lock, which it needs."""
-        held, self._unposted = self._unposted, {}
-        try:
-            while held:
-                posted = held.pop(next(iter(held)))
-                try:
-                    await send_posted(self.kit, posted)
-                except Exception:
-                    logger.exception("A task's result in room %s was not posted", self.room_id)
-        finally:
-            # Cut on the way: the kit posts the rest, as it would have.
-            for posted in held.values():
-                self.post_later(posted)
-        current = asyncio.current_task()
-        sending = [task for task in self._sending if task is not current]
-        if sending and not _has_room_lock(self.room_id):
-            await asyncio.wait(sending, timeout=_POST_WAIT)
+        queue being gone: another process uninstalled the discussion (rule 19)."""
+        self.posts.post_held(self.instructions, self.driver.posting if self.driver else None)
 
     def forget_instruction(self, instruction_id: str, state: SpeakQueueState) -> None:
         """Forget an instruction's text once no queued turn takes it (one
