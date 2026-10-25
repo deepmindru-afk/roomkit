@@ -261,8 +261,22 @@ class WebSocketChannel(Channel):
         """Rooms a connection currently receives."""
         return set(self._connection_rooms.get(connection_id, ()))
 
-    def unregister_connection(self, connection_id: str) -> None:
-        """Unregister a WebSocket connection and drop its subscriptions."""
+    def unregister_connection(
+        self, connection_id: str, *, organization_id: str | None = None
+    ) -> None:
+        """Unregister a WebSocket connection and drop its subscriptions.
+
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): only a connection registered for it is unregistered. Unset,
+        the connection is unregistered whoever registered it, and an unknown
+        id is a no-op, as before.
+
+        Raises:
+            ValueError: *organization_id* is set and the connection is not
+                registered for it; nothing changes.
+        """
+        if organization_id is not None:
+            self._refuse_another(connection_id, organization_id)
         self._connections.pop(connection_id, None)
         self._stream_send_fns.pop(connection_id, None)
         self._error_counts.pop(connection_id, None)

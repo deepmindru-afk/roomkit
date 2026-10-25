@@ -1789,11 +1789,22 @@ class RoomKit(
             )
         channel.unsubscribe(connection_id, room_id, organization_id=organization_id)
 
-    async def disconnect_websocket(self, channel_id: str, connection_id: str) -> None:
-        """Unregister a WebSocket connection and emit framework event."""
+    async def disconnect_websocket(
+        self, channel_id: str, connection_id: str, *, organization_id: str | None = None
+    ) -> None:
+        """Unregister a WebSocket connection and emit framework event.
+
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): only a connection registered for it is unregistered
+        (:meth:`WebSocketChannel.unregister_connection`).
+
+        Raises:
+            ValueError: *organization_id* is set and the connection is not
+                registered for it; nothing changes and no event is emitted.
+        """
         channel = self._channels.get(channel_id)
         if isinstance(channel, WebSocketChannel):
-            channel.unregister_connection(connection_id)
+            channel.unregister_connection(connection_id, organization_id=organization_id)
         await self._emit_framework_event(
             "channel_disconnected",
             channel_id=channel_id,

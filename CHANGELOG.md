@@ -683,16 +683,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `connect_websocket()` take `organization_id=None`: another organization's
   room raises `RoomNotFoundError`, nothing published, subscribed or
   connected. Unset, no room is read, as before.
-  `WebSocketChannel.register_connection()`, `subscribe()` and
-  `unsubscribe()`, and `kit.subscribe_websocket()` and
-  `unsubscribe_websocket()`, are synchronous and read no room: they take
-  `organization_id=None` too. A connection registered for an organization
+  `WebSocketChannel.register_connection()`, `subscribe()`, `unsubscribe()`
+  and `unregister_connection()`, and `kit.subscribe_websocket()`,
+  `unsubscribe_websocket()` and `disconnect_websocket()`, read no room:
+  they take `organization_id=None` too. A connection registered for an organization
   receives nothing from a room of another organization, or of none,
   streamed or not, whatever it is subscribed to; a scoped
-  `register_connection()`, `subscribe()` or `unsubscribe()` on a
-  connection registered for another organization, or unscoped, raises
-  `ValueError` and changes nothing, so another tenant cannot take a socket
-  over. A subscription to another organization's room is not refused: it
+  `register_connection()`, `subscribe()`, `unsubscribe()` or
+  `unregister_connection()` (and the kit's doors) on a connection
+  registered for another organization, or unscoped, raises `ValueError` and
+  changes nothing, so another tenant can neither take a socket over nor
+  disconnect it. A subscription to another organization's room is not refused: it
   delivers nothing. A registration that changes an id's organization, to
   none included, drops the rooms the id followed, and a connection evicted
   after repeated send failures is forgotten, rooms and organization, as

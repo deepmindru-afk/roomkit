@@ -342,13 +342,19 @@ async def _taken_over(door: str, kit: RoomKit, ws: WebSocketChannel, intruder: _
         kit.subscribe_websocket("ws", "acme-socket", "acme-room", organization_id="globex")
     elif door == "unsubscribe":
         ws.unsubscribe("acme-socket", "acme-room", organization_id="globex")
-    else:
+    elif door == "unsubscribe_websocket":
         kit.unsubscribe_websocket("ws", "acme-socket", "acme-room", organization_id="globex")
+    elif door == "unregister_connection":
+        ws.unregister_connection("acme-socket", organization_id="globex")
+    else:
+        await kit.disconnect_websocket("ws", "acme-socket", organization_id="globex")
 
 
 _TAKEOVER_DOORS = [
     "connect_websocket",
+    "disconnect_websocket",
     "register_connection",
+    "unregister_connection",
     "subscribe",
     "subscribe_websocket",
     "unsubscribe",
@@ -512,4 +518,21 @@ class TestOrganizationScope:
         ws.register_connection("c", new.send, room_id="lobby")
         await _say_in(kit, "acme-room")
         assert new.seen == []
+        await kit.close()
+
+    @pytest.mark.parametrize("kit_door", [False, True], ids=["channel", "kit"])
+    async def test_the_connections_own_organization_unregisters_it(self, kit_door: bool) -> None:
+        kit, ws = await _two_rooms_on_a_socket_channel()
+        acme = _Socket()
+        ws.register_connection(
+            "acme-socket", acme.send, room_id="acme-room", organization_id="acme"
+        )
+
+        if kit_door:
+            await kit.disconnect_websocket("ws", "acme-socket", organization_id="acme")
+        else:
+            ws.unregister_connection("acme-socket", organization_id="acme")
+        await _say_in(kit, "acme-room")
+
+        assert (acme.seen, ws.connection_count, ws.rooms_for("acme-socket")) == ([], 0, set())
         await kit.close()
