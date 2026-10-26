@@ -1274,6 +1274,10 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
+    @pytest.mark.in_process(
+        "the observer runs on the turn's executor, inside the room's work an in-memory "
+        "turn shares; across Redis it holds no frame of the room's work and posts at 0"
+    )
     async def test_an_observer_of_a_turn_s_trigger_drops_the_turn_s_depth_once_it_is_over(
         self,
     ) -> None:
