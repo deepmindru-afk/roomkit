@@ -1378,7 +1378,10 @@ the event it runs for. The call is part of that event's work (RFC §9.5.1):
   or not: its call is nested too. Once the hook has returned, the task holds
   nothing of the lock, though the event's pass still holds it for its next
   hook: its calls are new arrivals, which wait for the lock and commit after
-  the event.
+  the event. A later hook of the same pass that awaits that task waits with
+  it, until its own timeout (which cancels the task it awaited, unless it
+  shields it); the event then commits. Await work in the hook that starts
+  it, or leave it to run after the event.
 - From an off-lock hook's body (`needs_lock=False`), or a `hook_error`
   handler reporting that check's failure, it is **adopted beside** the event:
   no ticket, every hook under the lock, its own section for its commit,
@@ -1425,7 +1428,9 @@ budget, and a message it routes back into that room raises
 `ReentrantCallError`. A call from a delivery set's work (a transport's
 `deliver()`, an agent's turn, a tool handler), or from the body of an ASYNC
 hook the cascade fires once an event's delivery set has run (`AFTER_BROADCAST`,
-a change's `ON_EVENT_UPDATED` or `ON_EVENT_DELETED`), is a new arrival with its
+a change's `ON_EVENT_UPDATED` or `ON_EVENT_DELETED`) or of an ASYNC hook
+observing a SYNC trigger the room's work fires (an ASYNC hook on
+`BEFORE_BROADCAST`, `BEFORE_TTS`, `ON_TOOL_CALL`...), is a new arrival with its
 own ticket and `process_timeout`, but it draws on the budget of the cascade
 that delivers while that work runs (a hook's body on the cascade's hook
 calls, a counter of the same size kept apart from its passes), and a call
@@ -1455,8 +1460,9 @@ async def acknowledge(event, ctx):
     return HookResult.allow()
 ```
 
-A cascade counts the calls of its ASYNC hooks' bodies apart from its own
-passes (its answers, chained streams and injected events), on a counter of the
+A cascade counts the calls of its ASYNC hooks' bodies, the observers of its
+SYNC triggers included, apart from its own passes (its answers, chained
+streams and injected events), on a counter of the
 same size, `10 × max_chain_depth` (50 by default), shared by all the cascade's
 hooks together; and a call a hook's body makes is at least one deeper than the
 event that fired the hook, as a call made within a turn is at least as deep as
@@ -1658,7 +1664,11 @@ priority-ordered sync pipeline (can block/modify); ASYNC triggers run
 concurrently, fire-and-forget, errors logged. Registration mode is forgiving in
 both directions: ASYNC-registered hooks on a SYNC trigger fire as observers
 after the sync pass, in the background: the operation goes on without waiting
-for them, so a hook whose work it needs first is registered SYNC (RMK-903);
+for them, so a hook whose work it needs first is registered SYNC (RMK-903).
+Fired from the room's work, such an observer is that cascade's work: what it
+sends into the room draws one of the cascade's hook calls, as an
+`AFTER_BROADCAST` body's does, so one that posts on every event it observes
+stops at the cap (RMK-978).
 SYNC-registered hooks (the default) on an ASYNC trigger
 fire like any other observer. Triggers marked *Reserved* exist in the enum but
 are not fired by any built-in code.
