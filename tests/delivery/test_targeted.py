@@ -9,6 +9,7 @@ import pytest
 
 from roomkit import HookExecution, HookResult, HookTrigger, Queued, RoomKit
 from roomkit.core._reentrance import within_turn
+from roomkit.core.delivery import _deliver_to_channel
 from roomkit.delivery.base import DeliveryItem, DeliveryItemStatus
 from roomkit.delivery.memory import InMemoryDeliveryBackend
 from roomkit.delivery.worker import execute_delivery
@@ -273,27 +274,49 @@ async def test_a_queued_batch_is_delivered_once_its_idle_wait_times_out() -> Non
     assert (outcome.status, bodies) == ("sent", ["late"])
 
 
-async def test_a_drain_cut_short_hands_the_queue_on() -> None:
+@pytest.mark.parametrize(
+    ("cut", "expected"),
+    [
+        ("while it waits for idle", ("sent", None, ["second"])),
+        ("while its batch is sent", ("unknown", "strategy_outcome_unknown", [])),
+    ],
+)
+async def test_a_drain_cut_short_hands_the_queue_on(
+    cut: str, expected: tuple[str, str | None, list[str]]
+) -> None:
     """RFC §22.2: every waiting caller receives its own outcome. The caller
-    draining a shared Queued strategy is cancelled while it waits for idle;
-    the caller behind it, which nothing cancelled, gets the drain and its
-    message is delivered (RMK-983)."""
+    draining a shared Queued strategy is cancelled; the caller behind it,
+    which nothing cancelled, is not. Cut while it waits for idle, the drain
+    passes to that caller and its message is delivered; cut while the batch
+    carrying both messages is sent, that caller learns its outcome is
+    unknown (RMK-983)."""
     kit, _, _ = await _room("a")
     strategy = Queued(buffer=0)
-    entered, release = asyncio.Event(), asyncio.Event()
+    entered, release, sending = asyncio.Event(), asyncio.Event(), asyncio.Event()
     wait = _first_wait_held(entered, release)
+
+    async def send(ctx, channel_id):
+        if ctx.content.startswith("first"):
+            sending.set()
+            await asyncio.Event().wait()
+        return await _deliver_to_channel(ctx, channel_id)
+
     async with kit:
-        with patch("roomkit.core.delivery._wait_for_voice_idle", side_effect=wait):
+        with (
+            patch("roomkit.core.delivery._wait_for_voice_idle", side_effect=wait),
+            patch("roomkit.core.delivery._deliver_to_channel", side_effect=send),
+        ):
             first = asyncio.create_task(
                 kit.deliver("room-1", "first", addressed_to=[], strategy=strategy)
             )
             await entered.wait()
             second = asyncio.create_task(
-                kit.deliver(
-                    "room-1", "second", addressed_to=[], strategy=strategy, metadata={"k": 1}
-                )
+                kit.deliver("room-1", "second", addressed_to=[], strategy=strategy)
             )
             await asyncio.sleep(0)
+            if cut == "while its batch is sent":
+                release.set()
+                await sending.wait()
             first.cancel()
             outcome = await asyncio.wait_for(second, 2)
         bodies = [
@@ -301,7 +324,8 @@ async def test_a_drain_cut_short_hands_the_queue_on() -> None:
             for e in await kit.get_timeline("room-1")
             if isinstance(e.content, TextContent)
         ]
-    assert (first.cancelled(), outcome.status, bodies) == (True, "sent", ["second"])
+    assert first.cancelled()
+    assert (outcome.status, outcome.reason, bodies) == expected
 
 
 def _first_wait_held(entered: asyncio.Event, release: asyncio.Event):

@@ -242,7 +242,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the callers behind it waiting on the lock it holds. A caller cancelled while
   it waits withdraws its request, and hands on a drain it was handed; a caller
   cancelled while it drains hands the drain on too, where every caller behind
-  it was cancelled: each receives its own outcome. A wait for idle longer than
+  it was cancelled; a caller whose request its batch carried, cut while it
+  was sent, receives `unknown` (`strategy_outcome_unknown`), where it
+  received `CancelledError`: the batch may or may not have reached the
+  channel. A wait for idle longer than
   `playback_timeout` delivers the batch anyway, as `WaitForIdle`'s does, where
   it failed `strategy_failed`.
 

@@ -268,8 +268,14 @@ class Queued(DeliveryStrategy):
         try:
             outcome = await _deliver_to_channel(ctx, first.channel_id)
         except asyncio.CancelledError:
-            for pending in batch:
-                pending.result.cancel()
+            # Cut short as it was sent, the batch may or may not have reached
+            # the channel: the callers it carried for others learn that,
+            # rather than a cancel nothing asked of them (RFC §22.2).
+            for pending in batch[1:]:
+                if not pending.result.done():
+                    pending.result.set_result(
+                        DeliveryOutcome(status="unknown", reason="strategy_outcome_unknown")
+                    )
             raise
         except Exception as exc:
             outcome = _strategy_failure(exc)

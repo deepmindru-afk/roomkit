@@ -1274,6 +1274,36 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
+    async def test_an_observer_of_a_turn_s_trigger_drops_the_turn_s_depth_once_it_is_over(
+        self,
+    ) -> None:
+        """RMK-930: an ASYNC observer of a turn's trigger that posts once the
+        turn is over is work of its own (RFC §9.5.1): a BEFORE_AI_GENERATION
+        observer that posts once the agent's turn on an event 2 deep is over
+        posts 1 deep, one deeper than the generation event it observes, not
+        3 deep, the turn's response. Only the observers of a tool call and of
+        a model's words keep their work's floor (RMK-983)."""
+        kit = await _room(RoomKit(max_chain_depth=10))
+        kit.register_channel(AIChannel("ai", provider=MockAIProvider(responses=["ok"])))
+        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        posted: list[RoomEvent] = []
+        noting: list[bool] = []
+
+        @kit.hook(HookTrigger.BEFORE_AI_GENERATION, execution=HookExecution.ASYNC, name="note")
+        async def note(event: Any, ctx: RoomContext) -> None:
+            if noting:  # one note: the agent answers it too
+                return
+            noting.append(True)
+            await _settled(kit)  # once the turn and its delivery are over
+            posted.append(await kit.send_event("r1", "sms", TextContent(body="note")))
+
+        try:
+            await kit.send_event("r1", "sms", TextContent(body="deep"), chain_depth=2)
+            await asyncio.wait_for(_observed(kit), 5)
+            assert [e.chain_depth for e in posted] == [1]
+        finally:
+            await kit.close()
+
     @pytest.mark.parametrize("report", ["the session's end", "the backend's provider"])
     async def test_an_observer_of_a_realtime_call_reported_outside_its_run_posts_at_its_depth(
         self, report: str

@@ -139,10 +139,11 @@ FLOOR_KEEPING_TRIGGERS: frozenset[HookTrigger] = PER_TOOL_CALL_TRIGGERS | frozen
 )
 """The triggers whose observers keep the depth floor the trigger fired under
 once the work that gave it is over: those of a tool call, and those of a
-speech-to-speech model's words, which run at the depth of its answer (RFC
-§8.3, RMK-983). A hook on either that tells the model something each time
-then ends at the limit. Another trigger's observer that calls once its work
-is over is work of its own (RMK-930)."""
+transcription, which a speech-to-speech model's words fire at the depth of
+its answer (RFC §8.3, RMK-983) and a person's words at 0. A hook on either
+that tells the model something each time then ends at the limit. Another
+trigger's observer that calls once its work is over is work of its own
+(RMK-930)."""
 
 TYPED_TURN_TRIGGERS: frozenset[HookTrigger] = frozenset(
     {HookTrigger.BEFORE_TOOL_USE, HookTrigger.ON_TOOL_CALL, HookTrigger.ON_USER_INPUT_REQUIRED}
