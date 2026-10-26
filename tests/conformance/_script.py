@@ -21,6 +21,8 @@ from roomkit.models.event import EventSource, RoomEvent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.participant import Participant
 from roomkit.models.task import Observation, Task
+from roomkit.models.tool_call import ToolCallEvent
+from tests.conformance._agent import patched_tool_call
 
 if TYPE_CHECKING:
     from tests.conformance._harness import Harness
@@ -275,6 +277,8 @@ def hook_result(spec: Mapping[str, Any] | None, payload: Any, room_id: str) -> H
     if data.get("action") == "modify" and "event" in data and isinstance(payload, RoomEvent):
         patched = {**payload.model_dump(mode="json"), **data["event"]}
         data["event"] = RoomEvent.model_validate(patched)
+    if data.get("action") == "modify" and "event" in data and isinstance(payload, ToolCallEvent):
+        data["event"] = patched_tool_call(payload, data["event"])
     data["injected_events"] = [
         InjectedEvent(
             event=complete_event(item["event"], room_id, SYSTEM_SOURCE),

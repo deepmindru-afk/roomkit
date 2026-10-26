@@ -25,7 +25,17 @@ CHANNEL = {
     "parse",
     "on_event",
     "deliver",
+    "model",
+    "tools",
+    "tool_policy",
+    "max_tool_rounds",
 }
+MODEL = {"rounds"}
+MODEL_ROUND = {"text", "calls", "finish_reason", "usage"}
+MODEL_CALL = {"id", "name", "arguments", "cut"}
+TOOL = {"name", "description", "parameters", "returns", "raises", "fails", "refuses", "hangs"}
+RAISES = {"kind", "message"}
+POLICY = {"allow", "deny"}
 ROOM = {"id", "organization_id", "metadata", "timers", "bindings", "participants", "status"}
 BINDING = {"channel_id", "category", "access", "muted", "visibility", "metadata", "participant_id"}
 HOOK = {
@@ -61,6 +71,7 @@ EXPECT = {
     "tasks",
     "actions",
     "lifecycle",
+    "models",
 }
 NEW_ROOM = {"id", "organization_id", "metadata", "timers"}
 
@@ -161,6 +172,22 @@ def _channel(channel: Mapping[str, Any], path: str, found: list[str]) -> None:
     for kind in ("parse", "on_event", "deliver"):
         for index, reaction in enumerate(channel.get(kind, [])):
             _reaction(reaction, f"{path}.{kind}[{index}]", found)
+    if "model" in channel:
+        _model(channel["model"], f"{path}.model", found)
+    for index, tool in enumerate(channel.get("tools", [])):
+        _members(tool, TOOL, f"{path}.tools[{index}]", found)
+        if "raises" in tool:
+            _members(tool["raises"], RAISES, f"{path}.tools[{index}].raises", found)
+    if "tool_policy" in channel:
+        _members(channel["tool_policy"], POLICY, f"{path}.tool_policy", found)
+
+
+def _model(model: Mapping[str, Any], path: str, found: list[str]) -> None:
+    _members(model, MODEL, path, found)
+    for index, round_ in enumerate(model.get("rounds", [])):
+        _members(round_, MODEL_ROUND, f"{path}.rounds[{index}]", found)
+        for position, call in enumerate(round_.get("calls", [])):
+            _members(call, MODEL_CALL, f"{path}.rounds[{index}].calls[{position}]", found)
 
 
 def _hook(hook: Mapping[str, Any], path: str, found: list[str]) -> None:

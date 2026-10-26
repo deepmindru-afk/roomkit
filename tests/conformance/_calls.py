@@ -38,6 +38,7 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import EventContent, EventSource, RoomEvent
 from roomkit.models.room import Room, RoomTimers
+from tests.conformance._agent import scripted_agent
 from tests.conformance._script import (
     ScriptedChannel,
     complete_event,
@@ -287,6 +288,11 @@ async def _register_channel(kit: RoomKit, harness: Harness, spec: Mapping[str, A
 def register_channel(kit: RoomKit, harness: Harness, channel: Mapping[str, Any]) -> None:
     if channel["type"] == ChannelType.HOST:
         kit.register_channel(HostChannel(channel["id"]))
+        return
+    if "model" in channel:
+        agent, model = read(lambda: scripted_agent(channel))
+        harness.models[channel["id"]] = model
+        kit.register_channel(agent)
         return
     kit.register_channel(read(lambda: ScriptedChannel(channel, harness)))
 

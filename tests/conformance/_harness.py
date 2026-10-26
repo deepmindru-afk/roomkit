@@ -17,6 +17,8 @@ from roomkit import RoomKit
 from roomkit.models.event import RoomEvent
 from roomkit.models.framework_event import FrameworkEvent
 from roomkit.models.store_filter import EventFilter
+from roomkit.models.tool_call import ToolCallEvent
+from tests.conformance._agent import ScriptedModel, tool_call_record
 from tests.conformance._calls import (
     CALLS,
     UnmappedError,
@@ -77,6 +79,7 @@ class Harness:
         self._checks: list[Check] = []
         self._step_outcomes: list[dict[str, Any]] = []
         self._problems: list[str] = []
+        self.models: dict[str, ScriptedModel] = {}
         setup = scenario.get("setup", {})
         kit_setup = setup.get("kit", {})
         kwargs: dict[str, Any] = {}
@@ -98,7 +101,9 @@ class Harness:
         if not self._recording:
             return
         event = payload.model_dump(mode="json") if isinstance(payload, RoomEvent) else None
-        call = {"trigger": trigger, "room_id": room_id, "event": event}
+        call: dict[str, Any] = {"trigger": trigger, "room_id": room_id, "event": event}
+        if isinstance(payload, ToolCallEvent):
+            call["tool_call"] = tool_call_record(payload)
         self.observed.hooks.setdefault(name, []).append(call)
         self.observed.hook_order.append(name)
 
@@ -321,6 +326,9 @@ class Harness:
                 t.model_dump(mode="json") for t in await store.list_tasks(room.id)
             ]
         self.observed.steps = self._step_outcomes
+        self.observed.models = {
+            channel_id: list(model.requests) for channel_id, model in self.models.items()
+        }
 
 
 def _literal_rooms(scenario: Mapping[str, Any]) -> set[str]:

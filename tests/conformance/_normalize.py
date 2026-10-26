@@ -52,6 +52,7 @@ class Observed:
     tasks: dict[str, list[Any]] = field(default_factory=dict)
     steps: list[Any] = field(default_factory=list)
     actions: dict[str, list[Any]] = field(default_factory=dict)
+    models: dict[str, list[Any]] = field(default_factory=dict)
 
 
 class Normalizer:

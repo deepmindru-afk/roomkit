@@ -30,6 +30,7 @@ def compare(expect: Mapping[str, Any], observed: Observed, checks: list[Check]) 
     comparison.hooks()
     comparison.channel_calls()
     comparison.side_effects()
+    comparison.models()
     return found + comparison.found
 
 
@@ -92,6 +93,11 @@ class _Comparison:
                 for channel_id, expected in channels.items():
                     actual = per_room.get(channel_id, [])
                     self._check(expected, actual, f"{kind}.{alias}.{channel_id}")
+
+    def models(self) -> None:
+        for channel_id, expected in self.expect.get("models", {}).items():
+            actual = self.observed.models.get(channel_id, [])
+            self._check(expected, actual, f"models.{channel_id}")
 
     def side_effects(self) -> None:
         for kind in ("observations", "tasks"):
