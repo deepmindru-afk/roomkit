@@ -13,6 +13,7 @@ from roomkit.channels._room_hooks import RoomHooks
 from roomkit.core.exceptions import ChannelNotFoundError
 from roomkit.models.enums import HookTrigger
 from roomkit.models.event import TextContent
+from roomkit.voice.base import VoiceSessionState
 from roomkit.voice.realtime._answer_depth import AnswerDepth
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
@@ -110,6 +111,9 @@ class RealtimeTranscriptionMixin:
         self, session: VoiceSession, text: str, role: str, is_final: bool
     ) -> Any:
         """Handle transcription from provider."""
+        if session.state == VoiceSessionState.ENDED:
+            # Its room no longer records it, and its state is gone: keep none.
+            return
         if transcript_starts_answer(self._provider.full_duplex, role, text, is_final):
             self._note_provider_output(session.id)
         answer_depth = self._session_answer_depth(session.id)
@@ -145,7 +149,8 @@ class RealtimeTranscriptionMixin:
         an already-finalised utterance downstream (duplicate chat bubbles).
         The per-session lock is FIFO, so processing keeps arrival order.
         """
-        if not self._framework:
+        if not self._framework or session.state == VoiceSessionState.ENDED:
+            # A session that ended while the task waited keeps no lock.
             return
 
         with self._state_lock:

@@ -1372,6 +1372,7 @@ class RealtimeVoiceChannel(
             self._response_generation.pop(session.id, None)
             self._audio_drained.discard(session.id)
             self._has_pipeline_vad.pop(session.id, None)
+            self._forget_transcription_state(session.id)
             span_id = self._session_spans.pop(session.id, None)
         if self._skill_support:
             self._skill_support.cleanup_session(session.id)

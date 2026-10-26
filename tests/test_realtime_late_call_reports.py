@@ -100,6 +100,52 @@ async def test_a_call_after_its_session_ended_is_reported_and_leaves_no_state() 
     assert session.id not in channel._answer_depth  # noqa: SLF001
 
 
+class _TranscribingProvider(MockRealtimeProvider):
+    """Transcribes what the model said while ``connect()`` runs, then, on
+    *fail*, refuses the start."""
+
+    def __init__(self, *, fail: bool) -> None:
+        super().__init__()
+        self._fail = fail
+
+    async def connect(self, session: Any, **kwargs: Any) -> None:
+        await super().connect(session, **kwargs)
+        if self._fail:
+            await self.simulate_transcription(session, "hello", "assistant", True)
+            raise ConnectionError("handshake refused")
+
+
+@pytest.mark.parametrize("when", ["after its session ended", "during a start that failed"])
+async def test_a_transcription_its_session_outlives_leaves_no_state(when: str) -> None:
+    """A transcription that arrives once its session ended, or while a start
+    that then fails runs, is not the room's to record, and keeps nothing of
+    the session's: no depth of the model's answers, no ordering lock, no last
+    text (RMK-983)."""
+    provider = _TranscribingProvider(fail=when == "during a start that failed")
+    channel = RealtimeVoiceChannel("rt", provider=provider, transport=MockRealtimeTransport())
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "rt")
+    if when == "after its session ended":
+        session = await channel.start_session("r1", "u", "ws")
+        await channel.end_session(session)
+        await provider.simulate_transcription(session, "late words", "assistant", True)
+    else:
+        with pytest.raises(ConnectionError):
+            await channel.start_session("r1", "u", "ws")
+    for _ in range(20):  # the transcription's task, had it been started
+        await asyncio.sleep(0)
+    await kit.close()
+
+    state = (
+        channel._answer_depth,  # noqa: SLF001
+        channel._transcription_order_locks,  # noqa: SLF001
+        channel._last_assistant_text,  # noqa: SLF001
+    )
+    assert state == ({}, {}, {})
+
+
 class _LateCallProvider(MockRealtimeProvider):
     """Hands on a call its receive loop had in flight when disconnect runs."""
 

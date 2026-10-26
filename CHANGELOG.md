@@ -209,6 +209,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A realtime session that ended keeps no transcription state** (RMK-983).
+  A transcription the provider handed on once its session ended, or while a
+  start that then failed was running, left the session's answer depth and
+  its ordering lock behind for good, one of each per call that ended so: a
+  slow leak on a server that takes many calls. The transcription itself was
+  already dropped, its room gone; now nothing of it is kept, and a start
+  that fails forgets what was transcribed, as a session's end does.
+
 - **A channel's `metadata_updates` are written on the room** (RFC §10.1 step
   15, RMK-976). The core collected them in `BroadcastResult.metadata_updates`
   and never wrote them, and dropped a transport's `deliver()` ones: a
