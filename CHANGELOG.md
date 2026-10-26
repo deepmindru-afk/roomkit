@@ -261,6 +261,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   begin a new chain, pass `chain_depth=` from that task to continue one, or
   raise `max_chain_depth`. Example: `examples/hook_observer_depth.py`.
 
+- **A hook on what a voice agent says, or on a realtime model's delegation,
+  ends at `max_chain_depth`** (RFC §8.3, §12.2, §12.4.1, RMK-998). A hook on
+  what an agent speaking through text to speech says (`BEFORE_TTS`, on each
+  sentence of a streamed reply too, and `AFTER_TTS`), on a `VoiceChannel` or
+  a conference's voice lane, ran at depth 0: one that asked the agent
+  something after each of its answers ran until the reentry cap (41 answers
+  at `max_chain_depth=4`), never the depth limit. So did a hook on a
+  speech-to-speech model's delegation (`ON_REALTIME_DELEGATION`), on a
+  `RealtimeVoiceChannel` and in a conference. These hooks now run at the
+  depth of the answer they speak or that delegated, read as it arrives, as a
+  realtime tool call's do: the loop ends after three answers at
+  `max_chain_depth=4`. `VoiceChannel.say()` is unchanged: its hooks run at
+  the depth of the code that calls it. `ON_OUTPUT_AUDIO_LEVEL` is unchanged:
+  it fires per audio frame, for no answer in particular. Behaviour change: a
+  post from such a hook is as deep as the answer, so the agent no longer
+  answers one made at the limit. Migration: raise `max_chain_depth`.
+  Examples: `examples/hook_observer_depth.py`,
+  `examples/realtime_tool_observer_depth.py`.
+
 ### Fixed
 
 - **A queued delivery is made by the caller that queued it** (RFC §8.3, §22.2,

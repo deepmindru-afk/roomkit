@@ -6,6 +6,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
+from roomkit.core._reentrance import within_turn
 from roomkit.models.enums import HookTrigger
 
 if TYPE_CHECKING:
@@ -23,11 +24,16 @@ class SentenceHookGate:
     replaces the sentence, a BLOCK drops it, and the engine's fail-closed rule
     for BEFORE_TTS — a hook that raises, times out or returns something
     unusable blocks — applies sentence by sentence. A sentence redacted to an
-    empty string is not synthesized.
+    empty string is not synthesized. The hooks run at the depth of the
+    response they judge, *chain_depth*, as the hooks on what a model says do
+    (RFC §8.3).
     """
 
-    def __init__(self, hooks: HookEngine, room_id: str, context: RoomContext) -> None:
+    def __init__(
+        self, hooks: HookEngine, room_id: str, context: RoomContext, *, chain_depth: int
+    ) -> None:
         self._hooks = hooks
+        self._chain_depth = chain_depth
         self._room_id = room_id
         self._context = context
         self._spoken: list[str] = []
@@ -47,13 +53,14 @@ class SentenceHookGate:
         return " ".join(s.strip() for s in self._spoken if s.strip())
 
     async def _judge(self, sentence: str) -> str:
-        result = await self._hooks.run_sync_hooks(
-            self._room_id,
-            HookTrigger.BEFORE_TTS,
-            sentence,
-            self._context,
-            skip_event_filter=True,
-        )
+        with within_turn(self._chain_depth):
+            result = await self._hooks.run_sync_hooks(
+                self._room_id,
+                HookTrigger.BEFORE_TTS,
+                sentence,
+                self._context,
+                skip_event_filter=True,
+            )
         if not result.allowed:
             logger.info("TTS sentence blocked by hook: %s", result.reason)
             self.changed = True

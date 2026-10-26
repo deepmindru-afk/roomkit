@@ -840,7 +840,14 @@ class ConferenceRealtime:
         if self._config is None or room is None or not serves(room.session, session):
             return
         self._track_report(
-            fire_delegation(self._framework, session.room_id, session, delegation_id, target)
+            fire_delegation(
+                self._framework,
+                session.room_id,
+                session,
+                delegation_id,
+                target,
+                chain_depth=room.answer_depth.answer,
+            )
         )
         if target != "integrator":
             return

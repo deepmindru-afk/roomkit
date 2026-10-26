@@ -115,8 +115,16 @@ silently, whatever brings it (a broadcast, `deliver()`, a handoff greeting,
 `inject_text()`, whose text is at least as deep as the work it is called
 from): the model takes it into its context and answers nothing. An `ON_TOOL_CALL` hook that posts at each call the model then
 hears ends at the limit, and so does a hook on the model's words
-(`ON_TRANSCRIPTION`), which runs at the depth of the answer it hears
-(`examples/realtime_tool_observer_depth.py`).
+(`ON_TRANSCRIPTION`), which runs at the depth of the answer it hears, and
+one on its delegations (`ON_REALTIME_DELEGATION`), at the depth of the answer
+that delegated (`examples/realtime_tool_observer_depth.py`).
+
+A voice agent built from speech to text, an agent and text to speech (a
+`VoiceChannel`, a conference's voice lane) is held the same way: the hooks on
+what it says (`BEFORE_TTS`, on each sentence of a streamed reply too, and
+`AFTER_TTS`) run at the depth of the answer they speak, so a hook that asks
+the agent something after each of its answers ends at the limit
+(`examples/hook_observer_depth.py`).
 
 ## Processing Timeout
 

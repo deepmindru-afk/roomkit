@@ -33,6 +33,7 @@ from roomkit.channels._conference_operations import (
 )
 from roomkit.channels._room_hooks import RoomHooks
 from roomkit.conference.models import ConferenceInterruptionScope
+from roomkit.core._reentrance import within_turn
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.enums import HookTrigger
 from roomkit.voice.base import AudioChunk
@@ -77,6 +78,9 @@ class ConferencePlayback:
 
     room_id: str
     text: str
+    chain_depth: int = 0
+    """The depth of the answer it speaks, which its TTS hooks run at."""
+
     started_at: float | None = None
     """When the utterance's turn began, or ``None`` while it still waits.
 
@@ -340,7 +344,7 @@ class ConferenceVoice:
     # Speaking
     # -------------------------------------------------------------------------
 
-    async def speak(self, room_id: str, text: str) -> None:
+    async def speak(self, room_id: str, text: str, *, chain_depth: int = 0) -> None:
         """Synthesize one utterance and publish it on the bot track.
 
         Synthesized once and published once: the SFU distributes it to
@@ -390,7 +394,7 @@ class ConferenceVoice:
         # utterance queued behind another reachable by a detach and by a
         # barge-in. Registered after, it would be invisible for exactly as long
         # as it is powerless to notice anything itself.
-        playback = ConferencePlayback(room_id=room_id, text=text)
+        playback = ConferencePlayback(room_id=room_id, text=text, chain_depth=chain_depth)
         room.playbacks.append(playback)
         try:
             spoken = await self._take_its_turn(room, playback, tts)
@@ -398,7 +402,7 @@ class ConferenceVoice:
             self._forget(playback)
         if spoken is None or playback.abandoned:
             return
-        await self._run_after_tts(room_id, spoken)
+        await self._run_after_tts(room_id, spoken, chain_depth)
 
     async def speak_stream(
         self,
@@ -462,7 +466,7 @@ class ConferenceVoice:
         async with room.turn:
             if not await self._clear_to_publish(room, playback):
                 return None
-            text = await self._run_before_tts(room_id, playback.text)
+            text = await self._run_before_tts(room_id, playback.text, playback.chain_depth)
             if not text:
                 return None
             playback.text = text
@@ -848,8 +852,9 @@ class ConferenceVoice:
         if not room.playbacks and room.unterminated is None:
             del self._speaking[playback.room_id]
 
-    async def _run_before_tts(self, room_id: str, text: str) -> str:
-        """Let hooks block or rewrite what the bot is about to say.
+    async def _run_before_tts(self, room_id: str, text: str, chain_depth: int) -> str:
+        """Let hooks block or rewrite what the bot is about to say, at the
+        depth of the answer it says (RFC §8.3).
 
         Synchronous by nature: this is where orchestration holds the bot silent
         while a handoff is pending. Deciding after the audio is on the wire
@@ -860,17 +865,23 @@ class ConferenceVoice:
         """
         if self._framework is None:
             return text
-        result = await RoomHooks(self._framework, room_id).run_sync(HookTrigger.BEFORE_TTS, text)
+        with within_turn(chain_depth):
+            result = await RoomHooks(self._framework, room_id).run_sync(
+                HookTrigger.BEFORE_TTS, text
+            )
         if not result.allowed:
             logger.info("Conference TTS blocked by hook: %s", result.reason)
             return ""
         return result.event if isinstance(result.event, str) else text
 
-    async def _run_after_tts(self, room_id: str, text: str) -> None:
-        """Notify hooks that the bot has spoken."""
+    async def _run_after_tts(self, room_id: str, text: str, chain_depth: int) -> None:
+        """Notify hooks that the bot has spoken, at the depth of the answer it
+        spoke: a hook that tells the agent something each time ends at the
+        limit (RFC §8.3)."""
         if self._framework is None:
             return
-        await RoomHooks(self._framework, room_id).run_async(HookTrigger.AFTER_TTS, text)
+        with within_turn(chain_depth):
+            await RoomHooks(self._framework, room_id).run_async(HookTrigger.AFTER_TTS, text)
 
     # -------------------------------------------------------------------------
     # Being interrupted

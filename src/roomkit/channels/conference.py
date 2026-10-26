@@ -1266,7 +1266,7 @@ class ConferenceChannel(
                 injected_from=event,
             )
             return ChannelOutput.empty()
-        await self._voice.speak(event.room_id, event.content.body)
+        await self._voice.speak(event.room_id, event.content.body, chain_depth=event.chain_depth)
         return ChannelOutput.empty()
 
     def _compose_realtime(

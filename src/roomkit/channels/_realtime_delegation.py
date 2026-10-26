@@ -202,9 +202,11 @@ class RealtimeDelegationMixin:
             target,
             session.id,
         )
+        # The delegation belongs to the model's answer, read as it arrives.
+        depth = self._session_answer(session.id)
         self._track_task(
             loop,
-            self._fire_delegation_hook(session, delegation_id, target),
+            self._fire_delegation_hook(session, delegation_id, target, depth),
             name=f"rt_delegation_hook:{session.id}:{delegation_id}",
         )
         if target != "integrator":
@@ -237,14 +239,17 @@ class RealtimeDelegationMixin:
         self._update_idle_event(session_id)
 
     async def _fire_delegation_hook(
-        self, session: VoiceSession, delegation_id: str, target: str
+        self, session: VoiceSession, delegation_id: str, target: str, chain_depth: int
     ) -> None:
-        """Announce the delegation to ON_REALTIME_DELEGATION (RFC §12.4.1)."""
+        """Announce the delegation to ON_REALTIME_DELEGATION (RFC §12.4.1), at
+        the depth of the answer that issued it."""
         with self._state_lock:
             room_id = self._session_rooms.get(session.id)
         _, _tok = self._rt_span_ctx(session.id)
         try:
-            await fire_delegation(self._framework, room_id, session, delegation_id, target)
+            await fire_delegation(
+                self._framework, room_id, session, delegation_id, target, chain_depth=chain_depth
+            )
         finally:
             if _tok is not None:
                 reset_span(_tok)

@@ -293,8 +293,9 @@ its response:
   `deliver()` (a queued item carries the depth) or regeneration is one deeper
   than the answer, about `max_chain_depth / 2` answers in all (3 at 6).
 - A hook on a turn's trigger (`BEFORE_AI_GENERATION`, `ON_AI_RESPONSE`, a
-  tool call's), or on a speech-to-speech model's words, observes no event of
-  a depth of its own: its body sends at least as deep as the turn, the tool
+  tool call's), on a speech-to-speech model's words or delegations, or on
+  what a voice agent says (`BEFORE_TTS`, `AFTER_TTS`), observes no event of a
+  depth of its own: its body sends at least as deep as the turn, the tool
   call or the answer was when the trigger fired, for as long as the body
   runs, once that work is over too. A reminder it posts at each turn ends at
   `max_chain_depth` (`examples/hook_observer_depth.py`).

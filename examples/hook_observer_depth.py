@@ -1,5 +1,5 @@
-"""Two hooks that ask an agent again after its answers: one ends at the depth
-limit, the other goes on as long as it decides.
+"""Hooks that ask an agent again after its answers: two end at the depth
+limit, the third goes on as long as it decides.
 
 A moderation hook reminds the agent of a rule after each of its turns, from
 the hook's own body, once a moderation check took its time. The agent answers
@@ -13,6 +13,11 @@ same answers, so the agent's turn still runs when the gate relaunches it.
 Work a hook's body starts begins a new chain once the body returned: every
 relaunch is at depth 0 and the agent answers all five; the gate's own limit
 ends it.
+
+A voice agent (speech to text, the agent, text to speech) speaks each answer,
+and a hook on what it said (``AFTER_TTS``) asks it whether that answered the
+question. The hooks on what an agent says run at the depth of the answer they
+speak, so this loop ends at the limit too.
 
 Run with: uv run python examples/hook_observer_depth.py
 Uses a mock agent; no credentials or external calls required.
@@ -37,9 +42,13 @@ from roomkit import (
     HookTrigger,
     RoomKit,
     TextContent,
+    VoiceChannel,
     WebSocketChannel,
 )
 from roomkit.providers.ai import MockAIProvider
+from roomkit.voice.backends import MockVoiceBackend
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("hook_observer_depth")
 
@@ -132,9 +141,50 @@ async def quality_gate_relaunches() -> None:
         await kit.close()
 
 
+async def spoken_answers() -> None:
+    """A hook on what a voice agent said that asks it again ends at the limit."""
+    stt, tts, backend = MockSTTProvider(transcripts=[]), MockTTSProvider(), MockVoiceBackend()
+    kit = RoomKit(stt=stt, tts=tts, voice=backend, max_chain_depth=MAX_CHAIN_DEPTH)
+    replies = [f"Answer {n}." for n in range(20)]
+    kit.register_channel(WebSocketChannel("chat"))
+    kit.register_channel(VoiceChannel("phone", stt=stt, tts=tts, backend=backend))
+    kit.register_channel(Agent("writer", provider=MockAIProvider(responses=replies)))
+    await kit.create_room(room_id="support")
+    for channel_id in ("chat", "phone"):
+        await kit.attach_channel("support", channel_id)
+    await kit.attach_channel("support", "writer", category=ChannelCategory.INTELLIGENCE)
+    await kit.join("support", "phone", participant_id="caller")
+    follow_ups: list[int] = []
+    ended = asyncio.Event()
+
+    @kit.on("chain_depth_exceeded")
+    async def limited(event: object) -> None:
+        ended.set()
+
+    @kit.hook(HookTrigger.AFTER_TTS, execution=HookExecution.ASYNC, name="follow_up")
+    async def follow_up(text: Any, ctx: Any) -> None:
+        if not str(text).startswith("Answer"):
+            return  # the phone speaks the chat's messages too
+        if len(follow_ups) >= 20:  # a guard, should the limit not end it
+            ended.set()
+            return
+        asked = await kit.post("support", "Did that answer it?", addressed_to=["writer"])
+        follow_ups.append(asked.chain_depth)
+        logger.info("After %r, the hook asks again, %d deep", text, asked.chain_depth)
+
+    try:
+        await ask(kit, "When does my plan renew?")
+        await asyncio.wait_for(ended.wait(), 5)
+        logger.info("Follow-ups at depths %s", follow_ups)
+        assert follow_ups == [1, 2, 3, 4], follow_ups
+    finally:
+        await kit.close()
+
+
 async def main() -> None:
     await moderation_reminders()
     await quality_gate_relaunches()
+    await spoken_answers()
 
 
 if __name__ == "__main__":

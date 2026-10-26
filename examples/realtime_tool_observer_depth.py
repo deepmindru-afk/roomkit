@@ -3,8 +3,10 @@ answers, and the depth limit that ends the loop between them.
 
 The hook tells the model "lookup called" each time it calls a tool, by a
 post into the room, then straight through ``channel.inject_text()``; then a
-hook on the model's own words tells it "heard you" each time it speaks. The
-model hears it and, being helpful, answers again. What the hook sends is at
+hook on the model's own words tells it "heard you" each time it speaks, and
+one on its delegations (``ON_REALTIME_DELEGATION``) tells it "go on" each
+time it hands reasoning to a backend. The model hears it and, being helpful,
+answers again. What the hook sends is at
 least as deep as the model's answer it reacts to, and a text whose answer
 would be past ``max_chain_depth`` enters the model's session silently: it
 hears it and answers nothing, so the loop ends at the limit, as one between
@@ -33,12 +35,14 @@ MAX_CHAIN_DEPTH = 4
 
 class EagerModel(MockRealtimeProvider):
     """Answers every text it is asked to answer, from its own receive loop:
-    by calling ``lookup``, or by saying something when *speaks*. A silent
-    text asks it nothing, and ends the example."""
+    by calling ``lookup``, by saying something when *speaks*, or by handing
+    the reasoning to its hosted backend when *delegates*. A silent text asks
+    it nothing, and ends the example."""
 
-    def __init__(self, *, speaks: bool) -> None:
+    def __init__(self, *, speaks: bool = False, delegates: bool = False) -> None:
         super().__init__()
         self.speaks = speaks
+        self.delegates = delegates
         self.answers = 0
         self.heard = 0
         self.rested = asyncio.Event()
@@ -47,6 +51,8 @@ class EagerModel(MockRealtimeProvider):
         self.answers += 1
         if self.speaks:
             said = self.simulate_transcription(session, f"answer {self.answers}", "assistant")
+        elif self.delegates:
+            said = self.simulate_delegation(session, f"delegation-{self.answers}", "hosted")
         else:
             said = self.simulate_tool_call(session, f"call-{self.answers}", "lookup", {})
         asyncio.get_running_loop().create_task(said, context=contextvars.Context())
@@ -64,9 +70,10 @@ class EagerModel(MockRealtimeProvider):
 
 async def run(tells: str) -> None:
     """The loop: a hook on the model's tool calls telling it by a post
-    (*tells* ``"post"``) or by an injection (``"inject"``), or a hook on its
-    words telling it by an injection (``"words"``)."""
-    model = EagerModel(speaks=tells == "words")
+    (*tells* ``"post"``) or by an injection (``"inject"``), a hook on its
+    words telling it by an injection (``"words"``), or one on its delegations
+    (``"delegation"``)."""
+    model = EagerModel(speaks=tells == "words", delegates=tells == "delegation")
 
     async def lookup(name: str, arguments: dict[str, Any]) -> str:
         return "found"
@@ -96,6 +103,11 @@ async def run(tells: str) -> None:
         if tells == "words" and event.role == "assistant":
             await channel.inject_text(session, "heard you")
 
+    @kit.hook(HookTrigger.ON_REALTIME_DELEGATION, execution=HookExecution.ASYNC, name="relay")
+    async def relay(event: Any, ctx: Any) -> None:
+        if tells == "delegation":
+            await channel.inject_text(session, "go on")
+
     try:
         model.answer(session)
         await asyncio.wait_for(model.rested.wait(), 5)
@@ -106,7 +118,7 @@ async def run(tells: str) -> None:
 
 
 async def main() -> None:
-    for tells in ("post", "inject", "words"):
+    for tells in ("post", "inject", "words", "delegation"):
         await run(tells)
 
 

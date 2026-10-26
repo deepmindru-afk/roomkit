@@ -17,6 +17,7 @@ from roomkit.channels._mark_copies import compile_mark_patterns, without_mark_co
 from roomkit.channels._room_hooks import RoomHooks
 from roomkit.channels._runtime_record import written_by_runtime
 from roomkit.channels._speaker import channel_label, turn_labels
+from roomkit.core._reentrance import within_turn
 from roomkit.core.visibility import visible_events
 from roomkit.models.enums import HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent
@@ -160,10 +161,14 @@ async def fire_delegation(
     session: VoiceSession,
     delegation_id: str,
     target: str,
+    *,
+    chain_depth: int,
 ) -> None:
     """Announce a provider's delegation to ON_REALTIME_DELEGATION (RFC
-    §12.4.1), the same way on every host. A hook failure is logged, never
-    raised into the provider's receive loop."""
+    §12.4.1), the same way on every host, its hooks at *chain_depth*, the
+    depth of the model's answer that issued it, as a tool call's are (RFC
+    §8.3). A hook failure is logged, never raised into the provider's
+    receive loop."""
     if framework is None or not room_id:
         return
     if not framework.hook_engine.has_hooks(HookTrigger.ON_REALTIME_DELEGATION):
@@ -171,7 +176,10 @@ async def fire_delegation(
     kind: Literal["hosted", "integrator"] = "hosted" if target == "hosted" else "integrator"
     event = RealtimeDelegationEvent(session=session, delegation_id=delegation_id, target=kind)
     try:
-        await RoomHooks(framework, room_id).run_async(HookTrigger.ON_REALTIME_DELEGATION, event)
+        with within_turn(chain_depth):
+            await RoomHooks(framework, room_id).run_async(
+                HookTrigger.ON_REALTIME_DELEGATION, event
+            )
     except Exception:
         logger.warning("ON_REALTIME_DELEGATION failed for session %s", session.id, exc_info=True)
 

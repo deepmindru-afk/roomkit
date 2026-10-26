@@ -19,6 +19,7 @@ from roomkit.channels._stream_fanout import StreamBranch, StreamFanOut
 from roomkit.channels._tts_sentence_budget import SentenceBudget, first_sentences
 from roomkit.channels._tts_sentence_gate import SentenceHookGate
 from roomkit.channels._voice_unheard import UnheardTurns
+from roomkit.core._reentrance import within_turn
 from roomkit.models.enums import EventType, HookTrigger, Visibility
 from roomkit.models.streaming import (
     SegmentBreakMarker,
@@ -490,7 +491,9 @@ class VoiceTTSMixin:
         # The stream is read, filtered and split once, then every session gets
         # its own copy of the sentences: reading it drives persistence upstream,
         # and each session must hear the whole response.
-        sentence_source, gate, budget = self._sentences(text, text_stream, room_id, context)
+        sentence_source, gate, budget = self._sentences(
+            text, text_stream, room_id, context, event.chain_depth
+        )
         fan_out = StreamFanOut(sentence_source, len(target_sessions))
         producer = asyncio.create_task(fan_out.run(), name=f"tts_fan_out:{event.id}")
         voice = self._resolve_voice(event.source.channel_id)
@@ -540,7 +543,7 @@ class VoiceTTSMixin:
 
         full_text = self._streamed_text(text.text(), gate, budget)
         await self._close_streamed_response(
-            delivered, playbacks, full_text, room_id, context, _vs_parent
+            delivered, playbacks, full_text, room_id, context, _vs_parent, event.chain_depth
         )
         if text.failure is not None:
             # The response failed: what it produced was spoken, the failure is the turn's.
@@ -553,10 +556,11 @@ class VoiceTTSMixin:
         text_stream: AsyncIterator[Any],
         room_id: str,
         context: RoomContext,
+        chain_depth: int,
     ) -> tuple[AsyncIterator[str], SentenceHookGate | None, SentenceBudget | None]:
         """The sentences the sessions read of *text_stream*: filtered, split,
-        gated, then held to the sentence budget, whose reply stops at the first
-        text past it."""
+        gated at the response's *chain_depth*, then held to the sentence
+        budget, whose reply stops at the first text past it."""
         from roomkit.voice.tts.sentence_splitter import split_sentences
 
         budget = SentenceBudget(self._max_sentences) if self._max_sentences else None
@@ -571,7 +575,7 @@ class VoiceTTSMixin:
             else:
                 token_source = _filter_sentences_plain(token_source, self._tts_filter)
         sentence_source = split_sentences(token_source)
-        gate = self._sentence_gate(room_id, context)
+        gate = self._sentence_gate(room_id, context, chain_depth)
         if gate is not None:
             sentence_source = gate.run(sentence_source)
         if budget is not None:
@@ -616,6 +620,7 @@ class VoiceTTSMixin:
         room_id: str,
         context: RoomContext,
         parent_span: str | None,
+        chain_depth: int,
     ) -> None:
         """Close a streamed response on the sessions that heard it (RFC §12.2 step 13s).
 
@@ -645,30 +650,40 @@ class VoiceTTSMixin:
 
         # BEFORE_TTS ran on each sentence (12s.b); AFTER_TTS reports what was sent
         if full_text:
-            await self._run_after_tts(room_id, full_text, context, parent_span)
+            await self._run_after_tts(room_id, full_text, context, parent_span, chain_depth)
 
     async def _run_after_tts(
-        self, room_id: str, text: str, context: RoomContext, parent_span: str | None
+        self,
+        room_id: str,
+        text: str,
+        context: RoomContext,
+        parent_span: str | None,
+        chain_depth: int,
     ) -> None:
-        """Run AFTER_TTS on *text*, under the voice session's span when there is one."""
+        """Run AFTER_TTS on *text*, under the voice session's span when there
+        is one, at the depth of the response it reports (RFC §8.3): a hook
+        that tells the agent something each time it spoke ends at the limit."""
         if self._framework is None:
             return
         from roomkit.telemetry.context import reset_span, set_current_span
 
         _tok = set_current_span(parent_span) if parent_span else None
         try:
-            await self._framework.hook_engine.run_async_hooks(
-                room_id,
-                HookTrigger.AFTER_TTS,
-                text,
-                context,
-                skip_event_filter=True,
-            )
+            with within_turn(chain_depth):
+                await self._framework.hook_engine.run_async_hooks(
+                    room_id,
+                    HookTrigger.AFTER_TTS,
+                    text,
+                    context,
+                    skip_event_filter=True,
+                )
         finally:
             if _tok is not None:
                 reset_span(_tok)
 
-    def _sentence_gate(self, room_id: str, context: RoomContext) -> SentenceHookGate | None:
+    def _sentence_gate(
+        self, room_id: str, context: RoomContext, chain_depth: int
+    ) -> SentenceHookGate | None:
         """BEFORE_TTS on each sentence of a streamed response (RFC §12.2 step 12s.b).
 
         ``None`` when no BEFORE_TTS hook is registered: the sentences then go to
@@ -679,7 +694,7 @@ class VoiceTTSMixin:
         hooks = self._framework.hook_engine
         if not hooks.has_hooks(HookTrigger.BEFORE_TTS):
             return None
-        return SentenceHookGate(hooks, room_id, context)
+        return SentenceHookGate(hooks, room_id, context, chain_depth=chain_depth)
 
     def _streamed_text(
         self,
@@ -1168,13 +1183,15 @@ class VoiceTTSMixin:
                     self._delivered_tts_events.popitem(last=False)
 
         try:
-            before_result = await self._framework.hook_engine.run_sync_hooks(
-                room_id,
-                HookTrigger.BEFORE_TTS,
-                text,
-                context,
-                skip_event_filter=True,
-            )
+            # The hooks on what the agent says run at its response's depth.
+            with within_turn(event.chain_depth):
+                before_result = await self._framework.hook_engine.run_sync_hooks(
+                    room_id,
+                    HookTrigger.BEFORE_TTS,
+                    text,
+                    context,
+                    skip_event_filter=True,
+                )
 
             if not before_result.allowed:
                 logger.info("TTS blocked by hook: %s", before_result.reason)
@@ -1216,7 +1233,7 @@ class VoiceTTSMixin:
                 return_exceptions=True,
             )
             if _served_sessions(target_sessions, results):
-                await self._run_after_tts(room_id, final_text, context, _parent)
+                await self._run_after_tts(room_id, final_text, context, _parent, event.chain_depth)
 
         except Exception:
             # Each session's failed synthesis was reported as it failed (_send_tts).

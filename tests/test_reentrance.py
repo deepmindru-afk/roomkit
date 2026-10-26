@@ -33,6 +33,7 @@ from roomkit.channels.ai import AIChannel
 from roomkit.channels.base import Channel
 from roomkit.channels.conference import ConferenceChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.channels.voice import VoiceChannel
 from roomkit.core.inbound_router import InboundRoomRouter
 from roomkit.delivery.memory import InMemoryDeliveryBackend
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -56,8 +57,11 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.mock import MockTelemetryProvider
+from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from roomkit.voice.realtime.reasoning import AgentReasoningBackend
+from roomkit.voice.stt.mock import MockSTTProvider
+from roomkit.voice.tts.mock import MockTTSProvider
 from tests.conference.test_conference_realtime import ROOM, _Source, realtime_kit, until
 from tests.conference.test_conference_tool_calls import LOOKUP
 from tests.test_framework import AILikeChannel, SimpleChannel
@@ -878,20 +882,26 @@ async def _observed(kit: RoomKit, room_id: str = "r1") -> None:
 
 class _AnsweringModel(MockRealtimeProvider):
     """A speech-to-speech model that answers each text injected into its
-    session with a call to ``lookup``, as its receive loop would, in a
-    context of its own; a silent injection asks it nothing. It stops on
-    its own after *rounds* answers, so a loop nothing ends still ends."""
+    session with a call to ``lookup``, or a delegation to its hosted backend
+    when it *delegates*, as its receive loop would, in a context of its own;
+    a silent injection asks it nothing. It stops on its own after *rounds*
+    answers, so a loop nothing ends still ends."""
 
-    def __init__(self, rounds: int) -> None:
+    def __init__(self, rounds: int, *, delegates: bool = False) -> None:
         super().__init__()
         self._rounds = rounds
+        self.delegates = delegates
         self.answers: list[asyncio.Task[None]] = []
         self.silences: list[bool] = []
         """Whether each text injected into its session was silent, in order."""
 
     def answer(self, session: Any) -> None:
         if len(self.answers) < self._rounds:
-            call = self.simulate_tool_call(session, f"c{len(self.answers)}", "lookup", {})
+            n = len(self.answers)
+            if self.delegates:
+                call = self.simulate_delegation(session, f"d{n}", "hosted")
+            else:
+                call = self.simulate_tool_call(session, f"c{n}", "lookup", {})
             loop = asyncio.get_running_loop()
             self.answers.append(loop.create_task(call, context=contextvars.Context()))
 
@@ -934,13 +944,50 @@ class _TalkingModel(MockRealtimeProvider):
         return result
 
 
+def _answering_agent(*, streaming: bool = False) -> AIChannel:
+    """An agent that answers each message it is asked, "Answer n." in turn."""
+    replies = [f"Answer {n}." for n in range(4 * BUDGET)]
+    return AIChannel("ai", provider=MockAIProvider(responses=replies, streaming=streaming))
+
+
+async def _voice_speaker(*, streaming: bool = False) -> RoomKit:
+    """Room ``r1``: ``sms``, an agent, and a voice channel that speaks its answers."""
+    stt, tts, backend = MockSTTProvider(transcripts=[]), MockTTSProvider(), MockVoiceBackend()
+    kit = await _room(RoomKit(stt=stt, tts=tts, voice=backend, max_chain_depth=4))
+    kit.register_channel(VoiceChannel("voice", stt=stt, tts=tts, backend=backend))
+    kit.register_channel(_answering_agent(streaming=streaming))
+    await kit.attach_channel("r1", "voice")
+    await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+    await kit.join("r1", "voice", participant_id="caller")
+    return kit
+
+
+async def _conference_speaker() -> RoomKit:
+    """Room ``r1``: ``sms``, an agent, and a conference whose bot speaks its answers."""
+    kit = await _room(RoomKit(max_chain_depth=4))
+    conference = ConferenceChannel("conf", backend=MockConferenceBackend(), tts=MockTTSProvider())
+    kit.register_channel(conference)
+    kit.register_channel(_answering_agent())
+    await kit.attach_channel("r1", "conf")
+    await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+    return kit
+
+
+_SPEAKERS: dict[str, Callable[[], Awaitable[RoomKit]]] = {
+    "a voice channel": _voice_speaker,
+    "a streamed reply": lambda: _voice_speaker(streaming=True),
+    "a conference": _conference_speaker,
+}
+
+
 async def _until_the_model_rests(kit: RoomKit, model: _AnsweringModel, room_id: str) -> None:
-    """Wait until every call the model made is answered, its observers have
-    run and its room's lane is drained, and it made no call since."""
+    """Wait until every call the model made is answered (a delegation to
+    its hosted backend waits for nothing), its observers have run and its
+    room's lane is drained, and it made no call since."""
     while True:
         made = len(model.answers)
         await asyncio.gather(*model.answers)
-        await until(lambda made=made: len(model.tool_results) == made)
+        await until(lambda made=made: model.delegates or len(model.tool_results) == made)
         await _observed(kit, room_id)
         if len(model.answers) == made:
             return
@@ -1194,7 +1241,14 @@ class TestACallFromAnAsyncHook:
             await kit.close()
 
     @pytest.mark.parametrize("tells", ["a post", "an injection"])
-    @pytest.mark.parametrize("trigger", [HookTrigger.ON_TOOL_CALL, HookTrigger.BEFORE_TOOL_USE])
+    @pytest.mark.parametrize(
+        "trigger",
+        [
+            HookTrigger.ON_TOOL_CALL,
+            HookTrigger.BEFORE_TOOL_USE,
+            HookTrigger.ON_REALTIME_DELEGATION,
+        ],
+    )
     @pytest.mark.parametrize("door", ["realtime", "conference"])
     async def test_an_observer_of_a_realtime_tool_call_its_model_answers_ends_at_the_depth_limit(
         self, door: str, trigger: HookTrigger, tells: str
@@ -1205,8 +1259,11 @@ class TestACallFromAnAsyncHook:
         is at least as deep as the answer that issued the call (RFC §8.3),
         and a text past the limit enters the model's session silently, so it
         answers nothing and the loop ends at ``max_chain_depth``: three
-        calls, the third one's text silent."""
-        model = _AnsweringModel(rounds=4 * BUDGET)
+        calls, the third one's text silent. So does a model's delegation,
+        whose hooks ran at depth 0 (RMK-998)."""
+        model = _AnsweringModel(
+            rounds=4 * BUDGET, delegates=trigger is HookTrigger.ON_REALTIME_DELEGATION
+        )
         kit, room_id, poster, channel, session = await _MODEL_HOSTS[door](model)
         posted: list[RoomEvent] = []
 
@@ -1271,6 +1328,46 @@ class TestACallFromAnAsyncHook:
             await asyncio.gather(*model.answers)
             await _observed(kit)
             assert (len(model.answers), model.silences) == (3, [False, False, True])
+        finally:
+            await kit.close()
+
+    @pytest.mark.parametrize("speaker", ["a voice channel", "a streamed reply", "a conference"])
+    @pytest.mark.parametrize(
+        ("trigger", "execution"),
+        [
+            (HookTrigger.AFTER_TTS, HookExecution.ASYNC),
+            (HookTrigger.BEFORE_TTS, HookExecution.SYNC),
+            (HookTrigger.BEFORE_TTS, HookExecution.ASYNC),
+        ],
+    )
+    async def test_a_hook_on_what_a_voice_agent_says_that_tells_it_again_ends_at_the_depth_limit(
+        self, trigger: HookTrigger, execution: HookExecution, speaker: str
+    ) -> None:
+        """RMK-998: a hook on what an STT, LLM and TTS agent says (before or
+        after its synthesis) posts at each of its answers, and the agent
+        answers that. The hooks run at the depth of the answer they speak,
+        on a voice channel, a streamed reply and a conference's voice lane,
+        so the third post is past the limit and asks the agent nothing.
+        They ran at depth 0, and only the reentry cap ended the loop."""
+        kit = await _SPEAKERS[speaker]()
+        posted: list[RoomEvent] = []
+        told: set[str] = set()
+        ended = _ends_at_the_depth_limit(kit)
+
+        @kit.hook(trigger, execution=execution, name="echo")
+        async def echo(text: Any, ctx: Any) -> HookResult | None:
+            if len(posted) >= 2 * BUDGET:
+                ended.set()
+            elif isinstance(text, str) and text.startswith("Answer") and text not in told:
+                told.add(text)  # once per answer: a streamed one's hooks run per sentence too
+                posted.append(await kit.send_event("r1", "sms", TextContent(body="Heard you.")))
+            return HookResult.allow() if execution is HookExecution.SYNC else None
+
+        try:
+            await kit.send_event("r1", "sms", TextContent(body="Hello."))
+            await asyncio.wait_for(ended.wait(), 5)
+            await asyncio.wait_for(_observed(kit), 5)
+            assert sorted(e.chain_depth for e in posted) == [1, 2, 3]
         finally:
             await kit.close()
 
