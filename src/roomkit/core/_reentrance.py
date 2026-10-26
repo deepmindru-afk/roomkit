@@ -58,6 +58,7 @@ from roomkit.tools.context import _current_loop, _live_turn_chain_depth
 if TYPE_CHECKING:
     from roomkit.core._queued_injections import QueuedInjections
     from roomkit.core.locks import RoomLockManager
+    from roomkit.tools.context import _ToolLoopContext
 
 
 REENTRY_LOOP_CAP = "reentry_loop_cap"
@@ -223,10 +224,11 @@ _turns: contextvars.ContextVar[tuple[_Turn | _LentTurn, ...]] = contextvars.Cont
     "_roomkit_turns", default=()
 )
 
-# The loop contexts of the turns and tool calls an ASYNC hook's body was lent
-# the depth of, each with the body's call: once the body is over, a task it
-# spawned has that depth no more, though the turn or the call still runs.
-_loops_lent: contextvars.ContextVar[tuple[tuple[object | None, _Call], ...]] = (
+# The loop contexts of the turns and tool calls the body of a hook run
+# asynchronously was lent the depth of, each with the body's call: once the
+# body is over, a task it spawned has that depth no more, though the turn or
+# the call still runs.
+_loops_lent: contextvars.ContextVar[tuple[tuple[_ToolLoopContext, _Call], ...]] = (
     contextvars.ContextVar("_roomkit_loops_lent", default=())
 )
 
@@ -348,19 +350,23 @@ def within_turn(response_depth: int) -> Generator[None, None, None]:
 
 @contextmanager
 def floors_lent_while_it_runs(floor: int) -> Generator[None, None, None]:
-    """Run a call (an ASYNC hook's body) at least *floor* deep, the depth
-    its trigger fired at, for as long as it runs, the work that fired it
-    over or not (RFC §8.3, §9.5.1): a hook that tells an agent again from
-    its body ends at the depth limit. The turns and the tool call the
-    context runs within are lent to it the same way. A task it spawns,
-    awaited or not, has these floors while the call runs; once the call is
-    over, that task has none of them, though the turn or the tool call goes
-    on: its calls start fresh, as RMK-930 decided for work that outlives
-    what began it (a delegation's result, a quality gate's relaunch)."""
+    """Run a call (the body of a hook run asynchronously) at least *floor*
+    deep, the depth its trigger fired at, for as long as it runs, the work
+    that fired it over or not (RFC §8.3, §9.5.1): a hook that tells an
+    agent again from its body ends at the depth limit. The turns and the
+    tool call the context runs within are lent to it the same way. A task
+    it spawns, awaited or not, has these floors while the call runs; once
+    the call is over, that task has none of them, though the turn or the
+    tool call goes on: its calls are at the depth of their own event, as
+    RMK-930 decided for work that outlives what began it (a delegation's
+    result, a quality gate's relaunch). Only the depth is lent here: the
+    budget a call draws on is the room's work it runs in (:func:`work_budget`)."""
     call = _Call()
     lent = tuple(_LentTurn(turn, call) for turn in _turns.get())
     turns_token = _turns.set((*lent, _LentTurn(_Turn(floor), call)))
-    loops_token = _loops_lent.set((*_loops_lent.get(), (_current_loop(), call)))
+    loop = _current_loop()
+    loops = _loops_lent.get() if loop is None else (*_loops_lent.get(), (loop, call))
+    loops_token = _loops_lent.set(loops)
     try:
         yield
     finally:

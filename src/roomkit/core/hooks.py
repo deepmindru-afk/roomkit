@@ -445,10 +445,12 @@ async def _run_body(
     budget: ReentryBudget | None,
     floor: int,
 ) -> None:
-    """*hook*'s body, an ASYNC hook's, within its timeout. What it sends is
-    at least *floor* deep, the depth its trigger fired at, for as long as it
-    runs, the work that fired it over or not, and a task it starts that
-    calls once it has returned starts fresh (:func:`floors_lent_while_it_runs`).
+    """*hook*'s body, run asynchronously (every hook of an ASYNC trigger,
+    whatever its declared mode, RFC §9.2, and an ASYNC hook on a SYNC one),
+    within its timeout. What it sends is at least *floor* deep, the depth
+    its trigger fired at, for as long as it runs, the work that fired it
+    over or not, and a task it starts that calls once it has returned is at
+    the depth of its own event (:func:`floors_lent_while_it_runs`).
     On *budget*, the budget of the cascade that fired it once an event's
     delivery set has run, or of the work a direct change was made in, it is
     that work until it is over: what it sends into the room, and a direct
@@ -1406,7 +1408,9 @@ class HookEngine:
         if not hooks:
             return
 
-        await self._run_async_hooks_list(hooks, room_id, trigger, event, context, budget=budget)
+        await self._run_async_hooks_list(
+            hooks, room_id, trigger, event, context, budget=budget, floor=chain_floor()
+        )
 
     async def run_observers(
         self,
@@ -1528,17 +1532,14 @@ class HookEngine:
         context: RoomContext,
         *,
         budget: ReentryBudget | None = None,
-        floor: int | None = None,
+        floor: int,
     ) -> None:
         """Run a list of hooks concurrently. Errors are logged, never raised.
 
         Each body runs on *budget* when given, and at least *floor* deep,
-        the depth *trigger* fired at: this context's own when not given, the
-        list then being awaited where the trigger fires (:func:`_run_body`)."""
+        the depth *trigger* fired at (:func:`_run_body`)."""
         if not hooks:
             return
-        if floor is None:
-            floor = chain_floor()
 
         async def _run_one(hook: HookRegistration) -> None:
             span_id = None

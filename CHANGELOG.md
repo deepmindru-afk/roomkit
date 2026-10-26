@@ -242,17 +242,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over when it sent: a quality gate relaunching the agent from a task while a
   slower observer of the same answer still ran (the turn waits for them) sent
   at the turn's depth, one deeper each round, and its fifth relaunch was never
-  answered. An ASYNC hook's body now sends at least as deep as the work that
-  fired it was when its trigger fired (a turn, a tool call, a model's
-  answer), for as long as the body runs, that work over or not, a `TurnHost`
-  verb from a turn executor's hook included; a task it starts that calls once
-  the body returned begins at depth 0, whether the turn or the trigger's
-  other hooks still run or not. The reminder loop ends after four answers at
-  `max_chain_depth=5`. Behaviour change: a post from the body of a turn
-  trigger's hook made once the turn is over is as deep as the turn's
-  response, so the agent no longer answers one made at the limit. Migration:
-  send it from a task the hook starts, which begins a new chain, or raise
-  `max_chain_depth`. Example: `examples/hook_observer_depth.py`.
+  answered. The body of a hook run asynchronously (an ASYNC hook, and a hook
+  registered SYNC on an ASYNC trigger, which runs as its ASYNC hooks do) now
+  sends at least as deep as the work that fired it was when its trigger
+  fired (a turn, a tool call, a model's answer), for as long as the body
+  runs, that work over or not, a `TurnHost` verb from a turn executor's hook
+  included; a task it starts that calls once the body returned begins at
+  depth 0, whether the turn or the trigger's other hooks still run or not
+  (its budget is unchanged: the room delivery's while that delivery runs).
+  The reminder loop ends after four answers at `max_chain_depth=5`. Behaviour
+  change, both ways: a post from the body of a turn trigger's hook made once
+  the turn is over is as deep as the turn's response, so the agent no longer
+  answers one made at the limit; and a task such a body started, calling
+  while the turn or a sibling hook still runs, is at depth 0 where it was at
+  the turn's depth, so the agent answers it at the limit too, and a loop
+  through such tasks ends at the reentry cap or by the hook's own count, not
+  at `max_chain_depth`. Migration: send from a task the hook starts what must
+  begin a new chain, pass `chain_depth=` from that task to continue one, or
+  raise `max_chain_depth`. Example: `examples/hook_observer_depth.py`.
 
 ### Fixed
 

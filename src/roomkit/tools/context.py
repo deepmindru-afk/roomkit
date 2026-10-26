@@ -539,10 +539,11 @@ def _live_turn_chain_depth() -> int:
     return ctx.chain_depth if ctx is not None and ctx.running else 0
 
 
-def _current_loop() -> object | None:
+def _current_loop() -> _ToolLoopContext | None:
     """The loop context of the turn or tool call this context runs in, over
-    or not; ``None`` outside one. Internal: what an ASYNC hook's body is lent
-    the depth of while it runs (``floors_lent_while_it_runs``)."""
+    or not; ``None`` outside one. Internal: what the body of a hook run
+    asynchronously is lent the depth of while it runs
+    (``floors_lent_while_it_runs``)."""
     return _current_loop_ctx.get()
 
 

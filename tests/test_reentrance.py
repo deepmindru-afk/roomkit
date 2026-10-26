@@ -1586,14 +1586,18 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
-    async def test_a_relaunch_a_turn_s_observer_starts_begins_a_new_chain(self) -> None:
+    @pytest.mark.parametrize("execution", [HookExecution.ASYNC, HookExecution.SYNC])
+    async def test_a_relaunch_a_turn_s_observer_starts_begins_a_new_chain(
+        self, execution: HookExecution
+    ) -> None:
         """RMK-1004, the RMK-930 decision for work that outlives what began
         it: an ``ON_AI_RESPONSE`` hook that relaunches the agent from a task
         it starts, as a quality gate does, relaunches it at depth 0 each time
         and every relaunch is answered, though the turn still runs when the
         relaunch is sent, waiting for a slower observer of the same answer
         (an audit write). With the turn's floor, each relaunch was one deeper
-        and the fourth was the last answered (RFC §8.3, §9.5.1)."""
+        and the fourth was the last answered. So for a hook registered SYNC,
+        which an ASYNC trigger runs as its ASYNC hooks (RFC §8.3, §9.2, §9.5.1)."""
         kit = await _room(RoomKit(max_chain_depth=5))
         kit.register_channel(AIChannel("ai", provider=MockAIProvider(responses=["ok"])))
         await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
@@ -1611,7 +1615,7 @@ class TestACallFromAnAsyncHook:
         async def limited(event: object) -> None:
             over.set()
 
-        @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="gate")
+        @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=execution, name="gate")
         async def gate(event: Any, ctx: RoomContext) -> None:
             if len(launched) == 5:
                 over.set()

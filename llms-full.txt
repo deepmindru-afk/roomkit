@@ -1504,11 +1504,16 @@ its response:
   Bulk work from one body stops at the cap too (15 deletes against 10: the
   last 5 refused).
 - A task the body starts and does not await begins fresh once the body has
-  returned: depth 0 and a budget of its own, whether the turn or the other
-  hooks of the same trigger still run or not. A quality gate that relaunches
-  the agent from such a task relaunches it at depth 0 each time, bounded by
-  its own attempts (`examples/hook_observer_depth.py`). A task the body
-  awaits, or gathers, stays on the budget and the depth while the body runs.
+  returned: at depth 0, whether the turn or the other hooks of the same
+  trigger still run or not, and on a budget of its own once the room's
+  delivery it was fired from is over (while it runs, a call into that room
+  draws on the delivery's budget, as any of its work does). A quality gate
+  that relaunches the agent from such a task relaunches it at depth 0 each
+  time, bounded by its own attempts, or by the first delivery's reentry cap
+  when every relaunch is sent while a turn still runs (about `10 ×
+  max_chain_depth` relaunches) (`examples/hook_observer_depth.py`). A
+  task the body awaits, or gathers, stays on the budget and the depth while
+  the body runs.
 
 Work that follows an agent's answer outside the answer's cascade, and bulk work
 of more than 50 changes, runs in such a task. A post or a `send_event()` from
