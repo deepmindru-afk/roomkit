@@ -555,19 +555,9 @@ class InboundStreamingMixin(HelpersMixin):
                 read += 1
                 if sr.chained and not await self._admit_chained_stream(sr, cascade, room_id):
                     continue
-                context = await self._build_context(room_id)
-                try:
-                    sr_result = await self._handle_streaming_response(
-                        router,
-                        sr,
-                        room_id,
-                        context,
-                        cascade=cascade,
-                        response_events=response_events,
-                    )
-                except asyncio.CancelledError:
-                    _record_cancelled_read(cascade, record, sr)
-                    raise
+                sr_result = await self._read_stream(
+                    router, sr, cascade, room_id, record, response_events=response_events
+                )
                 if sr.chained:
                     continue
                 if sr_result and sr_result.error and first_error is None:
@@ -586,6 +576,32 @@ class InboundStreamingMixin(HelpersMixin):
                 await _aclose_stream(sr.stream)
 
         return first_error, record
+
+    async def _read_stream(
+        self,
+        router: EventRouter,
+        sr: StreamingResponse,
+        cascade: DeliveryCascade,
+        room_id: str,
+        record: ResponseMetadata,
+        *,
+        response_events: list[RoomEvent] | None,
+    ) -> _StreamingResult | None:
+        """Read one stream of *cascade* on the room as it stands now; a read
+        cancelled from outside tells *record* how the caller's turns ended."""
+        context = await self._build_context(room_id)
+        try:
+            return await self._handle_streaming_response(
+                router,
+                sr,
+                room_id,
+                context,
+                cascade=cascade,
+                response_events=response_events,
+            )
+        except asyncio.CancelledError:
+            _record_cancelled_read(cascade, record, sr)
+            raise
 
     async def _admit_chained_stream(
         self, sr: StreamingResponse, cascade: DeliveryCascade, room_id: str
