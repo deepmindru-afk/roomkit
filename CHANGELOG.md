@@ -53,19 +53,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (copy it in, or serialize it), as for events. SQLiteStore and
   PostgresStore return a new object per read and are unchanged.
 
-- **The in-memory turn backend hands a request's committed events over as
-  they are** (RFC §10.6.1, §14.4, RMK-985). Each turn of an agent in the
-  owner's process wrote its `TurnRequest` as JSON and parsed it back, 383 µs
-  for a request carrying 51 events of history, 87 % of it the history. The
-  event the turn answers and the room's history are frozen records the store
-  already shares with every reader, and now cross by reference; the rest of
-  the request (the room, the bindings, the binding, the notes) still crosses
-  as JSON, so the executor changes its own copy of them. A message to an echo
-  agent takes 1.75 ms instead of 2.19. A value JSON has no form for, kept in
-  an event's metadata, reaches an in-memory executor as the object itself,
-  where it read its text; across Redis it still reads its text, and the
-  room's such values read their text on both. The Redis backend is
-  unchanged.
+- **BREAKING — an agent's turn in the owner's process reads the request's
+  events as they are** (RFC §10.6.1, §14.4, RMK-985). Each turn of an agent
+  in the owner's process wrote its `TurnRequest` as JSON and parsed it back,
+  383 µs for a request carrying 51 events of history, 87 % of it the
+  history. The event the turn answers and the room's history are records
+  nothing changes once made (committed events the store shares, or the
+  owner's own for the turn), and now reach the executor as they are; the
+  rest of the request (the room, the bindings, the binding, the notes) still
+  crosses as JSON, so the executor changes its own copy of them. A message
+  to an echo agent takes 1.75 ms instead of 2.19. This holds on any backend
+  for a turn placed on an executor of the owner's process, Redis's local
+  placement included; an executor reached across Redis still parses a copy.
+  A value JSON has no form for, kept in an event's metadata, reaches an
+  in-process executor as the object itself, where it read its text.
+  Migration: a channel's `on_event()` or an executor's hook that changed its
+  event or a history event in place (`event.metadata["x"] = ...`) now changes
+  the owner's object, and on `InMemoryStore` the stored record: copy it first
+  (`event.model_copy(update=...)`), as RFC §14.4 always asked.
 
 ### Security
 

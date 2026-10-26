@@ -2,9 +2,9 @@
 
 Every message is serialized to JSON and parsed on the other side, as any
 backend carries it, so the in-memory path is the distributed one on another
-transport; a request's committed events alone cross as the store holds them,
-frozen records it shares with every reader (:class:`CarriedRequest`). What
-it alone carries besides is the owner's execution context: a turn's
+transport; a request's events alone cross as they are, records nothing
+changes once made (:class:`CarriedRequest`). What it alone carries besides
+is the owner's execution context: a turn's
 work runs in a copy of the context of the task that submitted it, and its
 stream advances in a copy of the context of the task that first read it, so
 host code that calls the kit from a turn finds the reentrancy guards it finds
@@ -165,7 +165,8 @@ class _ExecutorLink(ExecutorLink):
 
 
 class InMemoryTurnBackend(TurnBackend):
-    """Turns carried in this process, serialized like any other (RFC §10.6).
+    """Turns carried in this process, serialized like any other but a
+    request's events (:class:`CarriedRequest`, RFC §10.6).
 
     The turns of a channel the owner's own executor hosts go to it alone,
     and fail ``no_executor`` once it closed.
@@ -194,8 +195,8 @@ class InMemoryTurnBackend(TurnBackend):
 
     def _submit_to(self, executor: TurnExecutor, request: TurnRequest) -> TurnLink:
         """Start a turn on *executor*, an executor of this process another
-        backend placed it on; carried here, serialized, in the owner's
-        execution context."""
+        backend placed it on; carried here, as :class:`CarriedRequest` carries
+        a request, in the owner's execution context."""
         if self._closed:
             raise TurnLinkError("backend_closed")
         turn = _MemoryTurn(request)

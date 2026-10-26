@@ -38,10 +38,11 @@ from roomkit.models.streaming import (
 )
 from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
-from roomkit.turns._codec import decode_item, encode_item
+from roomkit.turns._codec import decode_item, encode_item, request_json
 from roomkit.turns._error_codec import ROOMKIT_ERRORS, error_record
 from roomkit.turns.base import MessageOrder, OwnerTools, TurnBackend
-from roomkit.turns.wire import CommittedEvent, OwnerTool
+from roomkit.turns.owner import turn_request
+from roomkit.turns.wire import CommittedEvent, OwnerTool, TurnRequest
 from tests.turn_errors import same_error
 
 
@@ -196,7 +197,72 @@ def test_a_duplicate_is_dropped_and_a_gap_fails_the_turn() -> None:
     assert raised.value.reason == "frame_lost"
 
 
+class _Opaque:
+    """A value JSON has no form for."""
+
+
+def _opaque_request() -> TurnRequest:
+    """A request whose event and room each keep a value JSON has no form for,
+    the event in the room's history too."""
+    event = _event().model_copy(update={"metadata": {"handle": _Opaque()}})
+    room = Room(id="room", metadata={"session": _Opaque()})
+    context = RoomContext(room=room, bindings=[_binding()], recent_events=[event])
+    return turn_request(event, _binding(), context)
+
+
+def test_a_request_value_json_has_no_form_for_crosses_as_its_text() -> None:
+    """An application in the owner's process keeps an object in a room's
+    metadata or an event's: the request's wire form, which a distributed
+    backend carries, writes it as its text, as the record does."""
+    crossed = TurnRequest.model_validate_json(request_json(_opaque_request()))
+
+    assert crossed.event.metadata["handle"].startswith("<")
+    assert crossed.context.room.metadata["session"].startswith("<")
+    assert crossed.context.recent_events[0].metadata["handle"].startswith("<")
+
+
 # -- A turn through the in-memory backend -----------------------------------
+
+
+class _ReadsTheRequest(ScriptedChannel):
+    """Keeps what its turn read of the event and the room, and changes the
+    room and the binding it was given."""
+
+    async def on_event(self, event: RoomEvent, binding: Any, context: Any) -> ChannelOutput:
+        self.read = (event, context)
+        context.room.metadata["changed"] = True
+        binding.metadata["changed"] = True
+        return await super().on_event(event, binding, context)
+
+
+async def test_an_in_memory_turn_reads_the_request_s_events_as_they_are() -> None:
+    """RMK-985: the event the turn answers and the room's history are records
+    nothing changes once made (RFC §10.6.1, §14.4): in memory they reach the
+    executor as the owner holds them, a value JSON has no form for included,
+    and the rest of the request crosses in its wire form."""
+    request = _opaque_request()
+    channel = _ReadsTheRequest()
+
+    output = await _client(channel).run(request.event, request.binding, request.context)
+
+    read_event, read_context = channel.read
+    assert output.responded
+    assert read_event is request.event
+    assert read_context.recent_events[0] is request.event
+    assert read_context.room.metadata["session"].startswith("<")
+
+
+async def test_the_executor_changes_its_own_copy_of_the_room_and_binding() -> None:
+    """RMK-985: what crosses in the wire form is the executor's own: a channel
+    that changes the room or the binding its turn read changes nothing of
+    the owner's."""
+    channel = _ReadsTheRequest()
+    binding = _binding()
+    context = RoomContext(room=Room(id="room"), bindings=[binding])
+
+    await _client(channel).run(_event(), binding, context)
+
+    assert (context.room.metadata, binding.metadata) == ({}, {})
 
 
 async def test_the_owner_reads_new_objects_never_the_channels() -> None:

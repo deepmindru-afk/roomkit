@@ -5,8 +5,8 @@ output each have one wire form (an exception's is ``_error_codec``'s).
 Decoding builds new objects: nothing the executor holds is handed to the
 owner. What the owner sends of a room (a request, a channel control message)
 crosses as the response-metadata record does: a value JSON has no form for
-is written as its text. In memory, a request's committed events cross as the
-store holds them (:class:`CarriedRequest`).
+is written as its text. In memory, a request's events cross as they are
+(:class:`CarriedRequest`).
 """
 
 from __future__ import annotations
@@ -236,27 +236,35 @@ def request_json(request: TurnRequest) -> str:
     metadata, an event's) may hold a value an application in the owner's
     process left there that JSON has no form for: it crosses as its text,
     the record's rule (:func:`record_payload`), and the turn runs."""
+    return _request_wire(request).decode()
+
+
+def _request_wire(request: TurnRequest, exclude: dict[str, Any] | None = None) -> bytes:
+    """*request*'s wire form, the parts *exclude* names left out."""
     # pydantic_core's to_json: model_dump_json takes no fallback in pydantic
     # 2.9, the floor RoomKit declares.
-    return to_json(request, by_alias=False, fallback=str).decode()
+    return to_json(request, by_alias=False, fallback=str, exclude=exclude)
 
 
-# What a request carries that the store shares with every reader as frozen
-# records (RFC §14.4): the event the turn answers and the room's history.
-_COMMITTED_EVENTS: dict[str, Any] = {"event": True, "context": {"recent_events": True}}
+# The parts of a request the in-memory backend hands over as they are: the
+# event the turn answers and the room's history.
+_REQUEST_EVENTS: dict[str, Any] = {"event": True, "context": {"recent_events": True}}
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class CarriedRequest:
     """A turn's request as the in-memory backend carries it (RFC §10.6.1):
-    its committed events by reference, the rest in its wire form.
+    its events as they are, the rest in its wire form.
 
-    The event the turn answers and the room's history are frozen records the
-    store already shares with every reader (§14.4), and they are most of the
-    request: 51 events of history made 87 % of its JSON. The rest crosses as
-    :func:`request_json` writes it, so the executor reads its own copy of the
-    room, the bindings and the binding, a value JSON has no form for as its
-    text.
+    The event the turn answers and the room's history are records nothing
+    changes once made: committed events, which the store shares with every
+    reader (§14.4), or ones the owner made for the turn (an instruction, a
+    strategy's stand-in, a copy with content withheld), which neither the
+    owner, once it submitted the request, nor the executor changes. They are
+    most of the request: 51 events of history made 87 % of its JSON. The rest
+    crosses as :func:`request_json` writes it, so the executor reads its own
+    copy of the room, the bindings and the binding, a value JSON has no form
+    for as its text.
     """
 
     rest: bytes
@@ -265,8 +273,8 @@ class CarriedRequest:
 
     @classmethod
     def of(cls, request: TurnRequest) -> CarriedRequest:
-        """*request*, its committed events kept as they are."""
-        rest = to_json(request, by_alias=False, fallback=str, exclude=_COMMITTED_EVENTS)
+        """*request*, its events kept as they are."""
+        rest = _request_wire(request, exclude=_REQUEST_EVENTS)
         return cls(rest, request.event, tuple(request.context.recent_events))
 
     def request(self) -> TurnRequest:

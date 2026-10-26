@@ -345,12 +345,21 @@ class Channel(ABC):
     async def deliver(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
-        """Deliver an event to this channel."""
+        """Deliver an event to this channel.
+
+        *event* and *context* are snapshots others share (RFC §14.4): treat
+        them as frozen; a change made in place reaches the room's store.
+        """
 
     async def on_event(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
-        """React to an event. Default: no-op for transport channels."""
+        """React to an event. Default: no-op for transport channels.
+
+        *event*, its context's room, bindings, participants and history are
+        snapshots others share (RFC §10.6.1, §14.4): treat them as frozen; a
+        change made in place reaches the room's store and the turn's owner.
+        """
         return ChannelOutput.empty()
 
     @property

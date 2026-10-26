@@ -2,9 +2,10 @@
 
 Every message a turn backend carries is one of these records, serialized to
 JSON whatever the transport, the in-memory one included: no object of the turn
-crosses between the room owner and the executor. A link carries an
-:class:`Envelope` per message, numbered per direction, so a gap or a
-duplicate is seen on arrival.
+crosses between the room owner and the executor, but the events a request
+carries in memory, which nothing changes (``_codec.CarriedRequest``). A link
+carries an :class:`Envelope` per message, numbered per direction, so a gap or
+a duplicate is seen on arrival.
 """
 
 from __future__ import annotations
