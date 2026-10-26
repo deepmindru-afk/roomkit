@@ -16,6 +16,7 @@ from roomkit.core._delivery_targets import (
 from roomkit.core._delivery_targets import (
     prepare_delivery,
 )
+from roomkit.core.locks import _has_room_lock
 from roomkit.models.delivery import DeliveryError, DeliveryOutcome
 from roomkit.models.enums import ChannelCategory, ChannelType
 
@@ -165,9 +166,12 @@ class Queued(DeliveryStrategy):
     and a draining caller that holds the room's lock leaves the callers
     behind it free to deliver once it returns. A compatible request batched
     behind another is delivered with it, by that request's caller. A caller
-    holding the room's lock that waits behind another caller's batch for
-    that room still waits on itself. Followers wait for their own request's
-    outcome or for their turn.
+    holding the lock of the room it delivers into, while another caller
+    drains, delivers at once, unbatched, as :class:`Immediate` does: nested
+    in the section that holds the lock (RFC §9.5.1), it would otherwise wait
+    behind a batch whose delivery needs that lock, or be batched into one,
+    that is, wait on itself. Followers wait for their own request's outcome
+    or for their turn.
     """
 
     def __init__(
@@ -184,6 +188,8 @@ class Queued(DeliveryStrategy):
         if refusal is not None:
             return refusal
         assert channel_id is not None
+        if self._delivering and _has_room_lock(ctx.room_id, ctx.kit.lock_manager):
+            return await _deliver_to_channel(ctx, channel_id)
         request = _QueuedRequest(ctx, channel_id, _loop_future())
         self._queue.append(request)
         if self._delivering and not await self._wait_for_turn(request):

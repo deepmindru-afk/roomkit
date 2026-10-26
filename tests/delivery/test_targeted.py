@@ -257,6 +257,65 @@ async def test_a_queue_drained_under_the_room_lock_lets_its_followers_deliver() 
     assert (inbound.blocked, got["hook"].status, delivered.status) == (False, "sent", "sent")
 
 
+@pytest.mark.parametrize("drains", ["another caller", "the kit, the hook's own message"])
+async def test_a_caller_holding_the_room_lock_delivers_past_a_drain_under_way(drains: str) -> None:
+    """RMK-997: a locked BEFORE_BROADCAST hook delivers into its room through
+    a shared Queued strategy while another caller drains it: an application
+    whose idle wait is still running, or the kit-wide strategy delivering the
+    very message whose pass runs the hook. Behind that batch, whose delivery
+    needs the lock the hook holds, it waited on itself until
+    ``process_timeout``; it now delivers at once, unbatched, and every
+    delivery completes (RFC §9.5.1, §22.2)."""
+    kit = RoomKit(process_timeout=0.5, delivery_strategy="queued")
+    kit.register_channel(SimpleChannel("human"))
+    await kit.create_room(room_id="room-1")
+    await kit.attach_channel("room-1", "human")
+    strategy = Queued(buffer=0) if drains == "another caller" else None
+    entered, release = asyncio.Event(), asyncio.Event()
+    hooked = asyncio.Event()
+    got: dict[str, object] = {}
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="hooked")
+    async def hook(event, ctx):
+        if isinstance(event.content, TextContent) and event.content.body == "go":
+            got["hook"] = await kit.deliver(
+                "room-1", "from the hook", addressed_to=[], strategy=strategy, metadata={"h": 1}
+            )
+            hooked.set()
+        return HookResult.allow()
+
+    async with kit:
+        with patch(
+            "roomkit.core.delivery._wait_for_voice_idle",
+            side_effect=_first_wait_held(entered, release),
+        ):
+            if drains == "another caller":
+                first = asyncio.create_task(
+                    kit.deliver("room-1", "app", addressed_to=[], strategy=strategy)
+                )
+                await entered.wait()
+                go = asyncio.create_task(kit.process_inbound(_said("go")))
+                await asyncio.wait_for(hooked.wait(), 1)  # the app's wait still runs
+                release.set()
+            else:
+                release.set()
+                first = asyncio.create_task(kit.deliver("room-1", "go", addressed_to=[]))
+                go = None
+            outcomes = await asyncio.wait_for(asyncio.gather(first, *[go] if go else []), 2)
+        bodies = [
+            e.content.body
+            for e in await kit.get_timeline("room-1")
+            if isinstance(e.content, TextContent)
+        ]
+    assert [getattr(o, "status", None) or o.blocked for o in outcomes] == (
+        ["sent", False] if go else ["sent"]
+    )
+    assert (got["hook"].status, sorted(bodies)) == (
+        "sent",
+        sorted(["app", "go", "from the hook"] if go else ["go", "from the hook"]),
+    )
+
+
 async def test_a_queued_batch_is_delivered_once_its_idle_wait_times_out() -> None:
     """RFC §22.2: a wait for idle longer than ``playback_timeout`` delivers
     the batch anyway, as WaitForIdle's does (RMK-983)."""
