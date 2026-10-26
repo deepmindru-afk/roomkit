@@ -144,6 +144,16 @@ class _SessionTeardown:
     done: asyncio.Future[None]
 
 
+@dataclass(frozen=True)
+class _SessionLeftovers:
+    """What a session's forgotten records leave to close (``_forget_session``)."""
+
+    resamplers: Any
+    session_span_id: str | None
+    turn_span_id: str | None
+    send_queue: Any
+
+
 @dataclass
 class _ConnectingSession:
     """Own a handshake separately from the application task awaiting it."""
@@ -1354,7 +1364,7 @@ class RealtimeVoiceChannel(
         await self._stop_session_tools(session)
         with contextlib.suppress(Exception):
             self._pipeline_session_ended(session)
-        resamplers, span_id = self._forget_failed_start(session.id)
+        left = self._forget_session(session.id)
         if self._skill_support:
             self._skill_support.cleanup_session(session.id)
         if self._tool_search_support:
@@ -1362,43 +1372,67 @@ class RealtimeVoiceChannel(
         for owner in (self._provider, self._transport):
             with contextlib.suppress(Exception):
                 await owner.disconnect(session)
-        if resamplers:
-            for resampler in resamplers:
+        if left.send_queue is not None:
+            left.send_queue.put_nowait(None)
+        if left.resamplers:
+            for resampler in left.resamplers:
                 with contextlib.suppress(Exception):
                     resampler.close()
-        if span_id:
-            self._telemetry_provider.end_span(span_id)
+        if left.turn_span_id:
+            self._telemetry_provider.end_span(left.turn_span_id)
+        if left.session_span_id:
+            self._telemetry_provider.end_span(left.session_span_id)
             self._telemetry_provider.flush()
 
-    def _forget_failed_start(self, session_id: str) -> tuple[Any, str | None]:
-        """Forget what a start that failed recorded for *session_id*, as a
-        session's end does; the resamplers and the span it held, to close."""
+    def _forget_session(self, session_id: str) -> _SessionLeftovers:
+        """Forget every record the channel holds for *session_id*, at its end
+        or once its start failed: one list for both, so that a record added
+        later cannot be forgotten on one path and kept on the other. The
+        calls still in flight leave the books with it. What is left to close
+        (resamplers, spans, the audio send queue) is returned."""
         with self._state_lock:
-            resamplers = self._session_resamplers.pop(session_id, None)
-            self._session_transport_rates.pop(session_id, None)
-            self._session_transport_output_rates.pop(session_id, None)
-            self._session_pipeline_rates.pop(session_id, None)
-            self._preconnect_audio.pop(session_id, None)
-            self._preconnect_audio_bytes.pop(session_id, None)
-            self._preconnect_audio_dropped.discard(session_id)
-            idle = self._idle_events.pop(session_id, None)
-            if idle is not None:
-                idle.set()
-            self._user_speaking.pop(session_id, None)
-            self._user_turn_start_at.pop(session_id, None)
-            self._provider_idle.pop(session_id, None)
-            self._tool_calls.stop_awaiting(session_id)
+            self._sessions.pop(session_id, None)
+            self._session_rooms.pop(session_id, None)
+            self._session_bindings.pop(session_id, None)
             self._session_tools.pop(session_id, None)
             self._session_roles.pop(session_id, None)
             self._session_agent_policies.pop(session_id, None)
             self._session_config_locks.pop(session_id, None)
+            self._audio_generation.pop(session_id, None)
+            self._session_transport_rates.pop(session_id, None)
+            self._session_transport_output_rates.pop(session_id, None)
+            self._session_pipeline_rates.pop(session_id, None)
+            self._audio_forward_count.pop(session_id, None)
+            self._forget_transcription_state(session_id)
+            self._end_recording_track(session_id)
+            self._barge_in_active.discard(session_id)
+            self._playback_started_at.pop(session_id, None)
+            self._playback_position_ms.pop(session_id, None)
+            self._playback_buffer.pop(session_id, None)
             self._response_generation.pop(session_id, None)
             self._audio_drained.discard(session_id)
             self._has_pipeline_vad.pop(session_id, None)
-            self._audio_generation.pop(session_id, None)
-            self._forget_transcription_state(session_id)
-            span_id = self._session_spans.pop(session_id, None)
-            return resamplers, span_id
+            idle = self._idle_events.pop(session_id, None)
+            if idle is not None:
+                idle.set()  # unblock any waiters
+            self._user_speaking.pop(session_id, None)
+            self._user_turn_start_at.pop(session_id, None)
+            self._provider_idle.pop(session_id, None)
+            self._tool_calls.take(session_id)
+            self._transcript_ledger.pop(session_id, None)
+            self._delegated_before.discard(session_id)
+            self._pending_delegations.pop(session_id, None)
+            self._audio_send_workers.pop(session_id, None)
+            self._audio_dropped.pop(session_id, None)
+            self._preconnect_audio.pop(session_id, None)
+            self._preconnect_audio_bytes.pop(session_id, None)
+            self._preconnect_audio_dropped.discard(session_id)
+            return _SessionLeftovers(
+                resamplers=self._session_resamplers.pop(session_id, None),
+                session_span_id=self._session_spans.pop(session_id, None),
+                turn_span_id=self._turn_spans.pop(session_id, None),
+                send_queue=self._audio_send_queues.pop(session_id, None),
+            )
 
     def _check_connecting_session(self, session: VoiceSession) -> None:
         pending = self._connecting_sessions.get(session.id)
@@ -1762,47 +1796,9 @@ class RealtimeVoiceChannel(
         if self._tool_search_support:
             self._tool_search_support.cleanup_session(session.id)
 
-        with self._state_lock:
-            self._sessions.pop(session.id, None)
-            self._session_rooms.pop(session.id, None)
-            self._session_bindings.pop(session.id, None)
-            self._session_tools.pop(session.id, None)
-            self._session_roles.pop(session.id, None)
-            self._session_agent_policies.pop(session.id, None)
-            self._session_config_locks.pop(session.id, None)
-            self._audio_generation.pop(session.id, None)
-            self._session_transport_rates.pop(session.id, None)
-            self._session_transport_output_rates.pop(session.id, None)
-            self._session_pipeline_rates.pop(session.id, None)
-            self._audio_forward_count.pop(session.id, None)
-            self._forget_transcription_state(session.id)
-            self._end_recording_track(session.id)
-            self._barge_in_active.discard(session.id)
-            self._playback_started_at.pop(session.id, None)
-            self._playback_position_ms.pop(session.id, None)
-            self._playback_buffer.pop(session.id, None)
-            self._response_generation.pop(session.id, None)
-            self._audio_drained.discard(session.id)
-            self._has_pipeline_vad.pop(session.id, None)
-            idle = self._idle_events.pop(session.id, None)
-            if idle is not None:
-                idle.set()  # unblock any waiters
-            self._user_speaking.pop(session.id, None)
-            self._user_turn_start_at.pop(session.id, None)
-            self._provider_idle.pop(session.id, None)
-            self._tool_calls.take(session.id)
-            self._transcript_ledger.pop(session.id, None)
-            self._delegated_before.discard(session.id)
-            self._pending_delegations.pop(session.id, None)
-            turn_span_id = self._turn_spans.pop(session.id, None)
-            session_span_id = self._session_spans.pop(session.id, None)
-            resamplers = self._session_resamplers.pop(session.id, None)
-            send_queue = self._audio_send_queues.pop(session.id, None)
-            self._audio_send_workers.pop(session.id, None)
-            self._audio_dropped.pop(session.id, None)
-            self._preconnect_audio.pop(session.id, None)
-            self._preconnect_audio_bytes.pop(session.id, None)
-            self._preconnect_audio_dropped.discard(session.id)
+        left = self._forget_session(session.id)
+        turn_span_id, session_span_id = left.turn_span_id, left.session_span_id
+        resamplers, send_queue = left.resamplers, left.send_queue
 
         if self._reasoning_backend is not None:
             try:
