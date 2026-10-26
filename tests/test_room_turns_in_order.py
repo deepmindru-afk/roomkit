@@ -33,7 +33,7 @@ from roomkit.models.event import RoomEvent, TextContent
 from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
-from roomkit.turns import InMemoryTurnBackend, TurnExecutor
+from roomkit.turns import InMemoryTurnBackend, TurnExecutor, current_turn_host
 from tests.test_framework import AILikeChannel, SimpleChannel
 
 WAIT = 2.0
@@ -345,16 +345,29 @@ _ASKS_ITS_OWN_ROOM = [
 ]
 
 
-@pytest.mark.parametrize("door", ["process_inbound", "deferred", "send_event"])
+_THE_KIT_OBJECT = pytest.mark.in_process("the tool calls the kit object, not its turn's host")
+
+
+@pytest.mark.parametrize(
+    "door",
+    [
+        pytest.param("process_inbound", marks=_THE_KIT_OBJECT),
+        pytest.param("deferred", marks=_THE_KIT_OBJECT),
+        "turn host",
+    ],
+)
 async def test_a_message_a_turn_sends_into_its_own_room_is_answered_after_it(door: str) -> None:
     # The tool's call returns without the answer: waiting for it would wait
-    # on the turn that made the call.
+    # on the turn that made the call. A tool on another executor reaches the
+    # room through its turn's host.
     kit = await _bare_room()
 
     async def ask_room(name: str, arguments: dict[str, Any]) -> str:
         question = TextContent(body="nested question")
-        if door == "send_event":
-            await kit.send_event("r", "sms", question)
+        if door == "turn host":
+            host = current_turn_host()
+            assert host is not None
+            await host.send_event("r", "sms", question)
             return "sent"
         message = InboundMessage(channel_id="sms", sender_id="user", content=question)
         result = await kit.process_inbound(message, room_id="r", defer_delivery=door == "deferred")
