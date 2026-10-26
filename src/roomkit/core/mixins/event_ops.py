@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core._authors import with_committed_record
 from roomkit.core._publication_keys import refuse_reserved
 from roomkit.core._reentrance import charge_direct_change
 from roomkit.core.exceptions import RoomClosedError, RoomNotFoundError
@@ -127,11 +128,13 @@ class EventOpsMixin(HelpersMixin):
 
         Provided fields replace the stored values wholesale (``metadata`` is
         not merged — pass the full mapping). Unlike the inbound EDIT path,
-        no ``edited`` marker is added; the caller controls metadata. The
-        record of its author the event was committed with
-        (``metadata["author"]``, RFC §10.1 step 12) holds while it stays in
-        the metadata and the source stays the one recorded; otherwise a
-        reader ranks the event's author against the room's register.
+        no ``edited`` marker is added; the caller controls metadata, but for
+        the record of its author the event was committed with
+        (``metadata["author"]``, RFC §10.1 step 12), which the room fixes:
+        the update keeps it, and writes none on an event committed with none,
+        whatever *metadata* holds under the key. The record holds while the
+        source stays the one recorded; otherwise a reader ranks the event's
+        author against the room's register.
 
         Fires ON_EVENT_UPDATED with the updated event. Returns the updated
         event, or ``None`` when *event_id* does not exist in *room_id* (no
@@ -171,7 +174,7 @@ class EventOpsMixin(HelpersMixin):
             if source is not None:
                 update["source"] = source
             if metadata is not None:
-                update["metadata"] = metadata
+                update["metadata"] = with_committed_record(metadata, target)
             changed = target.model_copy(update=update)
             if changed == target:
                 return target

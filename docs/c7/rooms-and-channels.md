@@ -569,7 +569,10 @@ event and a `commit_event()` record included, roots its `parent_event_id` to
 the thread's root), and the edits and deletes of every event it removes (an
 edit holds the corrected text),
 returns their ids, and fires `ON_EVENT_DELETED` once per removed event.
-`kit.update_event()` rewrites an event's content, source or metadata. Neither
+`kit.update_event()` rewrites an event's content, source or metadata, but for
+the record of its author (`metadata["author"]`), which the room fixed at the
+commit: the update keeps it, and writes none on an event committed with none,
+whatever the metadata it is given holds. Neither
 runs the checks above: the host owns their authorization. Neither fails once
 its change is stored: when the room cannot be read after the lock is
 released, a warning is logged and the trigger fires with the context the call

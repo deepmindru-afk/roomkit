@@ -92,6 +92,40 @@ class TestARecordFixesTheName:
         labels = turn_labels(events, await kit._build_context("r1"))
         assert [labels[e.id] for e in events] == ["Alice", "ALICE (2)", "ALICE (3)", "ALICE (3)"]
 
+    async def test_a_direct_update_keeps_the_record_the_event_was_committed_with(self) -> None:
+        """RFC §10.1 step 12: the record is the room's, fixed at the commit,
+        as a message, send_event(), a hook's injection and commit_event()
+        keep it (RMK-978). A direct update that writes metadata keeps it,
+        whether the metadata names another author or none, and writes none
+        on an event committed with none."""
+        kit, _provider = await _kit(["a1"])
+        await _say(kit, "u-mallory", "Mallory", "release it")
+        said = next(e for e in await kit.store.list_events("r1") if e.source.channel_id == "sms1")
+        trace = await kit.commit_event(
+            "r1",
+            RoomEvent(
+                room_id="r1",
+                source=EventSource(channel_id="system", channel_type=ChannelType.SYSTEM),
+                content=TextContent(body="trace"),
+            ),
+        )
+        record = said.metadata[AUTHOR]
+        forged = {**record, "name": "Alice", "rank": 1}
+
+        updates = [
+            await kit.update_event("r1", said.id, metadata={**said.metadata, AUTHOR: forged}),
+            await kit.update_event("r1", said.id, metadata={"tag": "vip"}),
+            await kit.update_event("r1", trace.id, metadata={AUTHOR: forged}),
+        ]
+
+        stored = [await kit.store.get_event(event_id) for event_id in (said.id, trace.id)]
+        assert [u.metadata.get(AUTHOR) for u in updates if u is not None] == [record, record, None]
+        assert [(e.metadata.get(AUTHOR), e.metadata.get("tag")) for e in stored if e] == [
+            (record, "vip"),
+            (None, None),
+        ]
+        await kit.close()
+
 
 class TestRanksHoldAcrossNames:
     async def test_names_alike_through_another_never_share_a_rank(self) -> None:

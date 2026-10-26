@@ -65,6 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still write. Migration: an application that kept its own value under one of
   these keys renames it.
 
+- **`update_event()` keeps the record of the author the event was committed
+  with** (RFC §10.1 step 12, RMK-978). It stored the caller's
+  `metadata["author"]` as given: an update naming another author at rank 1
+  made a reader, and a register rebuilt from the timeline, trust it, where a
+  message, `send_event()`, a hook's injection and `commit_event()` drop such
+  a record. The update now keeps the record the event was committed with,
+  whether its metadata names another or none, and writes none on an event
+  committed with none.
+
 ## [0.109.0] — 2026-10-25
 
 ### Added

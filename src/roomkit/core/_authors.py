@@ -170,6 +170,17 @@ def recorded_author(event: RoomEvent) -> tuple[str, int, str] | None:
     return None
 
 
+def with_committed_record(metadata: dict[str, Any], stored: RoomEvent) -> dict[str, Any]:
+    """*metadata*, a direct update's of *stored*, with the record of the
+    author *stored* was committed with (:data:`AUTHOR`), and none when it was
+    committed with none: the record is the room's, fixed at the commit (RFC
+    §10.1 step 12), so a direct update never writes one of its own."""
+    kept = {key: value for key, value in metadata.items() if key != AUTHOR}
+    if AUTHOR in stored.metadata:
+        kept[AUTHOR] = stored.metadata[AUTHOR]
+    return kept
+
+
 class AuthorRegister:
     """A room's register of authors: for each thing a name reads as (a
     skeleton, hashed), the sources whose names read so and the rank of each.
