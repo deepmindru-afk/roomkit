@@ -11,7 +11,12 @@ from typing import Any, ClassVar, Protocol
 
 from roomkit.core._changes import holds_change
 from roomkit.core._instructions import kept_metadata
-from roomkit.core._reentrance import ReentryBudget, after_delivery, work_budget
+from roomkit.core._reentrance import (
+    ReentryBudget,
+    after_delivery,
+    outside_the_rooms_work,
+    work_budget,
+)
 from roomkit.core.exceptions import ReentryLoopCapError
 from roomkit.core.locks import lent_while_it_runs, unlocked_context
 from roomkit.core.task_utils import held_runs, start_named
@@ -109,6 +114,20 @@ TURN_TRIGGERS: frozenset[HookTrigger] = frozenset(
 """The triggers that fire on the turn executor hosting the channel, during a
 turn or between turns (RFC §10.6.6); every other trigger fires on the room
 owner."""
+
+PER_TOOL_CALL_TRIGGERS: frozenset[HookTrigger] = frozenset(
+    {
+        HookTrigger.BEFORE_TOOL_USE,
+        HookTrigger.ON_TOOL_CALL,
+        HookTrigger.AFTER_TOOL_ROUND,
+        HookTrigger.ON_USER_INPUT_REQUIRED,
+    }
+)
+"""The SYNC triggers that fire per tool call or per round of a turn, a
+realtime or a conference model's tool calls included (``ON_TOOL_CALL``), and
+an input request, which an ACP agent makes per tool it asks to run: a turn
+may make hundreds, so their observers keep a budget of their own rather than
+draw on the cascade's hook calls (RMK-978)."""
 
 TYPED_TURN_TRIGGERS: frozenset[HookTrigger] = frozenset(
     {HookTrigger.BEFORE_TOOL_USE, HookTrigger.ON_TOOL_CALL, HookTrigger.ON_USER_INPUT_REQUIRED}
@@ -1439,17 +1458,24 @@ class HookEngine:
         work as an ``AFTER_BROADCAST`` body is (:func:`_run_body`): what it
         sends into the room draws one of the cascade's hook calls, and past
         the cap is refused as theirs is, so an observer that posts on every
-        event it observes stops (RMK-978). Named in :func:`held_runs`, so a
-        ``close()`` it runs spares it rather than wait for itself.
+        event it observes stops (RMK-978). The observers of a trigger that
+        fires per tool call (:data:`PER_TOOL_CALL_TRIGGERS`) stand in none of
+        the room's work: what they send into the room is a new arrival on a
+        budget of its own, as deep as the turn. Named in :func:`held_runs`,
+        so a ``close()`` it runs spares it rather than wait for itself.
         """
         if not hooks:
             return
+        run_in = unlocked_context()
+        if trigger in PER_TOOL_CALL_TRIGGERS:
+            budget = None
+            outside_the_rooms_work(run_in)
+        else:
+            budget = work_budget(room_id)
         task = start_named(
-            self._run_async_hooks_list(
-                hooks, room_id, trigger, event, context, budget=work_budget(room_id)
-            ),
+            self._run_async_hooks_list(hooks, room_id, trigger, event, context, budget=budget),
             name=f"roomkit-observers-{trigger}",
-            context=unlocked_context(),
+            context=run_in,
         )
         self._observers.add(task)
         task.add_done_callback(self._observers.discard)

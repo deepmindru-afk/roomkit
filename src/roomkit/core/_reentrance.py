@@ -224,6 +224,15 @@ def work_budget(room_id: str) -> ReentryBudget | None:
     return frame.budget if frame is not None else None
 
 
+def outside_the_rooms_work(context: contextvars.Context) -> contextvars.Context:
+    """*context*, made to stand in none of the rooms' work: a call made in it
+    is a new arrival on a budget of its own (RFC §9.5.1), still as deep as
+    the turns it runs within (§8.3). The observers of a trigger that fires
+    per tool call run in it (RMK-978)."""
+    context.run(_frames.set, ())
+    return context
+
+
 def charge_direct_change(change: Entry, room_id: str, call: str) -> None:
     """Draw the hook call *change*, a direct change of *room_id* made from
     an ASYNC hook's body, costs before it writes (RFC §9.5.1, §10.3);

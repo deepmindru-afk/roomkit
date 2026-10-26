@@ -116,7 +116,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   makes into the room is a new arrival that draws one of the cascade's hook
   calls, at least one deeper than its event, and past the cap it is refused
   as theirs are (`send_event()` and `post()` store it `BLOCKED` with
-  `reentry_loop_cap`). Every SYNC trigger's observers run so.
+  `reentry_loop_cap`). So do the observers of `BEFORE_BROADCAST`,
+  `BEFORE_DELIVER`, `BEFORE_TTS`, `BEFORE_AI_CONTEXT_BUILD`,
+  `BEFORE_AI_GENERATION`, `ON_SPEAK_DECISION`, `ON_VERIFICATION_REQUIRED` and
+  the other SYNC triggers, but for those that fire per tool call or per
+  round (`BEFORE_TOOL_USE`, `ON_TOOL_CALL`, `AFTER_TOOL_ROUND`, and
+  `ON_USER_INPUT_REQUIRED`, which an ACP agent fires per tool it asks to
+  run): a turn may make hundreds of tool calls, so their observers stand in
+  none of the room's work, and what they send into the room is a new arrival
+  on a budget of its own, as deep as the turn. An audit that posts once per
+  tool call, which stopped after 50 in one cascade with an in-memory turn
+  backend (each post drew one of the cascade's passes), posts for every call,
+  as it already did across a Redis turn backend.
 
 ### Fixed
 

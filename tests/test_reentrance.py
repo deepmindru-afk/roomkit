@@ -916,6 +916,53 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
+    @pytest.mark.parametrize(
+        "trigger",
+        [HookTrigger.ON_TOOL_CALL, HookTrigger.BEFORE_TOOL_USE, HookTrigger.AFTER_TOOL_ROUND],
+    )
+    async def test_an_observer_of_a_trigger_per_tool_call_keeps_a_budget_of_its_own(
+        self, trigger: HookTrigger
+    ) -> None:
+        """RMK-978: a turn may make hundreds of tool calls, so the observers
+        of the triggers that fire per tool call or per round do not draw on
+        the cascade's hook calls: an audit that posts once per tool call
+        posts for every call, past the cap."""
+        # The agent answers at depth 1: max_chain_depth=2, 20 hook calls.
+        kit = await _room(RoomKit(max_chain_depth=2), SimpleChannel("log"))
+        rounds = 2 * BUDGET + 5
+
+        async def lookup(name: str, arguments: dict[str, Any]) -> str:
+            return f"found {arguments['q']}"
+
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    finish_reason="tool_calls",
+                    tool_calls=[AIToolCall(id=f"t{n}", name="lookup", arguments={"q": n})],
+                )
+                for n in range(rounds)
+            ]
+            + [AIResponse(content="Done.", finish_reason="stop")]
+        )
+        tools = [AITool(name="lookup", description="d")]
+        kit.register_channel(AIChannel("ai", provider=provider, tool_handler=lookup, tools=tools))
+        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        posted: list[RoomEvent] = []
+
+        @kit.hook(trigger, execution=HookExecution.ASYNC, name="audit")
+        async def audit(event: Any, ctx: RoomContext) -> None:
+            posted.append(
+                await kit.send_event("r1", "log", TextContent(body="called"), visibility="log")
+            )
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            await asyncio.wait_for(_observed(kit), 5)
+            assert [e.blocked_by for e in posted] == [None] * rounds
+        finally:
+            await kit.close()
+
     async def test_a_hook_opening_a_room_after_every_event_stops_at_the_cap(self) -> None:
         """A message the hook sends that opens a room is the cascade's work
         too, charged before the room is created: a hook that opens a room

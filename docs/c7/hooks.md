@@ -239,7 +239,8 @@ budget, and a message it routes back into that room raises
 hook the cascade fires once an event's delivery set has run (`AFTER_BROADCAST`,
 a change's `ON_EVENT_UPDATED` or `ON_EVENT_DELETED`) or of an ASYNC hook
 observing a SYNC trigger the room's work fires (an ASYNC hook on
-`BEFORE_BROADCAST`, `BEFORE_TTS`, `ON_TOOL_CALL`...), is a new arrival with its
+`BEFORE_BROADCAST`, `BEFORE_DELIVER`, `BEFORE_TTS`...; not one that fires per
+tool call, below), is a new arrival with its
 own ticket and `process_timeout`, but it draws on the budget of the cascade
 that delivers while that work runs (a hook's body on the cascade's hook
 calls, a counter of the same size kept apart from its passes), and a call
@@ -477,7 +478,11 @@ for them, so a hook whose work it needs first is registered SYNC (RMK-903).
 Fired from the room's work, such an observer is that cascade's work: what it
 sends into the room draws one of the cascade's hook calls, as an
 `AFTER_BROADCAST` body's does, so one that posts on every event it observes
-stops at the cap (RMK-978).
+stops at the cap (RMK-978). The observers of the triggers that fire per tool
+call or per round (`BEFORE_TOOL_USE`, `ON_TOOL_CALL`, `AFTER_TOOL_ROUND`,
+`ON_USER_INPUT_REQUIRED`) stand in none of the room's work: a turn may make
+hundreds of tool calls, and what they send into the room is a new arrival on
+a budget of its own, as deep as the turn.
 SYNC-registered hooks (the default) on an ASYNC trigger
 fire like any other observer. Triggers marked *Reserved* exist in the enum but
 are not fired by any built-in code.
