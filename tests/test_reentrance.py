@@ -886,6 +886,8 @@ class _AnsweringModel(MockRealtimeProvider):
         super().__init__()
         self._rounds = rounds
         self.answers: list[asyncio.Task[None]] = []
+        self.silences: list[bool] = []
+        """Whether each text injected into its session was silent, in order."""
 
     def answer(self, session: Any) -> None:
         if len(self.answers) < self._rounds:
@@ -895,6 +897,7 @@ class _AnsweringModel(MockRealtimeProvider):
 
     async def inject_text(self, session: Any, text: str, **kwargs: Any) -> Any:
         result = await super().inject_text(session, text, **kwargs)
+        self.silences.append(bool(kwargs.get("silent")))
         if not kwargs.get("silent"):
             self.answer(session)
         return result
@@ -912,7 +915,7 @@ async def _until_the_model_rests(kit: RoomKit, model: _AnsweringModel, room_id: 
             return
 
 
-async def _realtime_model_host(model: _AnsweringModel) -> tuple[RoomKit, str, str, Any]:
+async def _realtime_model_host(model: _AnsweringModel) -> tuple[RoomKit, str, str, Any, Any]:
     """A realtime voice channel serving *model* in room ``r1``, ``sms`` to post."""
 
     async def lookup(name: str, arguments: dict[str, Any]) -> str:
@@ -928,10 +931,10 @@ async def _realtime_model_host(model: _AnsweringModel) -> tuple[RoomKit, str, st
     )
     kit.register_channel(channel)
     await kit.attach_channel("r1", "rt")
-    return kit, "r1", "sms", await channel.start_session("r1", "u", object())
+    return kit, "r1", "sms", channel, await channel.start_session("r1", "u", object())
 
 
-async def _conference_model_host(model: _AnsweringModel) -> tuple[RoomKit, str, str, Any]:
+async def _conference_model_host(model: _AnsweringModel) -> tuple[RoomKit, str, str, Any, Any]:
     """A conference whose realtime configuration serves *model*, ``src`` to post."""
 
     async def lookup(room_id: str, name: str, arguments: dict[str, Any]) -> str:
@@ -946,7 +949,7 @@ async def _conference_model_host(model: _AnsweringModel) -> tuple[RoomKit, str, 
     await kit.attach_channel(ROOM, "conf")
     await kit.attach_channel(ROOM, "src")
     session = await channel._realtime.ensure_session(ROOM)  # noqa: SLF001
-    return kit, ROOM, "src", session
+    return kit, ROOM, "src", channel, session
 
 
 def _realtime_reported_outside(
@@ -993,7 +996,9 @@ def _realtime_reported_outside(
     return channel, provider, entered
 
 
-_MODEL_HOSTS: dict[str, Callable[[_AnsweringModel], Awaitable[tuple[RoomKit, str, str, Any]]]] = {
+_MODEL_HOSTS: dict[
+    str, Callable[[_AnsweringModel], Awaitable[tuple[RoomKit, str, str, Any, Any]]]
+] = {
     "realtime": _realtime_model_host,
     "conference": _conference_model_host,
 }
@@ -1157,28 +1162,33 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
+    @pytest.mark.parametrize("tells", ["a post", "an injection"])
     @pytest.mark.parametrize("trigger", [HookTrigger.ON_TOOL_CALL, HookTrigger.BEFORE_TOOL_USE])
     @pytest.mark.parametrize("door", ["realtime", "conference"])
     async def test_an_observer_of_a_realtime_tool_call_its_model_answers_ends_at_the_depth_limit(
-        self, door: str, trigger: HookTrigger
+        self, door: str, trigger: HookTrigger, tells: str
     ) -> None:
-        """RMK-983: a loop of observer post, the speech-to-speech model's
-        answer, its tool call, the next post. The post is at least as deep
-        as the answer that issued the call (RFC §8.3), and a text past the
-        limit enters the model's session silently, so it answers nothing
-        and the loop ends at ``max_chain_depth``."""
+        """RMK-983: a loop of observer telling the model, its answer, its
+        tool call, the observer telling it again, through a post into the
+        room or straight through ``inject_text()``. What the observer sends
+        is at least as deep as the answer that issued the call (RFC §8.3),
+        and a text past the limit enters the model's session silently, so it
+        answers nothing and the loop ends at ``max_chain_depth``: three
+        calls, the third one's text silent."""
         model = _AnsweringModel(rounds=4 * BUDGET)
-        kit, room_id, poster, session = await _MODEL_HOSTS[door](model)
-        posted: list[RoomEvent] = []
+        kit, room_id, poster, channel, session = await _MODEL_HOSTS[door](model)
 
         @kit.hook(trigger, execution=HookExecution.ASYNC, name="audit")
         async def audit(event: Any, ctx: RoomContext) -> None:
-            posted.append(await kit.send_event(room_id, poster, TextContent(body="called")))
+            if tells == "a post":
+                await kit.send_event(room_id, poster, TextContent(body="called"))
+            else:
+                await channel.inject_text(session, "called")
 
         try:
             model.answer(session)
             await asyncio.wait_for(_until_the_model_rests(kit, model, room_id), 5)
-            assert [e.chain_depth for e in sorted(posted, key=lambda e: e.index)] == [1, 2, 3]
+            assert (len(model.answers), model.silences) == (3, [False, False, True])
         finally:
             await kit.close()
 

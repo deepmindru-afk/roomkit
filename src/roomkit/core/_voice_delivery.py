@@ -10,7 +10,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING, Any
 
-from roomkit.core._reentrance import answers_past_limit
+from roomkit.core._reentrance import answers_past_limit, chain_floor
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.delivery import DeliveryError, DeliveryOutcome
 from roomkit.models.enums import Access, RoomStatus
@@ -56,6 +56,15 @@ def injection_silent(binding: ChannelBinding) -> bool:
     return (
         binding.muted or binding.output_muted or not binding.can_write or _INJECTED_DELIVERY.get()
     )
+
+
+def injection_depth(chain_depth: int) -> int:
+    """The depth a text injected into a realtime host's model now carries:
+    *chain_depth*, or the depth of the work it is injected from (a turn, a
+    tool call, a hook's body) when that is deeper, whatever the caller
+    passed, as a delivery's (RFC §8.3). An observer that tells the model
+    something at each of its tool calls then ends at the limit too."""
+    return max(chain_depth, chain_floor())
 
 
 def held_at_the_limit(kit: RoomKit | None, chain_depth: int) -> bool:

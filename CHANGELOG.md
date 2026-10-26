@@ -198,7 +198,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text whose answer would be past the limit (its depth plus one reaching
   `max_chain_depth`) enters the model's session silently, whatever brings
   it: a broadcast, `deliver()`, a pipeline's handoff greeting, or
-  `inject_text()` with that `chain_depth`. The model takes it into its
+  `inject_text()`, whose text is at least as deep as the work it is called
+  from (a turn, a tool call, a hook's body), as `deliver()`'s is, whatever
+  `chain_depth` it names, so a hook that injects at each call ends too. The
+  model takes it into its
   context and answers nothing, as an agent past the limit is not asked, and
   the log says why. With `max_chain_depth=4` the loop ends after three
   posts. Behaviour change: in a room with a realtime model and an agent,

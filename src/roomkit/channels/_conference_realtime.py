@@ -72,7 +72,7 @@ from roomkit.channels._realtime_tool_executor import (
 )
 from roomkit.channels._served_tools import CollisionLog, dict_tool_name, warn_tools_uncallable
 from roomkit.channels._tool_registry import schema_tool
-from roomkit.core._voice_delivery import held_at_the_limit
+from roomkit.core._voice_delivery import held_at_the_limit, injection_depth
 from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.core.task_utils import held_runs, log_task_exception, start_named
 from roomkit.models.enums import ChannelType
@@ -555,6 +555,7 @@ class ConferenceRealtime:
         room = self._rooms.get(session.room_id)
         if config is None or not serves(room.session if room else None, session):
             return VoiceInjectionResult(status="not_sent", reason="realtime_session_gone")
+        chain_depth = injection_depth(chain_depth)
         silent = silent or held_at_the_limit(self._framework, chain_depth)
         with self._operations.use(
             ConferenceResource.REALTIME, what=f"text injection for room {session.room_id}"

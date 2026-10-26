@@ -1,12 +1,14 @@
 """A speech-to-speech model's tool call, an observer that posts about it, and
 the depth limit that ends the loop between them.
 
-An ASYNC ``ON_TOOL_CALL`` hook posts "lookup called" into the room each time
-the model calls a tool. The model hears the post and, being helpful, calls
-the tool again. Each post is at least as deep as the model's answer that
-issued the call, and a text whose answer would be past ``max_chain_depth``
-enters the model's session silently: it hears it and answers nothing, so the
-loop ends at the limit, as one between two agents does.
+An ASYNC ``ON_TOOL_CALL`` hook tells the model "lookup called" each time it
+calls a tool: first by a post into the room, then straight through
+``channel.inject_text()``. The model hears it and, being helpful, calls the
+tool again. What the hook sends is at least as deep as the model's answer
+that issued the call, and a text whose answer would be past
+``max_chain_depth`` enters the model's session silently: it hears it and
+answers nothing, so the loop ends at the limit, as one between two agents
+does.
 
 Run with: uv run python examples/realtime_tool_observer_depth.py
 Uses a mock model; no credentials, external calls or audio hardware required.
@@ -55,7 +57,9 @@ class EagerModel(MockRealtimeProvider):
         return result
 
 
-async def main() -> None:
+async def run(tells: str) -> None:
+    """The loop, the hook telling the model by a post (*tells* ``"post"``) or
+    by an injection into its session (``"inject"``)."""
     model = EagerModel()
 
     async def lookup(name: str, arguments: dict[str, Any]) -> str:
@@ -72,25 +76,27 @@ async def main() -> None:
     kit.register_channel(channel)
     await kit.create_room(room_id="call")
     await kit.attach_channel("call", "voice")
-    posts = []
+    session = await channel.start_session("call", "caller", object())
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="progress")
     async def progress(event: Any, ctx: Any) -> None:
-        posts.append(await kit.post("call", f"{event.name} called"))
+        if tells == "post":
+            await kit.post("call", f"{event.name} called")
+        else:
+            await channel.inject_text(session, f"{event.name} called")
 
     try:
-        session = await channel.start_session("call", "caller", object())
         model.call_lookup(session)
-        async with asyncio.timeout(5):
-            await model.rested.wait()
-            # The observer records its post once the post's delivery returns.
-            while len(posts) < model.heard:
-                await asyncio.sleep(0)
-        depths = [post.chain_depth for post in posts]
-        logger.info("%d posts at depths %s, %d calls", len(posts), depths, model.lookups)
-        assert depths == [1, 2, 3], depths
+        await asyncio.wait_for(model.rested.wait(), 5)
+        logger.info("Told by %s: the model called lookup %d times", tells, model.lookups)
+        assert (model.lookups, model.heard) == (3, 3), (model.lookups, model.heard)
     finally:
         await kit.close()
+
+
+async def main() -> None:
+    for tells in ("post", "inject"):
+        await run(tells)
 
 
 if __name__ == "__main__":
