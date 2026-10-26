@@ -487,8 +487,9 @@ call, per round or per input request (`BEFORE_TOOL_USE`, `ON_TOOL_CALL`,
 they run as any task the turn's work starts. A post they make while the
 turn's delivery runs draws one of that cascade's passes, so one per tool
 call stops at the cap (`10 × max_chain_depth`, in process); a direct change
-(`update_event()`, a progress card) draws nothing; and what they send is as
-deep as the turn's answer only while the turn runs.
+(`update_event()`, a progress card) draws nothing; and what they send is at
+least as deep as the turn was when the trigger fired, once the turn is over
+too (an ACP turn carries no depth).
 SYNC-registered hooks (the default) on an ASYNC trigger
 fire like any other observer. Triggers marked *Reserved* exist in the enum but
 are not fired by any built-in code.

@@ -126,15 +126,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BEFORE_AI_GENERATION`, `ON_SPEAK_DECISION`, `ON_VERIFICATION_REQUIRED` and
   the other SYNC triggers that fire once per event. The triggers that fire
   per tool call, per round or per input request (`BEFORE_TOOL_USE`,
-  `ON_TOOL_CALL`, `AFTER_TOOL_ROUND`, `ON_USER_INPUT_REQUIRED`) are left as
-  they were: their observers run as any task the turn's work starts, so a
+  `ON_TOOL_CALL`, `AFTER_TOOL_ROUND`, `ON_USER_INPUT_REQUIRED`) keep the budget
+  they had: their observers run as any task the turn's work starts, so a
   post they make while the turn's delivery runs draws one of the cascade's
   passes and stops at `10 × max_chain_depth`, and a direct change
-  (`update_event()`, a progress card) draws nothing. Behaviour change: an
-  observer's call is one deeper than the event it observes, where it started
-  at depth 0, so with `max_chain_depth=2` an agent no longer answers the
-  follow-up an observer posts on a person's message. Migration: raise
-  `max_chain_depth`.
+  (`update_event()`, a progress card) draws nothing. What they send is now at
+  least as deep as the turn was when the trigger fired, once the turn is over
+  too, where a post made after the turn started at depth 0. Behaviour change:
+  the observer of a per-event trigger makes its calls one deeper than the
+  event it observes, where they started at depth 0, so with
+  `max_chain_depth=2` an agent no longer answers the follow-up an observer
+  posts on a person's message. Migration: raise `max_chain_depth`.
 
 ### Fixed
 

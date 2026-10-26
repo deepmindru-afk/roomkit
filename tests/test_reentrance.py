@@ -980,6 +980,54 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
+    @pytest.mark.parametrize("when", ["during the turn", "after the turn"])
+    async def test_an_observer_of_a_tool_call_its_agent_answers_ends_at_the_depth_limit(
+        self, when: str
+    ) -> None:
+        """RMK-978: a loop of observer post, the agent's answer, its tool
+        call, the next post. The post is at least as deep as the turn was
+        when the call was made, once the turn is over too, so each round is
+        one deeper and the loop ends at ``max_chain_depth``."""
+        kit = await _room(RoomKit(max_chain_depth=3))
+        posted: list[RoomEvent] = []
+        rounds = 4 * BUDGET
+
+        async def lookup(name: str, arguments: dict[str, Any]) -> str:
+            return f"found {len(posted)}"
+
+        provider = MockAIProvider(
+            ai_responses=[
+                response
+                for n in range(rounds)
+                for response in (
+                    AIResponse(
+                        content="",
+                        finish_reason="tool_calls",
+                        tool_calls=[AIToolCall(id=f"t{n}", name="lookup", arguments={})],
+                    ),
+                    AIResponse(content=f"Answer {n}.", finish_reason="stop"),
+                )
+            ]
+        )
+        tools = [AITool(name="lookup", description="d")]
+        kit.register_channel(AIChannel("ai", provider=provider, tool_handler=lookup, tools=tools))
+        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+        async def audit(event: Any, ctx: RoomContext) -> None:
+            if when == "after the turn":
+                # Once the turn's delivery has run, as a slow progress card.
+                await _settled(kit)
+            if len(posted) < rounds:
+                posted.append(await kit.send_event("r1", "sms", TextContent(body="called")))
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            await asyncio.wait_for(_observed(kit), 5)
+            assert [e.chain_depth for e in sorted(posted, key=lambda e: e.index)] == [1, 2]
+        finally:
+            await kit.close()
+
     async def test_a_hook_opening_a_room_after_every_event_stops_at_the_cap(self) -> None:
         """A message the hook sends that opens a room is the cascade's work
         too, charged before the room is created: a hook that opens a room

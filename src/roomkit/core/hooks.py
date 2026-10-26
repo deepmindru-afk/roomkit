@@ -14,7 +14,9 @@ from roomkit.core._instructions import kept_metadata
 from roomkit.core._reentrance import (
     ReentryBudget,
     after_delivery,
+    chain_floor,
     orders_lent_while_it_runs,
+    within_turn,
     work_budget,
 )
 from roomkit.core.exceptions import ReentryLoopCapError
@@ -128,8 +130,9 @@ realtime or a conference model's tool calls included, ``ON_TOOL_CALL``) or
 per input request: a turn may make hundreds, so their observers do not run
 as the cascade's work (RMK-978). They run as any task started from the
 turn's work does: a post they make while the turn's delivery runs draws one
-of that cascade's passes, a direct change (``update_event``) draws nothing,
-and what they send is as deep as the turn while it runs."""
+of that cascade's passes, a direct change (``update_event``) draws nothing.
+What they send is at least as deep as the turn was when the trigger fired,
+once the turn is over too."""
 
 TYPED_TURN_TRIGGERS: frozenset[HookTrigger] = frozenset(
     {HookTrigger.BEFORE_TOOL_USE, HookTrigger.ON_TOOL_CALL, HookTrigger.ON_USER_INPUT_REQUIRED}
@@ -454,6 +457,14 @@ async def _run_body(
     depth = event.chain_depth if isinstance(event, RoomEvent) else 0
     with after_delivery(room_id, budget, depth):
         await _hook_body(hook, event, context)
+
+
+async def _at_least(floor: int, work: Coroutine[Any, Any, None]) -> None:
+    """*work*, every call it makes into a room at least *floor* deep, while
+    it runs (RFC §8.3): the depth a tool call's observers read as the
+    trigger fires, which the call's turn no longer gives once it is over."""
+    with within_turn(floor):
+        await work
 
 
 async def _hook_body(hook: HookRegistration, *args: Any) -> Any:
@@ -1462,15 +1473,21 @@ class HookEngine:
         the cap is refused as theirs is, so an observer that posts on every
         event it observes stops (RMK-978). The observers of a trigger that
         fires per tool call (:data:`PER_TOOL_CALL_TRIGGERS`) are not the
-        cascade's work: they run as any task the turn's work starts does.
-        Named in :func:`held_runs`, so a ``close()`` it runs spares it rather
-        than wait for itself.
+        cascade's work: they run as any task the turn's work starts does,
+        but what they send is at least as deep as the turn was when the
+        trigger fired, even once it is over (:func:`_at_least`). Named in
+        :func:`held_runs`, so a ``close()`` it runs spares it rather than
+        wait for itself.
         """
         if not hooks:
             return
-        budget = None if trigger in PER_TOOL_CALL_TRIGGERS else work_budget(room_id)
+        per_tool_call = trigger in PER_TOOL_CALL_TRIGGERS
+        budget = None if per_tool_call else work_budget(room_id)
+        work = self._run_async_hooks_list(hooks, room_id, trigger, event, context, budget=budget)
+        if per_tool_call:
+            work = _at_least(chain_floor(), work)
         task = start_named(
-            self._run_async_hooks_list(hooks, room_id, trigger, event, context, budget=budget),
+            work,
             name=f"roomkit-observers-{trigger}",
             context=unlocked_context(),
         )
