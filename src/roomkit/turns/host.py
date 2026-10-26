@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from roomkit.core._reentrance import chain_floor
 from roomkit.models._time import UtcDatetime
 from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
@@ -183,7 +184,11 @@ class TurnHost:
         self, room_id: str, channel_id: str, content: EventContent, **options: Any
     ) -> RoomEvent:
         """Send an event into a room, as ``RoomKit.send_event`` does: the
-        same options, each a value the backend carries."""
+        same options, each a value the backend carries. The event is at
+        least as deep as this context's floor, as the kit's own is: the
+        body of an ASYNC hook on the executor sends at its trigger's depth
+        after the turn too, which the owner no longer floors (RFC §8.3)."""
+        options["chain_depth"] = max(options.get("chain_depth", 0), chain_floor())
         args = SendEvent(room_id=room_id, channel_id=channel_id, content=content, **options)
         return RoomEvent.model_validate(await self._verb("send_event", args))
 

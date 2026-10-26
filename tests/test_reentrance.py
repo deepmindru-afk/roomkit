@@ -1274,37 +1274,85 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
-    @pytest.mark.in_process(
-        "the observer runs on the turn's executor, inside the room's work an in-memory "
-        "turn shares; across Redis it holds no frame of the room's work and posts at 0"
-    )
-    async def test_an_observer_of_a_turn_s_trigger_drops_the_turn_s_depth_once_it_is_over(
+    async def test_a_task_one_observer_of_the_model_s_words_starts_calls_as_work_of_its_own(
         self,
     ) -> None:
-        """RMK-930: an ASYNC observer of a turn's trigger that posts once the
-        turn is over is work of its own (RFC §9.5.1): a BEFORE_AI_GENERATION
-        observer that posts once the agent's turn on an event 2 deep is over
-        posts 1 deep, one deeper than the generation event it observes, not
-        3 deep, the turn's response. Only the observers of a tool call and of
-        a model's words keep their work's floor (RMK-983)."""
+        """RMK-1004: the floor of an observer of the model's words is its own
+        body's, not its siblings': a task one observer starts posts at depth
+        0 once that observer returned, though another observer of the same
+        words still runs (RFC §9.5.1). It posted at the answer's depth, 1."""
+        model = _TalkingModel(rounds=1, partials=False)
         kit = await _room(RoomKit(max_chain_depth=10))
+        channel = RealtimeVoiceChannel("rt", provider=model, transport=MockRealtimeTransport())
+        kit.register_channel(channel)
+        await kit.attach_channel("r1", "rt")
+        session = await channel.start_session("r1", "u", object())
+        returned, sent = asyncio.Event(), asyncio.Event()
+        posted: list[RoomEvent] = []
+        tasks: set[asyncio.Task[None]] = set()
+
+        async def later() -> None:
+            await returned.wait()
+            posted.append(await kit.send_event("r1", "sms", TextContent(body="later")))
+            sent.set()
+
+        @kit.hook(HookTrigger.ON_TRANSCRIPTION, execution=HookExecution.ASYNC, name="starts")
+        async def starts(event: Any, ctx: Any) -> None:
+            if event.role == "assistant":
+                task = asyncio.create_task(later())
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+                returned.set()  # its body returns right after
+
+        @kit.hook(HookTrigger.ON_TRANSCRIPTION, execution=HookExecution.ASYNC, name="slow")
+        async def slow(event: Any, ctx: Any) -> None:
+            if event.role == "assistant":
+                await asyncio.wait_for(sent.wait(), 5)
+
+        try:
+            model.answer(session)
+            await asyncio.wait_for(sent.wait(), 5)
+            await _observed(kit)
+            assert [e.chain_depth for e in posted] == [0]
+        finally:
+            await kit.close()
+
+    @pytest.mark.parametrize(
+        ("trigger", "posts"),
+        [
+            (HookTrigger.BEFORE_AI_GENERATION, "once the turn is over"),
+            (HookTrigger.ON_AI_RESPONSE, "while the turn awaits it"),
+        ],
+    )
+    async def test_a_hook_telling_the_agent_again_from_its_body_ends_at_the_depth_limit(
+        self, trigger: HookTrigger, posts: str
+    ) -> None:
+        """RMK-1004: an ASYNC hook on a turn's trigger that posts from its
+        body at each turn sends at least as deep as the turn was when the
+        trigger fired, once the turn is over too: each round is one deeper
+        and the loop ends at ``max_chain_depth`` (RFC §8.3, §9.5.1). A
+        detached observer posting once the turn was over posted at depth 1
+        every time, until the reentry cap."""
+        kit = await _room(RoomKit(max_chain_depth=5))
         kit.register_channel(AIChannel("ai", provider=MockAIProvider(responses=["ok"])))
         await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
         posted: list[RoomEvent] = []
-        noting: list[bool] = []
+        ended = _ends_at_the_depth_limit(kit)
 
-        @kit.hook(HookTrigger.BEFORE_AI_GENERATION, execution=HookExecution.ASYNC, name="note")
-        async def note(event: Any, ctx: RoomContext) -> None:
-            if noting:  # one note: the agent answers it too
+        @kit.hook(trigger, execution=HookExecution.ASYNC, name="remind")
+        async def remind(event: Any, ctx: RoomContext) -> None:
+            if len(posted) >= 2 * BUDGET:
+                ended.set()
                 return
-            noting.append(True)
-            await _settled(kit)  # once the turn and its delivery are over
-            posted.append(await kit.send_event("r1", "sms", TextContent(body="note")))
+            if posts == "once the turn is over":
+                await _settled(kit)
+            posted.append(await kit.send_event("r1", "sms", TextContent(body="Cite sources.")))
 
         try:
-            await kit.send_event("r1", "sms", TextContent(body="deep"), chain_depth=2)
+            await kit.send_event("r1", "sms", TextContent(body="What is RoomKit?"))
+            await asyncio.wait_for(ended.wait(), 5)
             await asyncio.wait_for(_observed(kit), 5)
-            assert [e.chain_depth for e in posted] == [1]
+            assert sorted(e.chain_depth for e in posted) == [1, 2, 3, 4]
         finally:
             await kit.close()
 
@@ -1535,6 +1583,63 @@ class TestACallFromAnAsyncHook:
             later.over.set()
             sent = await asyncio.wait_for(later.sent, 5)
             assert [(e.chain_depth, e.blocked_by) for e in sent] == [(0, None)] * sends
+        finally:
+            await kit.close()
+
+    async def test_a_relaunch_a_turn_s_observer_starts_begins_a_new_chain(self) -> None:
+        """RMK-1004, the RMK-930 decision for work that outlives what began
+        it: an ``ON_AI_RESPONSE`` hook that relaunches the agent from a task
+        it starts, as a quality gate does, relaunches it at depth 0 each time
+        and every relaunch is answered, though the turn still runs when the
+        relaunch is sent, waiting for a slower observer of the same answer
+        (an audit write). With the turn's floor, each relaunch was one deeper
+        and the fourth was the last answered (RFC §8.3, §9.5.1)."""
+        kit = await _room(RoomKit(max_chain_depth=5))
+        kit.register_channel(AIChannel("ai", provider=MockAIProvider(responses=["ok"])))
+        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        relaunches: list[RoomEvent] = []
+        launched: list[bool] = []
+        decided: list[RoomEvent] = []
+        one_decided, over = asyncio.Event(), asyncio.Event()
+        tasks: set[asyncio.Task[None]] = set()
+
+        async def relaunch() -> None:
+            event = await kit.send_event("r1", "sms", TextContent(body="Gate failed: retry."))
+            relaunches.append(event)
+
+        @kit.on("chain_depth_exceeded")
+        async def limited(event: object) -> None:
+            over.set()
+
+        @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="gate")
+        async def gate(event: Any, ctx: RoomContext) -> None:
+            if len(launched) == 5:
+                over.set()
+                return
+            launched.append(True)
+            task = asyncio.create_task(relaunch())
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+
+        @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="audit")
+        async def audit(event: Any, ctx: RoomContext) -> None:
+            if len(launched) > len(decided):  # the turn runs until it returns
+                await asyncio.wait_for(one_decided.wait(), 5)
+            one_decided.clear()
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="decided")
+        async def seen(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if _body(event) == "Gate failed: retry.":
+                decided.append(event)  # the relaunch's depth is set
+                one_decided.set()
+            return HookResult.allow()
+
+        try:
+            await kit.send_event("r1", "sms", TextContent(body="Write the report."))
+            await asyncio.wait_for(over.wait(), 5)
+            await asyncio.wait_for(asyncio.gather(*tasks), 5)
+            await asyncio.wait_for(_observed(kit), 5)
+            assert [e.chain_depth for e in relaunches] == [0] * 5
         finally:
             await kit.close()
 

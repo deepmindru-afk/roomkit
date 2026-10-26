@@ -142,6 +142,39 @@ async def test_work_a_turn_began_writes_the_room_after_the_turn_ended() -> None:
     assert [e.chain_depth for e in stored] == [0]
 
 
+async def test_a_hook_s_body_sends_after_the_turn_at_its_trigger_s_depth() -> None:
+    """RMK-1004: the body of an ASYNC hook on the executor that sends once
+    its turn is over sends at least as deep as the turn was when the trigger
+    fired, as a hook's body does on the room owner's side: the owner floors
+    nothing between turns, so the verb carries the depth (RFC §8.3)."""
+    later = _Later()
+    later.work = lambda: asyncio.sleep(0, True)
+    host = _Host(later)
+    fired: list[bool] = []
+    sent: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+
+    @host.executor.hook(HookTrigger.BEFORE_AI_GENERATION, execution=HookExecution.ASYNC)
+    async def remind(event: Any, ctx: Any) -> None:
+        if fired:
+            return
+        fired.append(True)
+        turn_host = current_turn_host()
+        assert turn_host is not None
+        await _until(lambda: not turn_host.open)
+        reminder = TextContent(body="A reminder, once the turn is over.")
+        event = await turn_host.send_event(room_id="r", channel_id="ana", content=reminder)
+        sent.set_result(event)
+
+    kit = await host.kit()
+    await _say(kit)
+    await _after_the_turn(later)
+    event = await asyncio.wait_for(sent, 5)
+    stored = [e for e in await kit.store.list_events("r") if e.id == event.id]
+    await host.close(kit)
+
+    assert [e.chain_depth for e in stored] == [1]
+
+
 async def test_a_verb_that_needs_its_turn_is_refused_after_it() -> None:
     later = _Later()
     host = _Host(later)

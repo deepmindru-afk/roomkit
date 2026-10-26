@@ -232,6 +232,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   greeting at the limit no longer makes the new agent speak. Migration: raise
   `max_chain_depth`. Example: `examples/realtime_tool_observer_depth.py`.
 
+- **A hook that asks an agent again from its body ends at `max_chain_depth`,
+  and a task it starts begins a new chain** (RFC §8.3, §9.5.1, RMK-1004). An
+  ASYNC hook on a turn's trigger (`BEFORE_AI_GENERATION`, `ON_AI_RESPONSE`...)
+  observes no event of a depth of its own: posting from its body once the
+  turn was over, it posted at depth 1 every time, so a hook that reminded the
+  agent of a rule after each turn made it answer 51 times, until the reentry
+  cap. And a task such a hook started began a new chain only if the turn was
+  over when it sent: a quality gate relaunching the agent from a task while a
+  slower observer of the same answer still ran (the turn waits for them) sent
+  at the turn's depth, one deeper each round, and its fifth relaunch was never
+  answered. An ASYNC hook's body now sends at least as deep as the work that
+  fired it was when its trigger fired (a turn, a tool call, a model's
+  answer), for as long as the body runs, that work over or not, a `TurnHost`
+  verb from a turn executor's hook included; a task it starts that calls once
+  the body returned begins at depth 0, whether the turn or the trigger's
+  other hooks still run or not. The reminder loop ends after four answers at
+  `max_chain_depth=5`. Behaviour change: a post from the body of a turn
+  trigger's hook made once the turn is over is as deep as the turn's
+  response, so the agent no longer answers one made at the limit. Migration:
+  send it from a task the hook starts, which begins a new chain, or raise
+  `max_chain_depth`. Example: `examples/hook_observer_depth.py`.
+
 ### Fixed
 
 - **A queued delivery is made by the caller that queued it** (RFC §8.3, §22.2,

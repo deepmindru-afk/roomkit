@@ -37,7 +37,9 @@ spawns inherits the frame and finds it inactive once the work is over, as a
 room lock's lease is (:mod:`roomkit.core.locks`). A turn's depth floor is a
 frame too, and a tool call's ends with the call: work a turn, a delivery or
 a hook's body began starts fresh once that work is over, at depth 0 and on a
-budget of its own.
+budget of its own. An ASYNC hook's body runs at least as deep as its trigger
+fired, for as long as the body runs: the floors are lent to the body, not to
+what it spawns (:func:`floors_lent_while_it_runs`).
 """
 
 from __future__ import annotations
@@ -51,7 +53,7 @@ from typing import TYPE_CHECKING
 
 from roomkit.core.exceptions import ReentrantCallError, ReentryLoopCapError
 from roomkit.core.locks import _has_room_lock
-from roomkit.tools.context import _live_turn_chain_depth
+from roomkit.tools.context import _current_loop, _live_turn_chain_depth
 
 if TYPE_CHECKING:
     from roomkit.core._queued_injections import QueuedInjections
@@ -194,13 +196,38 @@ class _Turn:
     active: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class _LentTurn:
+    """A turn's floor lent to a call (an ASYNC hook's body) while the call
+    runs: a task the call spawned keeps a copy of the context, and has the
+    floor no more once the call is over, though the turn goes on."""
+
+    turn: _Turn | _LentTurn
+    call: _Call
+
+    @property
+    def response_depth(self) -> int:
+        return self.turn.response_depth
+
+    @property
+    def active(self) -> bool:
+        return self.call.running and self.turn.active
+
+
 # The turns the context runs within (RFC §8.3), each the floor of a call into
 # any room while it runs. Made inert once the turn is over, as a frame is: a
 # task the turn spawned that calls after it is work of its own, at depth 0
 # (the maintainer's decision, RMK-930), and a result delivered later on the
 # turn's behalf names its depth itself (a delegation's, §23.3).
-_turns: contextvars.ContextVar[tuple[_Turn, ...]] = contextvars.ContextVar(
+_turns: contextvars.ContextVar[tuple[_Turn | _LentTurn, ...]] = contextvars.ContextVar(
     "_roomkit_turns", default=()
+)
+
+# The loop contexts of the turns and tool calls an ASYNC hook's body was lent
+# the depth of, each with the body's call: once the body is over, a task it
+# spawned has that depth no more, though the turn or the call still runs.
+_loops_lent: contextvars.ContextVar[tuple[tuple[object | None, _Call], ...]] = (
+    contextvars.ContextVar("_roomkit_loops_lent", default=())
 )
 
 
@@ -319,6 +346,40 @@ def within_turn(response_depth: int) -> Generator[None, None, None]:
         _turns.reset(token)
 
 
+@contextmanager
+def floors_lent_while_it_runs(floor: int) -> Generator[None, None, None]:
+    """Run a call (an ASYNC hook's body) at least *floor* deep, the depth
+    its trigger fired at, for as long as it runs, the work that fired it
+    over or not (RFC §8.3, §9.5.1): a hook that tells an agent again from
+    its body ends at the depth limit. The turns and the tool call the
+    context runs within are lent to it the same way. A task it spawns,
+    awaited or not, has these floors while the call runs; once the call is
+    over, that task has none of them, though the turn or the tool call goes
+    on: its calls start fresh, as RMK-930 decided for work that outlives
+    what began it (a delegation's result, a quality gate's relaunch)."""
+    call = _Call()
+    lent = tuple(_LentTurn(turn, call) for turn in _turns.get())
+    turns_token = _turns.set((*lent, _LentTurn(_Turn(floor), call)))
+    loops_token = _loops_lent.set((*_loops_lent.get(), (_current_loop(), call)))
+    try:
+        yield
+    finally:
+        call.running = False
+        _loops_lent.reset(loops_token)
+        _turns.reset(turns_token)
+
+
+def _live_loop_depth() -> int:
+    """The depth of the turn or tool call this context runs in while it
+    runs, unless it was lent to a hook's body that is over."""
+    loop = _current_loop()
+    if loop is not None and any(
+        lent is loop and not call.running for lent, call in _loops_lent.get()
+    ):
+        return 0
+    return _live_turn_chain_depth()
+
+
 def answers_past_limit(chain_depth: int, max_chain_depth: int) -> bool:
     """Whether an answer to an event *chain_depth* deep would reach
     *max_chain_depth*, so that no agent is asked to make it (RFC §8.3)."""
@@ -329,10 +390,11 @@ def chain_floor() -> int:
     """The least chain depth of a call made in this context, into whatever
     room: the response depth of the deepest turn it runs within that still
     runs, or of the tool call it runs in while that runs (realtime and
-    conference calls, a call the owner serves, a tool handler); 0 outside
-    them and once they are over."""
+    conference calls, a call the owner serves, a tool handler), or the depth
+    an ASYNC hook's body runs at (:func:`floors_lent_while_it_runs`); 0
+    outside them and once they are over."""
     turns = (turn.response_depth for turn in _turns.get() if turn.active)
-    return max(max(turns, default=0), _live_turn_chain_depth())
+    return max(max(turns, default=0), _live_loop_depth())
 
 
 class RoomWork:

@@ -15,8 +15,8 @@ from roomkit.core._reentrance import (
     ReentryBudget,
     after_delivery,
     chain_floor,
+    floors_lent_while_it_runs,
     orders_lent_while_it_runs,
-    within_turn,
     work_budget,
 )
 from roomkit.core.exceptions import ReentryLoopCapError
@@ -132,18 +132,7 @@ as the cascade's work (RMK-978). They run as any task started from the
 turn's work does: a post they make while the turn's delivery runs draws one
 of that cascade's passes, a direct change (``update_event``) draws nothing.
 What they send is at least as deep as the turn was when the trigger fired,
-once the turn is over too (:data:`FLOOR_KEEPING_TRIGGERS`)."""
-
-FLOOR_KEEPING_TRIGGERS: frozenset[HookTrigger] = PER_TOOL_CALL_TRIGGERS | frozenset(
-    {HookTrigger.ON_TRANSCRIPTION, HookTrigger.ON_PARTIAL_TRANSCRIPTION}
-)
-"""The triggers whose observers keep the depth floor the trigger fired under
-once the work that gave it is over: those of a tool call, and those of a
-transcription, which a speech-to-speech model's words fire at the depth of
-its answer (RFC §8.3, RMK-983) and a person's words at 0. A hook on either
-that tells the model something each time then ends at the limit. Another
-trigger's observer that calls once its work is over is work of its own
-(RMK-930)."""
+as every ASYNC hook's body is (:func:`_run_body`)."""
 
 TYPED_TURN_TRIGGERS: frozenset[HookTrigger] = frozenset(
     {HookTrigger.BEFORE_TOOL_USE, HookTrigger.ON_TOOL_CALL, HookTrigger.ON_USER_INPUT_REQUIRED}
@@ -454,30 +443,25 @@ async def _run_body(
     context: RoomContext,
     room_id: str,
     budget: ReentryBudget | None,
+    floor: int,
 ) -> None:
-    """*hook*'s body within its timeout. On *budget*, the budget of the
-    cascade that fired it once an event's delivery set has run, or of the
-    work a direct change was made in, it is that work until it is over:
-    what it sends into the room, and a direct change it makes, draws on the
-    budget's hook calls and is at least one deeper than *event*, and a task
-    it starts that calls afterwards has a budget and a depth of its own
-    (RFC §8.3, §9.5.1, §10.1 step 16, §10.3)."""
-    if budget is None:
-        await _hook_body(hook, event, context)
-        return
-    depth = event.chain_depth if isinstance(event, RoomEvent) else 0
-    with after_delivery(room_id, budget, depth):
-        await _hook_body(hook, event, context)
-
-
-async def _at_least(floor: int, work: Coroutine[Any, Any, None]) -> None:
-    """*work*, every call it makes into a room at least *floor* deep, while
-    it runs (RFC §8.3, §9.5.1): the depth the observers of a
-    :data:`FLOOR_KEEPING_TRIGGERS` trigger read as it fires, which the work
-    that fired it (a turn, a tool call, a model's answer) no longer gives
-    once it is over."""
-    with within_turn(floor):
-        await work
+    """*hook*'s body, an ASYNC hook's, within its timeout. What it sends is
+    at least *floor* deep, the depth its trigger fired at, for as long as it
+    runs, the work that fired it over or not, and a task it starts that
+    calls once it has returned starts fresh (:func:`floors_lent_while_it_runs`).
+    On *budget*, the budget of the cascade that fired it once an event's
+    delivery set has run, or of the work a direct change was made in, it is
+    that work until it is over: what it sends into the room, and a direct
+    change it makes, draws on the budget's hook calls and is at least one
+    deeper than *event*, and a task it starts that calls afterwards has a
+    budget of its own (RFC §8.3, §9.5.1, §10.1 step 16, §10.3)."""
+    with floors_lent_while_it_runs(floor):
+        if budget is None:
+            await _hook_body(hook, event, context)
+            return
+        depth = event.chain_depth if isinstance(event, RoomEvent) else 0
+        with after_delivery(room_id, budget, depth):
+            await _hook_body(hook, event, context)
 
 
 async def _hook_body(hook: HookRegistration, *args: Any) -> Any:
@@ -1486,20 +1470,21 @@ class HookEngine:
         the cap is refused as theirs is, so an observer that posts on every
         event it observes stops (RMK-978). The observers of a trigger that
         fires per tool call (:data:`PER_TOOL_CALL_TRIGGERS`) are not the
-        cascade's work: they run as any task the turn's work starts does,
-        but what they send is at least as deep as the turn was when the
-        trigger fired, even once it is over (:func:`_at_least`), and so do
-        the observers of a speech-to-speech model's words, at its answer's
-        depth (:data:`FLOOR_KEEPING_TRIGGERS`). Named in :func:`held_runs`,
-        so a ``close()`` it runs spares it rather than wait for itself.
+        cascade's work: they run as any task the turn's work starts does.
+        Each body sends at least as deep as the work that fired it was when
+        the trigger fired, a turn, a tool call or a model's answer, even once
+        that work is over, read here as the trigger fires: a hook that tells
+        an agent again from its body ends at the depth limit (RMK-1004).
+        Named in :func:`held_runs`, so a ``close()`` it runs spares it rather
+        than wait for itself.
         """
         if not hooks:
             return
         per_tool_call = trigger in PER_TOOL_CALL_TRIGGERS
         budget = None if per_tool_call else work_budget(room_id)
-        work = self._run_async_hooks_list(hooks, room_id, trigger, event, context, budget=budget)
-        if trigger in FLOOR_KEEPING_TRIGGERS:
-            work = _at_least(chain_floor(), work)
+        work = self._run_async_hooks_list(
+            hooks, room_id, trigger, event, context, budget=budget, floor=chain_floor()
+        )
         task = start_named(
             work,
             name=f"roomkit-observers-{trigger}",
@@ -1543,12 +1528,17 @@ class HookEngine:
         context: RoomContext,
         *,
         budget: ReentryBudget | None = None,
+        floor: int | None = None,
     ) -> None:
         """Run a list of hooks concurrently. Errors are logged, never raised.
 
-        Each body runs on *budget* when given (:func:`_run_body`)."""
+        Each body runs on *budget* when given, and at least *floor* deep,
+        the depth *trigger* fired at: this context's own when not given, the
+        list then being awaited where the trigger fires (:func:`_run_body`)."""
         if not hooks:
             return
+        if floor is None:
+            floor = chain_floor()
 
         async def _run_one(hook: HookRegistration) -> None:
             span_id = None
@@ -1570,7 +1560,7 @@ class HookEngine:
                     },
                 )
             try:
-                await _run_body(hook, event, context, room_id, budget)
+                await _run_body(hook, event, context, room_id, budget, floor)
                 if span_id is not None:
                     self._telemetry.end_span(span_id)
             except TimeoutError:

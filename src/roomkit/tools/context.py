@@ -539,6 +539,13 @@ def _live_turn_chain_depth() -> int:
     return ctx.chain_depth if ctx is not None and ctx.running else 0
 
 
+def _current_loop() -> object | None:
+    """The loop context of the turn or tool call this context runs in, over
+    or not; ``None`` outside one. Internal: what an ASYNC hook's body is lent
+    the depth of while it runs (``floors_lent_while_it_runs``)."""
+    return _current_loop_ctx.get()
+
+
 def turn_report_claim(call_id: str, channel_id: str) -> Callable[[], bool] | None:
     """The claim on call *call_id*'s one report in *channel_id*'s turn running
     now, or ``None`` when no such turn announced it (RFC §9.3)."""
