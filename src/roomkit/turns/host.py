@@ -25,9 +25,8 @@ import contextvars
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
-from roomkit.core._room_metadata import framework_keys_in
 from roomkit.models._time import UtcDatetime
 from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
@@ -102,21 +101,14 @@ class PostStatus(_Verb):
 
 
 class UpdateRoomMetadata(_Verb):
-    """``update_room_metadata``: keys merged into a room's metadata, none of
-    the framework's own (the ``roomkit:`` namespace, a key of the room's
-    private state)."""
+    """``update_room_metadata``: keys merged into a room's metadata, which
+    the owner writes through ``kit.update_room_metadata``: a key of the
+    framework's own (the ``roomkit:`` namespace, a key of the room's private
+    state) is dropped there with a warning."""
 
     room_id: str
     metadata: dict[str, Any]
     organization_id: str | None = None
-
-    @field_validator("metadata")
-    @classmethod
-    def _not_the_framework_s(cls, metadata: dict[str, Any]) -> dict[str, Any]:
-        reserved = framework_keys_in(metadata)
-        if reserved:
-            raise ValueError(f"A turn cannot write the framework's room metadata {reserved}")
-        return metadata
 
 
 class AddObservation(_Verb):

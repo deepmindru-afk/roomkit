@@ -14,7 +14,7 @@ from roomkit.core._changes import for_channels
 from roomkit.core._failure_log import log_failure
 from roomkit.core._instructions import response_metadata
 from roomkit.core._reentrance import within_turn
-from roomkit.core._room_metadata import channel_updates
+from roomkit.core._room_metadata import without_framework_keys
 from roomkit.core._turn_runners import TurnRunner
 from roomkit.core._voice_delivery import delivering_injected
 from roomkit.core.circuit_breaker import CircuitBreaker
@@ -362,7 +362,9 @@ def _merge_updates(
     without a key only the framework writes (RFC §10.1 step 15)."""
     if output.metadata_updates:
         result.metadata_updates.update(
-            channel_updates(output.metadata_updates, channel_id=channel_id, room_id=room_id)
+            without_framework_keys(
+                output.metadata_updates, room_id=room_id, writer=f"Channel {channel_id}'s output"
+            )
         )
 
 

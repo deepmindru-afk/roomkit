@@ -127,24 +127,28 @@ class TestDetachIsNotUndoneByAutoAttach:
 
     async def test_a_metadata_write_cannot_clear_the_revocation(self) -> None:
         """RFC §5.1, §7.5 rule 7 (RMK-978): the revocation is the framework's
-        key. An integrator's metadata write that clears it is refused, so the
-        next message does not attach the channel again: only an explicit
-        attach grants access back."""
+        key. An integrator's metadata write that names it has it dropped, a
+        read-modify-write of the room's metadata included, so the next
+        message does not attach the channel again: only an explicit attach
+        grants access back."""
         kit = await self._kit()
         await kit.detach_channel("r1", "ws")
-        try:
-            await kit.update_room_metadata("r1", {"roomkit:detached_channels": []})
-            write = "written"
-        except ValueError:
-            write = "refused"
+        room = await kit.get_room("r1")
+        await kit.update_room_metadata("r1", {**room.metadata, "stage": "won"})
+        await kit.update_room_metadata("r1", {"roomkit:detached_channels": []})
 
         result = await kit.process_inbound(
             InboundMessage(channel_id="ws", sender_id="mallory", content=TextContent(body="hi")),
             room_id="r1",
         )
 
+        room = await kit.get_room("r1")
         bound = await kit._store.get_binding("r1", "ws")
-        assert (write, bound, result.reason) == ("refused", None, "source_unbound")
+        assert (room.metadata, bound, result.reason) == (
+            {"roomkit:detached_channels": ["ws"], "stage": "won"},
+            None,
+            "source_unbound",
+        )
         await kit.close()
 
     async def test_an_explicit_attach_re_grants_access(self) -> None:

@@ -297,7 +297,7 @@ class TestBroadcastMetadataUpdatesApplied:
         for channel_id in ("sms1", "ai1", "crm"):
             await kit.attach_channel("r1", channel_id)
 
-        with caplog.at_level(logging.WARNING, logger="roomkit.framework"):
+        with caplog.at_level(logging.WARNING):
             await kit.process_inbound(
                 InboundMessage(
                     channel_id="sms1", sender_id="user1", content=TextContent(body="I want a loan")
@@ -308,5 +308,5 @@ class TestBroadcastMetadataUpdatesApplied:
         assert room.metadata == {"topic": "loan", "stage": "qualified", "crm_contact": "c_42"}
         dropped = sorted(r.getMessage() for r in caplog.records if "drops" in r.getMessage())
         assert len(dropped) == 2
-        assert "'author_register'" in dropped[0] and "crm" in dropped[0]
-        assert "'roomkit:forged'" in dropped[1] and "ai1" in dropped[1]
+        assert "ai1" in dropped[0] and "'roomkit:forged'" in dropped[0]
+        assert "crm" in dropped[1] and "'author_register'" in dropped[1]

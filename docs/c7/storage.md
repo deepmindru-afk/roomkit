@@ -187,8 +187,8 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   implementation's, and each reserves the same key in the room's metadata:
   the base class keeps the value there, and `set` removes the copy there, so
   only the runtime writes one there: the kit's `create_room()` and
-  `update_room_metadata()` raise `ValueError` on `author_register` or
-  `_speak_queue_results`, as on any `roomkit:` key. The store's own
+  `update_room_metadata()` drop `author_register` or `_speak_queue_results`
+  with a warning, as any `roomkit:` key, and write the rest. The store's own
   `update_room()` and `patch_room_metadata()` take any key: they sit below
   the kit's API, where migrations and the runtime write these keys. A register the
   metadata holds (a room stored before, or a process from an older RoomKit

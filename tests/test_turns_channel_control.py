@@ -13,7 +13,6 @@ import logging
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from roomkit import RoomKit
 from roomkit.channels.ai import AIChannel
@@ -30,7 +29,6 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor
 from roomkit.turns._rooms import room_state_key
 from roomkit.turns.base import ExecutorLink, TurnLink
-from roomkit.turns.host import UpdateRoomMetadata
 from roomkit.turns.wire import (
     ChannelCall,
     CommittedEvent,
@@ -690,17 +688,6 @@ async def test_a_turn_no_executor_took_is_no_previous_turn() -> None:
     await backend.serve(executor)
     await _turn(client)
     assert executor.requests[0].previous_turn is None
-
-
-async def test_a_turn_cannot_write_the_framework_s_room_metadata() -> None:
-    with pytest.raises(ValidationError, match="framework's room metadata"):
-        UpdateRoomMetadata(
-            room_id="room",
-            metadata={room_state_key("claude"): {"config": {"mode": "bypassPermissions"}}},
-        )
-    with pytest.raises(ValidationError, match="framework's room metadata"):
-        UpdateRoomMetadata(room_id="room", metadata={"roomkit:detached_channels": []})
-    assert UpdateRoomMetadata(room_id="room", metadata={"topic": "billing"}).metadata
 
 
 async def test_detaching_an_ai_channel_drops_everything_it_kept_for_the_room() -> None:

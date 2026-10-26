@@ -650,11 +650,9 @@ async def _plant(kit: RoomKit, writer: str, metadata: dict[str, Any]) -> str:
         planted = set(metadata) & set((await kit.get_room("r1")).metadata)
         return "written" if planted else "refused"
     if writer == "update_room_metadata":
-        try:
-            await kit.update_room_metadata("r1", metadata)
-        except ValueError:
-            return "refused"
-        return "written"
+        await kit.update_room_metadata("r1", metadata)
+        planted = set(metadata) & set((await kit.get_room("r1")).metadata)
+        return "written" if planted else "refused"
     outcome: list[str] = []
 
     @kit.hook(HookTrigger.BEFORE_BROADCAST, name="planter")

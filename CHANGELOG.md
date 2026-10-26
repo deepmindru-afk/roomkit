@@ -49,35 +49,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store less of it than was published, the text its executor read ahead of
   the reader.
 
-- **BREAKING — a room's private-state keys are the runtime's alone in its
-  metadata** (RFC §14.1, §10.1 step 12, RMK-978). A register of authors the
-  room's metadata held under `author_register` was merged into the store's at
-  the room's next named turn, whoever wrote it: an integrator's caller who
-  could write the metadata planted a register giving its own source rank 1
-  under another sender's name, so its messages read `Alice` and the real
-  Alice read `Alice (2)`. `create_room(metadata=...)` and
-  `update_room_metadata()`, from a hook's body too, now raise `ValueError` on
-  a key of the room's private state (`author_register`,
-  `_speak_queue_results`), nothing written, as they raise on a
-  `roomkit:channel_state:` key; a turn's `TurnHost.update_room_metadata`
-  refuses them with the `roomkit:` keys. The merge stays, for a room stored
-  before and a process of an earlier release, which only the runtime can
-  still write. Migration: an application that kept its own value under one of
-  these keys renames it.
+- **A room's private-state keys are the runtime's alone in its metadata**
+  (RFC §14.1, §10.1 step 12, RMK-978). A register of authors the room's
+  metadata held under `author_register` was merged into the store's at the
+  room's next named turn, whoever wrote it: an integrator's caller who could
+  write the metadata planted a register giving its own source rank 1 under
+  another sender's name, so its messages read `Alice` and the real Alice
+  read `Alice (2)`. `create_room(metadata=...)` and `update_room_metadata()`,
+  from a hook's body too, and a turn's `TurnHost.update_room_metadata`, now
+  drop a key of the room's private state (`author_register`,
+  `_speak_queue_results`) with a warning naming the call, and write the rest,
+  as a channel's `metadata_updates` do: the forged register never lands, and
+  a read-modify-write of a room from before 0.109 that still holds one
+  writes. The merge stays, for a room stored before and a process of an
+  earlier release, which only the runtime can still write.
 
-- **BREAKING — every `roomkit:` key of a room's metadata is the framework's
-  alone** (RFC §5.1, §7.5 rule 7, RMK-978). `create_room(metadata=...)` and
+- **Every `roomkit:` key of a room's metadata is the framework's alone**
+  (RFC §5.1, §7.5 rule 7, RMK-978). `create_room(metadata=...)` and
   `update_room_metadata()` refused only `roomkit:channel_state:` keys: an
   integrator's caller who could write the metadata cleared a detach's
   revocation (`roomkit:detached_channels`), and the next message on the
   detached channel attached it again and was delivered, as a post from a
-  detached host channel was. Both now raise `ValueError` on any `roomkit:`
-  key, nothing written, from a hook's body too, as a turn's
-  `TurnHost.update_room_metadata` already did; a channel's
-  `metadata_updates` have it dropped with a warning. The framework writes
-  these keys through the store, which takes any key. Migration: an
-  application that kept its own value under a `roomkit:` key renames it;
-  only `attach_channel()` grants a detached channel back.
+  detached host channel was. Every writer the kit takes a room's metadata
+  from (those two calls, from a hook's body too, a turn's
+  `TurnHost.update_room_metadata`, a channel's `metadata_updates`) now drops
+  any `roomkit:` key with a warning naming it, and writes the rest:
+  `roomkit:channel_state:`, which raised `ValueError`, is dropped too. So a
+  read-modify-write (`update_room_metadata(r, {**room.metadata, ...})`,
+  `create_room(metadata=room.metadata)`) writes in a room that saw a detach,
+  and leaves the revocation as it is; only `attach_channel()` grants a
+  detached channel back. The framework writes these keys through the store,
+  which takes any key. An application that kept its own value under a
+  `roomkit:` key renames it.
 
 - **`update_event()` keeps the record of the author the event was committed
   with** (RFC §10.1 step 12, RMK-978). It stored the caller's

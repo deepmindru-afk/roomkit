@@ -10,11 +10,13 @@ Two kinds:
   :mod:`roomkit.core._private_state`): the register of authors, a
   discussion's results to post.
 
-The kit's ``create_room()`` and ``update_room_metadata()``, called from a
-hook's body too, refuse them (:func:`refuse_framework_keys`), and so does a
-turn's ``TurnHost.update_room_metadata``; a channel's ``metadata_updates``
-have them dropped with a warning, the rest applied (§10.1 step 15,
-:func:`channel_updates`). The store's ``update_room()`` and
+Every writer the kit hands a room's metadata from outside has them dropped
+with a warning, the rest written (:func:`without_framework_keys`): the kit's
+``create_room()`` and ``update_room_metadata()``, called from a hook's body
+too, a turn's ``TurnHost.update_room_metadata``, which the owner serves
+through the latter, and a channel's ``metadata_updates`` (§10.1 step 15). So a
+read-modify-write of a room's metadata (``{**room.metadata, ...}``) writes,
+and the forged key never lands. The store's ``update_room()`` and
 ``patch_room_metadata()`` stay open: they sit below the kit's API, where
 migrations and the runtime write these keys (a detach's revocation, a
 channel's state, the base store's private state), and no channel output or
@@ -29,7 +31,7 @@ from typing import Any
 
 from roomkit.core._private_state import PRIVATE_STATE_KEYS
 
-logger = logging.getLogger("roomkit.event_router")
+logger = logging.getLogger("roomkit.room_metadata")
 
 FRAMEWORK_NAMESPACE = "roomkit:"
 """The prefix of the room-metadata keys the framework keeps for the room."""
@@ -40,38 +42,21 @@ def the_framework_s(key: str) -> bool:
     return key.startswith(FRAMEWORK_NAMESPACE) or key in PRIVATE_STATE_KEYS
 
 
-def framework_keys_in(metadata: Mapping[str, object]) -> list[str]:
-    """The keys of *metadata* only the framework writes, sorted."""
-    return sorted(key for key in metadata if the_framework_s(key))
-
-
-def refuse_framework_keys(metadata: Mapping[str, object]) -> None:
-    """Refuse an integrator's write of *metadata* that names a key only the
-    framework writes, before anything is written (RFC §5.1, §14.1). The
-    store's own writes stay open (module docstring).
-
-    Raises:
-        ValueError: a key under ``roomkit:`` or of the room's private state.
-    """
-    reserved = framework_keys_in(metadata)
-    if reserved:
-        raise ValueError(f"Room metadata {reserved} is the framework's, written by it alone")
-
-
-def channel_updates(
-    updates: Mapping[str, Any], *, channel_id: str, room_id: str
+def without_framework_keys(
+    metadata: Mapping[str, Any], *, room_id: str | None, writer: str
 ) -> dict[str, Any]:
-    """*updates*, a channel output's room metadata updates, without the keys
-    only the framework writes, each dropped with a warning."""
+    """*metadata*, a write of room *room_id*'s metadata by *writer*, without
+    the keys only the framework writes, each dropped with a warning naming
+    the writer; the rest is written (RFC §5.1, §14.1, §10.1 step 15)."""
     kept: dict[str, Any] = {}
-    for key, value in updates.items():
+    for key, value in metadata.items():
         if the_framework_s(key):
             logger.warning(
-                "Room %s drops the metadata update %r of channel %s: only the framework writes it",
-                room_id,
+                "%s drops the metadata key %r of room %s: only the framework writes it",
+                writer,
                 key,
-                channel_id,
-                extra={"room_id": room_id, "channel_id": channel_id},
+                room_id or "being created",
+                extra={"room_id": room_id},
             )
             continue
         kept[key] = value

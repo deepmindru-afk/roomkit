@@ -163,20 +163,22 @@ class TestRoomLifecycle:
             "roomkit:anything",
         ],
     )
-    async def test_a_key_only_the_framework_writes_is_refused(
-        self, kit: RoomKit, key: str
+    async def test_a_key_only_the_framework_writes_is_dropped_with_a_warning(
+        self, kit: RoomKit, key: str, caplog: pytest.LogCaptureFixture
     ) -> None:
         """RFC §5.1, §14.1 (RMK-978): the implementation's namespace,
         ``roomkit:``, and the keys of the room's private state are the
-        framework's alone; a room's creation and an integrator's metadata
-        update that name one raise, nothing of them kept."""
-        with pytest.raises(ValueError, match=key):
-            await kit.create_room(room_id="r2", metadata={key: {}, "crm": "c_42"})
-        await kit.create_room(room_id="r1")
-        with pytest.raises(ValueError, match=key):
-            await kit.update_room_metadata("r1", {key: {}, "crm": "c_42"})
-        stored = (await kit.store.get_room("r2"), (await kit.get_room("r1")).metadata)
-        assert stored == (None, {})
+        framework's alone. A room's creation and an integrator's metadata
+        update that name one have it dropped with a warning, the rest
+        written, as a channel's ``metadata_updates`` do."""
+        with caplog.at_level(logging.WARNING):
+            created = await kit.create_room(room_id="r2", metadata={key: {}, "crm": "c_42"})
+            await kit.create_room(room_id="r1")
+            updated = await kit.update_room_metadata("r1", {key: {}, "crm": "c_42"})
+
+        stored = [(await kit.get_room(r)).metadata for r in ("r1", "r2")]
+        assert [created.metadata, updated.metadata, *stored] == [{"crm": "c_42"}] * 4
+        assert sum(repr(key) in r.getMessage() for r in caplog.records) == 2
 
 
 class TestTimelineQuery:

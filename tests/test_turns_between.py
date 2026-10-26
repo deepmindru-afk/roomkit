@@ -310,14 +310,15 @@ async def test_the_write_verbs_between_turns_keep_their_refusals() -> None:
     async def work() -> Any:
         turn_host = current_turn_host()
         assert turn_host is not None
-        room = await turn_host.update_room_metadata("r", {"thought": "kept"})
+        # A key only the framework writes is dropped there, the rest written.
+        room = await turn_host.update_room_metadata(
+            "r", {"thought": "kept", "roomkit:channel_state:ana": {}, "author_register": {}}
+        )
         await turn_host.add_observation(
             Observation(id="o1", room_id="r", channel_id="ana", content="seen", category="note")
         )
         refusals = []
         for attempt in (
-            turn_host.update_room_metadata("r", {"roomkit:channel_state:ana": {}}),
-            turn_host.update_room_metadata("r", {"author_register": {}}),
             turn_host.post_status("ana", TASK_ACTION, "pending"),
             turn_host.post_status("ana", "x", "info", metadata={"room_id": "other"}),
             turn_host.send_event(room_id="other", channel_id="ana", content=TextContent(body="x")),
@@ -336,9 +337,9 @@ async def test_the_write_verbs_between_turns_keep_their_refusals() -> None:
     observations = await kit.store.list_observations("r")
     await host.close(kit)
 
-    assert room.metadata["thought"] == "kept"
+    assert room.metadata == {"thought": "kept"}
     assert [o.id for o in observations] == ["o1"]
-    assert refusals == [True] * 5
+    assert refusals == [True] * 3
     # Work a turn began starts fresh once the turn is over (RFC §8.3).
     assert sent.chain_depth == 0
 

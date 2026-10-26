@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.core._participant_channels import channels_reached, warn_cross_channel
-from roomkit.core._room_metadata import refuse_framework_keys
+from roomkit.core._room_metadata import without_framework_keys
 from roomkit.core.exceptions import (
     IdentityNotFoundError,
     ParticipantNotFoundError,
@@ -101,10 +101,9 @@ class RoomLifecycleMixin(HelpersMixin):
 
         Args:
             room_id: Optional explicit room ID (auto-generated if omitted).
-            metadata: Optional room metadata dict; none of the framework's
-                keys, the ``roomkit:`` namespace (a detach's revocation, what
-                the room keeps for a channel) and the keys of the room's
-                private state (``author_register``), ``ValueError``.
+            metadata: Optional room metadata dict; a key only the
+                framework writes, under ``roomkit:`` or of the room's private
+                state (``author_register``), is dropped with a warning.
             recorders: Optional list of :class:`RoomRecorderBinding` for
                 room-level media recording.
             orchestration: Orchestration strategy for this room. Overrides
@@ -137,11 +136,11 @@ class RoomLifecycleMixin(HelpersMixin):
                 is written, so no room exists afterwards and the recordings
                 already started are stopped (RFC §12.11).
         """
-        refuse_framework_keys(metadata or {})
+        metadata = without_framework_keys(metadata or {}, room_id=room_id, writer="create_room")
         room = Room(
             id=room_id or uuid4().hex,
             organization_id=organization_id,
-            metadata=metadata or {},
+            metadata=metadata,
             timers=timers or RoomTimers(),
             agent_response_policy=(
                 agent_response_policy
@@ -394,15 +393,15 @@ class RoomLifecycleMixin(HelpersMixin):
     ) -> Room:
         """Update room metadata.
 
-        Raises:
-            ValueError: a key only the framework writes, nothing written: one
-                under ``roomkit:`` (RFC §5.1), a detach's revocation
-                (``roomkit:detached_channels``) and what the room keeps for a
-                channel (``roomkit:channel_state:``) among them, or a key of
-                the room's private state (``author_register``,
-                ``_speak_queue_results``, RFC §14.1).
+        A key only the framework writes is dropped with a warning, the rest
+        written: one under ``roomkit:`` (RFC §5.1), a detach's revocation
+        (``roomkit:detached_channels``) and what the room keeps for a channel
+        (``roomkit:channel_state:``) among them, or a key of the room's
+        private state (``author_register``, ``_speak_queue_results``, RFC
+        §14.1). So a read-modify-write (``{**room.metadata, ...}``) writes
+        its own keys and leaves the framework's as they are.
         """
-        refuse_framework_keys(metadata)
+        metadata = without_framework_keys(metadata, room_id=room_id, writer="update_room_metadata")
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
             room = room.model_copy(
