@@ -40,6 +40,10 @@ if TYPE_CHECKING:
 
         def waiter_would_deadlock(self) -> bool: ...
 
+        async def wait(self) -> bool: ...
+
+        def waits_on_caller(self) -> bool: ...
+
 
 class ProviderResult(BaseModel):
     """Result from a provider delivery attempt."""
@@ -250,9 +254,16 @@ class DeliveryHandle:
         results, that delivery run ahead of the event; one whose delivery
         needs the event's admission ticket (a transport's ``deliver()`` that
         sends into the room) ends at the event's ``process_timeout`` (RFC
-        §9.5.1, §13.6).
+        §9.5.1, §13.6). From a turn of an agent that takes a room's turns
+        one at a time (a tool it calls), a wait on a call that asks that
+        agent in the same room returns once the call's delivery set ran: the
+        call's turn is answered after the caller's (RFC §6.4).
         """
         if not self.done and self._cascade.waiter_would_deadlock():
+            return self._result
+        if not self.done and await self._cascade.wait() and self._cascade.waits_on_caller():
+            # A turn it asked waits behind the caller's own turn (RFC §6.4),
+            # known once its delivery set ran: it is answered after it.
             return self._result
         await asyncio.wait({self._consumer})
         if self._cascade.cancelled is not None:

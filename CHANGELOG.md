@@ -13,13 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   room run one after the other, in the order its messages arrived (RFC §6.4,
   RMK-900). By default they run side by side, and the turn for a second task
   read the first one's order still unanswered, so it could do that task again.
-  A waiting turn starts once the one before it has written its answer, and
-  reads the room as it stood when its message arrived plus the agent's
-  answers since: never a message that came after it, which waits its own
-  turn. `kit.cancel_delivery(key)` on a waiting turn's delivery means it never
-  starts; cutting the running turn lets the next one start. The order is the
-  room owner's, per process, as an ACP agent's is; a strategy that takes the
-  agent's turns (`Loop`, `Supervisor`) orders them itself. The owner reads it
+  A turn takes its place when its message is delivered, starts once the one
+  before it has written its answer (a cut one's kept text included), and
+  reads the room as it is then, less what others wrote after its message:
+  never a message that came after it, which waits its own turn, nor one
+  deleted meanwhile. `kit.cancel_delivery(key)` on a waiting turn's delivery
+  means it never starts; cutting the running turn lets the next one start. A
+  message the running turn sends into its own room (a tool's
+  `process_inbound`, `send_event` or `post`) that asks the same agent is
+  answered after that turn: the call returns without waiting for the answer.
+  A muted agent still reads each message as it comes, its answer withheld.
+  The order is the room owner's, per process, as an ACP agent's is; a strategy
+  that takes the agent's turns (`Loop`, `Supervisor`) orders them itself. The
+  owner reads it
   from `Channel.serializes_room_turns`, which `ChannelDeclaration` carries for
   an agent built on an executor elsewhere. `examples/agent_turns_in_order.py`
   runs it.

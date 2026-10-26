@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from roomkit.core._failure_log import log_failure
 from roomkit.core._reentrance import delivering
+from roomkit.core._room_turns import stop_turn
 from roomkit.core.event_router import stream_turn_entry, unanswered
 from roomkit.core.exceptions import error_type_name
 from roomkit.core.lanes import DeliveryCascade
@@ -410,12 +411,13 @@ class InboundStreamingMixin(HelpersMixin):
         produced and no tool call starts past this point, and the text already
         produced is stored, marked like any interrupted turn. A failure while closing is
         the provider's finalizer, not the response's: it is logged and the
-        text is still stored as cancelled.
+        text is still stored as cancelled. A turn that waited its place in the
+        room keeps it until that text is stored (RFC §6.4).
         """
         await writer.close_calls(await reader.stop())
         try:
             await segments.aclose()
-            await _aclose_stream(sr.stream)
+            await stop_turn(sr.stream)
         except Exception:
             logger.exception("Closing an unread response stream failed for room %s", room_id)
         writer.end_stopped()

@@ -259,11 +259,11 @@ async def _waiting_on_the_room_lock(room: Room) -> None:
 
 
 async def _waiting_its_place(room: Room) -> None:
-    """Until a turn of the agent waits its place in the room, behind the
-    turn that holds it."""
-    turns = room.kit._get_router()._room_turns  # noqa: SLF001
+    """Until a turn of the agent has its place in the room, behind the turn
+    that holds it."""
+    lines = room.kit._get_router()._room_turns._lines  # noqa: SLF001
     async with asyncio.timeout(WAIT):
-        while (line := turns._lines.get(("r", "agent"))) is None or line.users < 2:  # noqa: SLF001
+        while len(lines.get(("r", "agent"), ())) < 2:
             await asyncio.sleep(0.005)
 
 

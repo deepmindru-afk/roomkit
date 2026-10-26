@@ -5,11 +5,11 @@ A lead hands a worker three tasks in the same room, each message carrying a
 room's messages side by side: the turn for task 2 would start while task 1
 runs, and read task 1's order still unanswered. With
 ``serialize_room_turns=True`` the worker's turns in the room run one after the
-other, in the order the tasks arrived. Each turn reads the room as it stood
-when its task arrived, plus the worker's answers since: task 2 reads task 1
+other, in the order the tasks arrived. Each turn reads the room as it is when
+it starts, less the messages others wrote after its task: task 2 reads task 1
 done, and never task 3, which waits its own turn.
 
-While task 1 runs, the lead cancels task 3 by its id: its turn never starts,
+Before task 3's turn starts, the lead cancels it by its id: it never starts,
 and its message still reaches the room.
 
 Run with: uv run python examples/agent_turns_in_order.py

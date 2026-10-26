@@ -722,7 +722,7 @@ class LaneExecutionMixin(HelpersMixin):
         completed = await cascade.wait()
         if cascade.cancelled is not None:
             await cascade.wait_drained()
-        if not completed:
+        if not completed or cascade.waits_on_caller():
             self._consume_streams_when_cascade_completes(cascade, room_id)
         elif cascade.streams and cascade.cancelled is None:
             cascade.caller_logs = caller_logs

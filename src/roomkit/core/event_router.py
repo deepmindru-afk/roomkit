@@ -7,7 +7,6 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from functools import partial
 from typing import Any
 
 from roomkit.channels.base import Channel
@@ -16,7 +15,7 @@ from roomkit.core._failure_log import log_failure
 from roomkit.core._instructions import response_metadata
 from roomkit.core._reentrance import answers_past_limit, within_turn
 from roomkit.core._room_metadata import without_framework_keys
-from roomkit.core._room_turns import QueuedTurn, RoomTurns, room_as_asked
+from roomkit.core._room_turns import RoomTurns
 from roomkit.core._turn_runners import TurnRunner
 from roomkit.core._voice_delivery import delivering_injected
 from roomkit.core.circuit_breaker import CircuitBreaker
@@ -56,10 +55,9 @@ from roomkit.models.event import (
     refuse_too_deep,
     with_pipeline_id,
 )
-from roomkit.models.response_metadata import ResponseMetadata, TurnEntries, turn_summary
+from roomkit.models.response_metadata import TurnEntries, turn_summary
 from roomkit.models.task import Observation, Task
 from roomkit.providers.utils import _aclose_stream
-from roomkit.telemetry.context import get_current_span, restored_span
 from roomkit.turns.owner import TurnClient, drop_unread, registry_turn_client
 
 logger = logging.getLogger("roomkit.event_router")
@@ -413,9 +411,9 @@ class EventRouter:
         self._turns = turns or registry_turn_client(channels)
         # A strategy's runner takes an agent's turns on the owner (RFC §10.6.1).
         self._runner_of = runner_of
-        # The room as it is now, read by a turn that waited its place (RFC §6.4).
-        self._context_of = context_of
-        self._room_turns = RoomTurns()
+        # The lines of the channels that take a room's turns one at a time
+        # (RFC §6.4), which read the room as it is when they start.
+        self._room_turns = RoomTurns(self.react, context_of, telemetry)
         # Set by RoomKit after construction — the router owns the breakers,
         # the framework owns the event surface (RFC §13.1 / §8.2).
         self._framework_emitter: Any = None
@@ -861,7 +859,7 @@ class EventRouter:
         (RFC §10.1). A channel that takes a room's turns one at a time has
         its turn wait its place in the stream it answers with (RFC §6.4)."""
         reaction = (
-            self._queued_turn(channel, event, binding, context)
+            self._room_turns.ask(channel, event, binding, context)
             if self._serializes(channel, binding, context)
             else self.react(channel, event, binding, context)
         )
@@ -878,47 +876,15 @@ class EventRouter:
     def _serializes(self, channel: Channel, binding: ChannelBinding, context: RoomContext) -> bool:
         """Whether *channel*'s turn waits its place in the room: an
         intelligence channel that declares it, unless a strategy takes its
-        turns, which orders them itself (RFC §6.4, §10.6.1)."""
+        turns, which orders them itself (RFC §6.4, §10.6.1). A muted one
+        reacts at once, as any muted channel does, its answer closed unread
+        (RFC §7.2)."""
         if binding.category != ChannelCategory.INTELLIGENCE or not channel.serializes_room_turns:
+            return False
+        if binding.muted:
             return False
         runner_of = self._runner_of
         return runner_of is None or runner_of(context.room.id, channel.channel_id) is None
-
-    async def _queued_turn(
-        self,
-        channel: Channel,
-        event: RoomEvent,
-        binding: ChannelBinding,
-        context: RoomContext,
-    ) -> ChannelOutput:
-        """*channel*'s answer to *event* as a turn that starts once its
-        previous turn in the room is over, when its stream is first read."""
-        record = ResponseMetadata()
-        start = partial(self._start_queued, channel, event, binding, context, get_current_span())
-        turn = QueuedTurn(
-            partial(self._room_turns.take, context.room.id, channel.channel_id), start, record
-        )
-        return ChannelOutput(responded=True, response_stream=turn, response_metadata=record)
-
-    async def _start_queued(
-        self,
-        channel: Channel,
-        event: RoomEvent,
-        binding: ChannelBinding,
-        asked: RoomContext,
-        span_id: str | None,
-    ) -> ChannelOutput:
-        """Run a turn that waited its place, under the span of the delivery
-        that asked it, on the room as it stood when it was asked plus what
-        the channel wrote since; no turn when the channel left the room."""
-        now = for_channels(await self._context_of(asked.room.id)) if self._context_of else asked
-        if now.get_binding(channel.channel_id) is None:
-            return ChannelOutput.empty()
-        context = room_as_asked(asked, now, channel.channel_id)
-        telemetry = self._telemetry
-        telemetry_ctx = telemetry.get_span_context(span_id) if telemetry and span_id else None
-        with restored_span(span_id, telemetry_ctx=telemetry_ctx):
-            return await self.react(channel, event, binding, context)
 
     async def react(
         self,

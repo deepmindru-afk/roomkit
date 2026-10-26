@@ -13,11 +13,13 @@ import logging
 import os
 import time
 from collections.abc import AsyncIterator
+from functools import partial
 from typing import Any
 
 import pytest
 
 from roomkit import RoomKit
+from roomkit.core._room_turns import QueuedTurn, RoomTurns
 from roomkit.core.event_router import StreamingResponse
 from roomkit.core.exceptions import TurnLinkError
 from roomkit.core.lanes import DeliveryCascade, ExecEntry, RoomDeliveryLane
@@ -25,6 +27,7 @@ from roomkit.core.task_utils import cancel_reason
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.event import TextContent
+from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns.base import TurnBackend
 from roomkit.turns.owner import registry_turn_client
@@ -54,10 +57,14 @@ def _response(stream: Any) -> StreamingResponse:
     )
 
 
-async def test_a_cancelled_cascade_reports_its_cleanup_incomplete_while_an_end_is_owed() -> None:
+@pytest.mark.parametrize("waited", [False, True], ids=["side by side", "waited its place"])
+async def test_a_cancelled_cascade_reports_its_cleanup_incomplete_while_an_end_is_owed(
+    waited: bool,
+) -> None:
     """The executor's stream hangs in its cleanup, so the turn's end never
     comes: the owner's drain gives up at its bound, and the cascade, which
-    read that turn, says its cleanup is incomplete rather than done."""
+    read that turn, says its cleanup is incomplete rather than done, a turn
+    that waited its place in the room included (RFC §6.4)."""
     let_go = asyncio.Event()
 
     async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
@@ -68,8 +75,11 @@ async def test_a_cancelled_cascade_reports_its_cleanup_incomplete_while_an_end_i
             await let_go.wait()
 
     client = _client(ScriptedChannel(script), QUICK)
-    output = await _run(client)
-    stream = output.response_stream
+    if waited:
+        place = RoomTurns(_run, None, None).join("room", "agent")
+        stream: Any = QueuedTurn(place, partial(_run, client), ResponseMetadata())
+    else:
+        stream = (await _run(client)).response_stream
     assert await anext(stream) == "one"
     cascade = DeliveryCascade("room", reentry_budget=10)
     cascade.add_streams([_response(stream)])

@@ -471,6 +471,12 @@ class DeliveryCascade:
         """
         await self._done.wait()
 
+    def waits_on_caller(self) -> bool:
+        """Whether a turn it asked waits its place behind the current task's
+        own turn (RFC §6.4): reading its streams here would wait on that
+        turn, so its caller hands the reading to the background instead."""
+        return any(getattr(r.stream, "waits_on_caller", False) for r in self.streams)
+
     def waiter_would_deadlock(self) -> bool:
         """Whether the current task must not wait on this room's delivery.
 
