@@ -183,6 +183,11 @@ the event it runs for. The call is part of that event's work (RFC §9.5.1):
   and commits ahead of the event being processed. What its own hooks inject
   joins the queue of the section holding the lock, committed once that
   section has released it, after the event being processed.
+- A task a locked hook starts acts for the hook while the hook runs, awaited
+  or not: its call is nested too. Once the hook has returned, the task holds
+  nothing of the lock, though the event's pass still holds it for its next
+  hook: its calls are new arrivals, which wait for the lock and commit after
+  the event.
 - From an off-lock hook's body (`needs_lock=False`), or a `hook_error`
   handler reporting that check's failure, it is **adopted beside** the event:
   no ticket, every hook under the lock, its own section for its commit,

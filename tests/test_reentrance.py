@@ -13,6 +13,7 @@ therefore stops, at the reentry cap or the chain-depth limit.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -141,6 +142,72 @@ class TestAnInjectionMadeFromTheRoomsOwnWork:
             ]
         finally:
             await kit.close()
+
+
+def _order(events: list[RoomEvent]) -> list[str]:
+    return [f"{e.index}:{e.source.channel_id}" for e in events]
+
+
+class TestACallFromATaskALockedHookStarted:
+    """§9.5.1, §13.5 (RMK-978): a task a locked hook starts acts for the hook
+    while the hook runs, awaited or not; once the hook is over, its calls are
+    new arrivals, though the event's pass still holds the room lock for its
+    next hook."""
+
+    async def test_while_the_hook_runs_its_call_is_adopted(self) -> None:
+        kit = await _room(RoomKit(), SimpleChannel("ws"))
+        sent = asyncio.Event()
+        started: list[asyncio.Task[None]] = []
+
+        async def notify() -> None:
+            await kit.send_event("r1", "ws", TextContent(body="heads up"))
+            sent.set()
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="notifier")
+        async def notifier(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if event.source.channel_id == "sms":
+                started.append(asyncio.create_task(notify()))  # never awaited
+                await asyncio.wait_for(sent.wait(), timeout=1)
+            return HookResult.allow()
+
+        await kit.process_inbound(_message("hello"))
+        await asyncio.gather(*started)
+        assert _order(await _messages(kit)) == ["2:ws", "3:sms"]
+        await kit.close()
+
+    async def test_once_the_hook_is_over_its_call_is_a_new_arrival(self) -> None:
+        kit = await _room(RoomKit(), SimpleChannel("ws"))
+        over, calling, committed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        started: list[asyncio.Task[int]] = []
+
+        async def notify() -> int:
+            await over.wait()
+            calling.set()
+            sent = await kit.send_event("r1", "ws", TextContent(body="heads up"))
+            committed.set()
+            return sent.index
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="notifier")
+        async def notifier(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if event.source.channel_id == "sms":
+                started.append(asyncio.create_task(notify()))
+                over.set()
+            return HookResult.allow()
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="next", priority=10)
+        async def next_hook(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            # The pass's next hook, under the same lock, runs on once the task
+            # calls: an adopted call commits meanwhile, a new arrival waits.
+            if event.source.channel_id == "sms":
+                await calling.wait()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(committed.wait(), timeout=0.02)
+            return HookResult.allow()
+
+        await kit.process_inbound(_message("hello"))
+        sent = await asyncio.wait_for(asyncio.gather(*started), timeout=1)
+        assert (sent, _order(await _messages(kit))) == ([3], ["2:sms", "3:ws"])
+        await kit.close()
 
 
 class _Parser(SimpleChannel):

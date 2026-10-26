@@ -31,6 +31,7 @@ from roomkit.core._authors import own_record_id, reached, stored_register, with_
 from roomkit.core._participant_channels import channels_reached, warn_cross_channel
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.hooks import SyncPipelineResult
+from roomkit.core.locks import lent_while_it_runs
 from roomkit.core.task_utils import run_to_its_end
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundResult
@@ -553,7 +554,12 @@ class HelpersMixin:
             if not self._identity_hook_matches_event(hook_reg, event):
                 continue
             try:
-                result: IdentityHookResult | None = await hook_reg.fn(event, context, id_result)
+                # Lent the caller's room locks while it runs, as any hook's
+                # body (RFC §9.5.1).
+                with lent_while_it_runs():
+                    result: IdentityHookResult | None = await hook_reg.fn(
+                        event, context, id_result
+                    )
                 if result is not None:
                     return result
             except Exception:

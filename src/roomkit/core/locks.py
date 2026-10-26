@@ -28,7 +28,35 @@ class _LockLease:
     active: bool = True
 
 
-_held_leases: contextvars.ContextVar[tuple[_LockLease, ...]] = contextvars.ContextVar(
+@dataclass(eq=False, slots=True)
+class _Call:
+    running: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class _LentLease:
+    """A lease lent to a call (a hook's body) while the call runs: a task the
+    call spawned keeps a copy of the context, and finds the lease lent no
+    more once the call is over, though the section holding the lock goes
+    on."""
+
+    lease: _LockLease | _LentLease
+    call: _Call
+
+    @property
+    def manager(self) -> RoomLockManager:
+        return self.lease.manager
+
+    @property
+    def room_id(self) -> str:
+        return self.lease.room_id
+
+    @property
+    def active(self) -> bool:
+        return self.call.running and self.lease.active
+
+
+_held_leases: contextvars.ContextVar[tuple[_LockLease | _LentLease, ...]] = contextvars.ContextVar(
     "_room_lock_leases", default=()
 )
 
@@ -51,6 +79,26 @@ def unlocked_context() -> contextvars.Context:
     context.run(_held_rooms.set, frozenset())
     context.run(_held_leases.set, ())
     return context
+
+
+@contextmanager
+def lent_while_it_runs() -> Generator[None, None, None]:
+    """Run a call (a hook's body) with the room locks this context holds lent
+    to it while it runs (RFC §9.5.1 Reentrance, §13.5): a task it spawns,
+    awaited or not, acts for it under them while it runs; once it is over,
+    that task holds none of them, though the section that holds the lock
+    goes on, and its calls into the room are new arrivals."""
+    leases = _held_leases.get()
+    if not leases:
+        yield
+        return
+    call = _Call()
+    token = _held_leases.set(tuple(_LentLease(lease, call) for lease in leases))
+    try:
+        yield
+    finally:
+        call.running = False
+        _held_leases.reset(token)
 
 
 @contextmanager

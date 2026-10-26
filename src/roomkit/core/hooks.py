@@ -7,13 +7,13 @@ import contextvars
 import logging
 from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field, replace
-from typing import Any, ClassVar, Protocol, cast
+from typing import Any, ClassVar, Protocol
 
 from roomkit.core._changes import holds_change
 from roomkit.core._instructions import kept_metadata
 from roomkit.core._reentrance import ReentryBudget, after_delivery
 from roomkit.core.exceptions import ReentryLoopCapError
-from roomkit.core.locks import unlocked_context
+from roomkit.core.locks import lent_while_it_runs, unlocked_context
 from roomkit.core.task_utils import held_runs, start_named
 from roomkit.core.visibility import answer_scope, narrower_scope
 from roomkit.models.channel import ChannelBinding
@@ -428,11 +428,20 @@ async def _run_body(
     it starts that calls afterwards has a budget and a depth of its own
     (RFC §8.3, §9.5.1, §10.1 step 16, §10.3)."""
     if budget is None:
-        await asyncio.wait_for(hook.fn(event, context), timeout=hook.timeout)
+        await _hook_body(hook, event, context)
         return
     depth = event.chain_depth if isinstance(event, RoomEvent) else 0
     with after_delivery(room_id, budget, depth):
-        await asyncio.wait_for(hook.fn(event, context), timeout=hook.timeout)
+        await _hook_body(hook, event, context)
+
+
+async def _hook_body(hook: HookRegistration, *args: Any) -> Any:
+    """*hook*'s body on *args* within its timeout, the room locks its caller
+    holds lent to it while it runs: a task it starts acts for it until it
+    returns, and calls into the room as a new arrival afterwards (RFC
+    §9.5.1, §13.5)."""
+    with lent_while_it_runs():
+        return await asyncio.wait_for(hook.fn(*args), timeout=hook.timeout)
 
 
 class HookEngine:
@@ -1196,10 +1205,7 @@ class HookEngine:
                 # string is a modification, and treating it as absent would hand
                 # the next hook the original secret.
                 current_event = result.event if result.event is not None else event
-                fn = cast(SyncHookFn, hook.fn)
-                hook_result: HookResult = await asyncio.wait_for(
-                    fn(current_event, context), timeout=hook.timeout
-                )
+                hook_result: HookResult = await _hook_body(hook, current_event, context)
             except TimeoutError:
                 logger.warning(
                     "Sync hook %s timed out after %.1fs",

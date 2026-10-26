@@ -74,6 +74,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whether its metadata names another or none, and writes none on an event
   committed with none.
 
+- **A task a locked hook left running calls into the room as a new arrival
+  once the hook is over** (RFC §9.5.1, §13.5, RMK-978). The task kept the
+  room lock's lease while the event's pass held the lock, so a call it made
+  after the hook had returned, while the pass ran its next hook, was adopted
+  as the hook's own: it committed ahead of the event, under a lock nothing
+  held for it, and ran its hooks there. A hook's body now has the room locks
+  lent to it only while it runs: a task it starts acts for it until it
+  returns, awaited or not, and its later calls wait for the lock and commit
+  after the event, as roomkit-rs does since its step3-m2 18c7b94.
+
 ## [0.109.0] — 2026-10-25
 
 ### Added
