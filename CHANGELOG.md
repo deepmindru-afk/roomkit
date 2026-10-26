@@ -246,15 +246,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `playback_timeout` delivers the batch anyway, as `WaitForIdle`'s does, where
   it failed `strategy_failed`.
 
-- **A realtime session that ended keeps no transcription state** (RMK-983).
-  A transcription the provider handed on once the channel ended its session,
-  or while a start that then failed was running, left the session's answer
-  depth and its ordering lock behind for good, one of each per call that
-  ended so: a slow leak on a server that takes many calls. Such a
-  transcription was already dropped, its room gone; now nothing of it is
-  kept, and a start that fails forgets what was transcribed, as a session's
-  end does. The last words a provider hands on as its connection drops are
-  still recorded: the session is its room's until the channel ends it.
+- **A realtime session that ended keeps no transcription state** (RMK-983). A
+  transcription the provider handed on once the channel ended its session, or
+  while a start that then failed was running, left the session's answer depth
+  and its ordering lock behind for good, one of each per call that ended so: a
+  slow leak on a server that takes many calls. Such a transcription was
+  already dropped, its room gone; now nothing of it is kept, and a start that
+  fails forgets what was transcribed and when the user's turn began, as a
+  session's end does. An `ON_TRANSCRIPTION` hook still running as the session
+  ends, and an injection the provider still held, no longer write the
+  session's last text or its depth back after it; on a conference, whose room
+  outlives its session, an injection held across a reconnect no longer moves
+  the new session's next answer. A start that fails also forgets its barge-in
+  state. The last words a provider hands on as its connection drops are still
+  recorded: the session is its room's until the channel ends it.
 
 - **A channel's `metadata_updates` are written on the room** (RFC §10.1 step
   15, RMK-976). The core collected them in `BroadcastResult.metadata_updates`

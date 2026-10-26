@@ -563,7 +563,9 @@ class ConferenceRealtime:
             result = await config.provider.inject_text(session, text, role=role, silent=silent)
         if result is None or result.status != "sent":
             return result
-        if room is not None and not silent:
+        # The room outlives its session: an injection the provider still held
+        # as the session ended moves no later session's depth.
+        if room is not None and not silent and serves(room.session, session):
             room.answer_depth.injected(chain_depth)
         source = self._source(config, session)
         await fire_text_injected(

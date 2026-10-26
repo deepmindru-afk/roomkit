@@ -263,9 +263,8 @@ class RealtimeTranscriptionMixin:
                 },
             )
 
-            # Track last assistant text for barge-in context
             if role == "assistant":
-                self._last_assistant_text[session.id] = final_text
+                self._note_last_assistant_text(session, final_text)
 
             if self._emit_transcription_events and final_text.strip():
                 await self._emit_transcript_event(session, room_id, role, final_text, chain_depth)
@@ -342,6 +341,12 @@ class RealtimeTranscriptionMixin:
         """What the session's model heard last (RFC §12.4)."""
         with self._state_lock:
             return self._answer_depth.setdefault(session_id, AnswerDepth())
+
+    def _note_last_assistant_text(self, session: VoiceSession, text: str) -> None:
+        """Keep what the model said last, for a barge-in's context, unless its
+        session ended while the hooks ran: its state is gone (RMK-983)."""
+        if not self._session_let_go(session):
+            self._last_assistant_text[session.id] = text
 
     def _session_let_go(self, session: VoiceSession) -> bool:
         """Whether *session* ended and its room let go of it: what it

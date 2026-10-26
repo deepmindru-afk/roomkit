@@ -33,6 +33,7 @@ from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.tools.policy import ToolPolicy
+from roomkit.voice.base import VoiceSessionState
 from roomkit.voice.realtime.mock import MockRealtimeProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 
@@ -92,6 +93,17 @@ async def realtime_kit(
     await kit.attach_channel(ROOM, "conf")
     await kit.attach_channel(ROOM, "src")
     return kit, channel, backend, provider
+
+
+class _GatedInjection(MockRealtimeProvider):
+    """Holds a text named ``stale`` until *gate* is set."""
+
+    gate: asyncio.Event | None = None
+
+    async def inject_text(self, session, text, **kwargs):  # type: ignore[no-untyped-def]
+        if self.gate is not None and text == "stale":
+            await self.gate.wait()
+        return await super().inject_text(session, text, **kwargs)
 
 
 class _RefusingProvider(MockRealtimeProvider):
@@ -292,6 +304,39 @@ class TestTranscription:
             if isinstance(e.content, TextContent)
         }
         assert (depths["after the agent"], depths["after the people"]) == (3, 1)
+
+    async def test_an_injection_held_across_a_reconnect_moves_no_later_answer(self) -> None:
+        """RMK-983: the room outlives its session. An injection 3 deep the
+        provider still held as the session dropped returns once a new session
+        heard the room's people: that session's answer stays 1 deep."""
+        provider = _GatedInjection()
+        kit, channel, _, _ = await realtime_kit(provider=provider)
+        realtime = channel._realtime  # noqa: SLF001
+        first = await realtime.ensure_session(ROOM)
+        assert first is not None
+        provider.gate = asyncio.Event()
+        held = asyncio.create_task(
+            realtime.inject_text(first, "stale", role="user", chain_depth=3)
+        )
+        await asyncio.sleep(0)
+        first.state = VoiceSessionState.ENDED
+        await provider.simulate_error(first, "gone", "the connection dropped")
+        realtime._rooms[ROOM].next_connect_at = 0.0  # noqa: SLF001
+        second = await realtime.ensure_session(ROOM)
+        assert second is not None and second is not first
+        await provider.simulate_transcription(second, "someone spoke", role="user")
+
+        provider.gate.set()
+        await held
+        await provider.simulate_transcription(second, "after the people", role="assistant")
+        await kit.close()
+
+        depths = {
+            e.content.body: e.chain_depth
+            for e in await kit.store.list_events(ROOM)
+            if isinstance(e.content, TextContent)
+        }
+        assert depths["after the people"] == 1
 
     async def test_assistant_partials_are_not_stored(self) -> None:
         kit, channel, _, provider = await realtime_kit()

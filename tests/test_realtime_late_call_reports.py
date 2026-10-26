@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from roomkit import ConferenceRealtimeConfig, HookExecution, HookTrigger, RoomKit
+from roomkit import ConferenceRealtimeConfig, HookExecution, HookResult, HookTrigger, RoomKit
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.voice.base import VoiceSessionState
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
@@ -101,58 +101,113 @@ async def test_a_call_after_its_session_ended_is_reported_and_leaves_no_state() 
     assert session.id not in channel._answer_depth  # noqa: SLF001
 
 
-class _TranscribingProvider(MockRealtimeProvider):
-    """Transcribes what the model said while ``connect()`` runs, then, on
-    *fail*, refuses the start."""
+class _OutlivedProvider(MockRealtimeProvider):
+    """A provider whose session something outlives: on *fail*, it transcribes
+    and the pipeline hears the user while ``connect()`` runs, then refuses
+    the start; an injection waits on *gate* before it is sent."""
 
-    def __init__(self, *, fail: bool) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._fail = fail
+        self.fail = False
+        self.channel: Any = None
+        self.session: Any = None
+        self.gate: asyncio.Event | None = None
 
     async def connect(self, session: Any, **kwargs: Any) -> None:
         await super().connect(session, **kwargs)
-        if self._fail:
+        self.session = session
+        if self.fail:
             await self.simulate_transcription(session, "hello", "assistant", True)
+            self.channel._on_pipeline_speech_start(session)  # noqa: SLF001
             raise ConnectionError("handshake refused")
 
+    async def inject_text(self, session: Any, text: str, **kwargs: Any) -> Any:
+        if self.gate is not None:
+            await self.gate.wait()
+        return await super().inject_text(session, text, **kwargs)
 
-@pytest.mark.parametrize(
-    "when",
-    ["after its session ended", "while its task waited for the end", "during a start that failed"],
-)
-async def test_a_transcription_its_session_outlives_leaves_no_state(when: str) -> None:
-    """A transcription that arrives once its session ended, or while a start
-    that then fails runs, is not the room's to record, and keeps nothing of
-    the session's: no depth of the model's answers, no ordering lock, no last
-    text (RMK-983)."""
-    provider = _TranscribingProvider(fail=when == "during a start that failed")
+
+async def _transcribed_after_the_end(kit: RoomKit, channel: Any, provider: Any) -> None:
+    session = await channel.start_session("r1", "u", "ws")
+    await channel.end_session(session)
+    await provider.simulate_transcription(session, "late words", "assistant", True)
+
+
+async def _transcribed_while_its_task_waited(kit: RoomKit, channel: Any, provider: Any) -> None:
+    session = await channel.start_session("r1", "u", "ws")
+    await provider.simulate_transcription(session, "late words", "assistant", True)
+    await channel.end_session(session)
+
+
+async def _transcribed_with_a_hook_at_the_end(kit: RoomKit, channel: Any, provider: Any) -> None:
+    hooked, release = asyncio.Event(), asyncio.Event()
+
+    @kit.hook(HookTrigger.ON_TRANSCRIPTION, name="slow")
+    async def slow(event: Any, ctx: Any) -> HookResult:
+        hooked.set()
+        await release.wait()
+        return HookResult.allow()
+
+    session = await channel.start_session("r1", "u", "ws")
+    await provider.simulate_transcription(session, "words", "assistant", True)
+    await asyncio.wait_for(hooked.wait(), 2)
+    await channel.end_session(session)
+    release.set()
+
+
+async def _injected_in_flight_at_the_end(kit: RoomKit, channel: Any, provider: Any) -> None:
+    session = await channel.start_session("r1", "u", "ws")
+    provider.gate = asyncio.Event()
+    injecting = asyncio.create_task(channel.inject_text(session, "hello", chain_depth=1))
+    await asyncio.sleep(0)
+    await channel.end_session(session)
+    provider.gate.set()
+    await injecting
+
+
+async def _started_and_failed(kit: RoomKit, channel: Any, provider: Any) -> None:
+    provider.fail = True
+    with pytest.raises(ConnectionError):
+        await channel.start_session("r1", "u", "ws")
+
+
+_OUTLIVED = {
+    "a transcription after the end": _transcribed_after_the_end,
+    "a transcription whose task waited for the end": _transcribed_while_its_task_waited,
+    "a transcription whose hook ran at the end": _transcribed_with_a_hook_at_the_end,
+    "an injection in flight at the end": _injected_in_flight_at_the_end,
+    "a start that failed": _started_and_failed,
+}
+
+
+def _holding(channel: Any, session_id: str) -> list[str]:
+    """The channel's records that still name *session_id*."""
+    return sorted(
+        name
+        for name, value in vars(channel).items()
+        if isinstance(value, dict | set | frozenset) and session_id in value
+    )
+
+
+@pytest.mark.parametrize("when", list(_OUTLIVED))
+async def test_what_its_session_outlives_leaves_no_state(when: str) -> None:
+    """What reaches a realtime session as it ends, or while a start that then
+    fails runs, keeps nothing of the session's: no record of the channel
+    names it once it is gone (RMK-983)."""
+    provider = _OutlivedProvider()
     channel = RealtimeVoiceChannel("rt", provider=provider, transport=MockRealtimeTransport())
+    provider.channel = channel
     kit = RoomKit()
     kit.register_channel(channel)
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "rt")
-    if when == "after its session ended":
-        session = await channel.start_session("r1", "u", "ws")
-        await channel.end_session(session)
-        await provider.simulate_transcription(session, "late words", "assistant", True)
-    elif when == "while its task waited for the end":
-        session = await channel.start_session("r1", "u", "ws")
-        # Arrives while the session is live; its task starts once it ended.
-        await provider.simulate_transcription(session, "late words", "assistant", True)
-        await channel.end_session(session)
-    else:
-        with pytest.raises(ConnectionError):
-            await channel.start_session("r1", "u", "ws")
-    for _ in range(20):  # the transcription's task, had it been started
+
+    await _OUTLIVED[when](kit, channel, provider)
+    for _ in range(20):  # a transcription's task, had it been started
         await asyncio.sleep(0)
     await kit.close()
 
-    state = (
-        channel._answer_depth,  # noqa: SLF001
-        channel._transcription_order_locks,  # noqa: SLF001
-        channel._last_assistant_text,  # noqa: SLF001
-    )
-    assert state == ({}, {}, {})
+    assert _holding(channel, provider.session.id) == []
 
 
 async def test_the_last_words_before_the_connection_drops_are_recorded() -> None:

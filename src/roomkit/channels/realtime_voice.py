@@ -1042,7 +1042,9 @@ class RealtimeVoiceChannel(
         silent = silent or held_at_the_limit(self._framework, chain_depth)
         result = await self._provider.inject_text(session, text, role=role, silent=silent)
         if result is not None and result.status == "sent":
-            if not silent:
+            # A session that ended while the provider took the text keeps no
+            # depth of its answers.
+            if not silent and self._serves(session):
                 self._session_answer_depth(session.id).injected(chain_depth)
             await self._fire_text_injected(session, text, role=role, injected_from=injected_from)
         logger.info(
@@ -1352,29 +1354,7 @@ class RealtimeVoiceChannel(
         await self._stop_session_tools(session)
         with contextlib.suppress(Exception):
             self._pipeline_session_ended(session)
-        with self._state_lock:
-            resamplers = self._session_resamplers.pop(session.id, None)
-            self._session_transport_rates.pop(session.id, None)
-            self._session_transport_output_rates.pop(session.id, None)
-            self._session_pipeline_rates.pop(session.id, None)
-            self._preconnect_audio.pop(session.id, None)
-            self._preconnect_audio_bytes.pop(session.id, None)
-            self._preconnect_audio_dropped.discard(session.id)
-            idle = self._idle_events.pop(session.id, None)
-            if idle is not None:
-                idle.set()
-            self._user_speaking.pop(session.id, None)
-            self._provider_idle.pop(session.id, None)
-            self._tool_calls.stop_awaiting(session.id)
-            self._session_tools.pop(session.id, None)
-            self._session_roles.pop(session.id, None)
-            self._session_agent_policies.pop(session.id, None)
-            self._session_config_locks.pop(session.id, None)
-            self._response_generation.pop(session.id, None)
-            self._audio_drained.discard(session.id)
-            self._has_pipeline_vad.pop(session.id, None)
-            self._forget_transcription_state(session.id)
-            span_id = self._session_spans.pop(session.id, None)
+        resamplers, span_id = self._forget_failed_start(session.id)
         if self._skill_support:
             self._skill_support.cleanup_session(session.id)
         if self._tool_search_support:
@@ -1389,6 +1369,36 @@ class RealtimeVoiceChannel(
         if span_id:
             self._telemetry_provider.end_span(span_id)
             self._telemetry_provider.flush()
+
+    def _forget_failed_start(self, session_id: str) -> tuple[Any, str | None]:
+        """Forget what a start that failed recorded for *session_id*, as a
+        session's end does; the resamplers and the span it held, to close."""
+        with self._state_lock:
+            resamplers = self._session_resamplers.pop(session_id, None)
+            self._session_transport_rates.pop(session_id, None)
+            self._session_transport_output_rates.pop(session_id, None)
+            self._session_pipeline_rates.pop(session_id, None)
+            self._preconnect_audio.pop(session_id, None)
+            self._preconnect_audio_bytes.pop(session_id, None)
+            self._preconnect_audio_dropped.discard(session_id)
+            idle = self._idle_events.pop(session_id, None)
+            if idle is not None:
+                idle.set()
+            self._user_speaking.pop(session_id, None)
+            self._user_turn_start_at.pop(session_id, None)
+            self._provider_idle.pop(session_id, None)
+            self._tool_calls.stop_awaiting(session_id)
+            self._session_tools.pop(session_id, None)
+            self._session_roles.pop(session_id, None)
+            self._session_agent_policies.pop(session_id, None)
+            self._session_config_locks.pop(session_id, None)
+            self._response_generation.pop(session_id, None)
+            self._audio_drained.discard(session_id)
+            self._has_pipeline_vad.pop(session_id, None)
+            self._audio_generation.pop(session_id, None)
+            self._forget_transcription_state(session_id)
+            span_id = self._session_spans.pop(session_id, None)
+            return resamplers, span_id
 
     def _check_connecting_session(self, session: VoiceSession) -> None:
         pending = self._connecting_sessions.get(session.id)
