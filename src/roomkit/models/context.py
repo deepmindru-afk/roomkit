@@ -22,6 +22,12 @@ class RoomContext(BaseModel):
     appends the freshly committed event at the end, and hooks scanning for
     "the latest X" iterate it reversed. A producer building a ``RoomContext``
     by hand owes it the same shape.
+
+    The room, bindings, participants and events it holds are the store's
+    snapshots (RFC §14.4): a hook or a channel treats them as frozen, and
+    changes the room through the kit (``update_room_metadata()``), never in
+    place. ``InMemoryStore`` shares them, so a change made in place would
+    reach the store behind the write interface's back.
     """
 
     room: Room

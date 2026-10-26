@@ -37,11 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copies its record in, so a change to the object passed to `create_room()`,
   `update_room()`, `add_binding()`, `update_binding()`, `add_participant()` or
   `update_participant()` no longer reaches the store, where until now it did.
-  A message to an echo agent takes 2.15 ms instead of 2.60. Migration: code
-  that changed a read record in place (`room.status = ...`,
-  `room.metadata["x"] = ...`) and then wrote it still works; code that changed
-  one without writing it, as a scratch copy, now changes the in-memory store
-  behind the write interface's back: copy it first. SQLiteStore and
+  A message to an echo agent takes 2.15 ms instead of 2.60. What is shared:
+  what `kit.get_room()`, `kit.store.get_binding()` and the other reads
+  return, and the room, bindings and participants of the `RoomContext` a
+  hook or a channel receives. Migration: a hook or a channel that changed its
+  context's room or bindings in place, or code that changed a read record as
+  a scratch copy, now changes the in-memory store behind the write
+  interface's back: copy it with `model_copy(deep=True)` (a plain
+  `model_copy()` shares its dicts), or change the room through the kit
+  (`update_room_metadata()`). Code that changed a read record in place and
+  then wrote it with `update_room()` still works, but not with
+  `update_room_if()`, whose comparison then reads the changed value and
+  refuses: write a copy. A custom store must now keep a caller's later change
+  to the room, binding or participant it was written out of what it stores
+  (copy it in, or serialize it), as for events. SQLiteStore and
   PostgresStore return a new object per read and are unchanged.
 
 - **The in-memory turn backend hands a request's committed events over as

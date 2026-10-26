@@ -16,11 +16,13 @@ kit = RoomKit()  # Uses InMemoryStore automatically
 Data lives in Python dicts — fast for development, lost on restart.
 
 What a store returns is its snapshot (RFC §14.4): a room, a binding, a
-participant or an event read from it is treated as frozen, and changed by a
-copy and a write. `InMemoryStore` copies a record once as it is written and
-shares the stored object with every reader, so changing a read object in
-place changes the store behind the write interface's back; SQL stores return a
-new object per read, and the same code holds on all of them:
+participant or an event read from it, the room and bindings of a hook's or a
+channel's `RoomContext` included, is treated as frozen, and changed by a copy
+and a write. `InMemoryStore` copies a record once as it is written and shares
+the stored object with every reader, so changing a read object in place
+changes the store behind the write interface's back (a scratch copy is
+`model_copy(deep=True)`: a plain `model_copy()` shares its dicts); SQL stores
+return a new object per read, and the same code holds on all of them:
 
 ```python
 from roomkit import RoomStatus

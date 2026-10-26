@@ -52,8 +52,7 @@ class InMemoryStore(ConversationStore):
     store, and a read shares the stored snapshot, which the caller treats
     as frozen and changes through a write (``model_copy(update=...)``).
     Events, rooms, bindings and participants alike: one deep copy per write
-    instead of one per read, and a message reads its room's records a score
-    of times.
+    instead of one per read, which a message makes many of.
     """
 
     is_process_local = True

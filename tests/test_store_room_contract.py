@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import copy
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -378,3 +380,75 @@ async def test_an_event_of_another_room_marks_nothing(contract_store: Conversati
     finally:
         await contract_store.delete_room(room_id)
         await contract_store.delete_room(other_id)
+
+
+@dataclass(frozen=True)
+class _Kind:
+    """A kind of record a store keeps in a room: one made with a nested
+    value, the writes that store it, and the read that returns it."""
+
+    make: Callable[[str], Any]
+    add: str
+    update: str
+    read: Callable[[ConversationStore, str], Awaitable[Any]]
+
+
+def _nested() -> dict[str, Any]:
+    return {"nested": {"a": 1}}
+
+
+_KINDS = {
+    "room": _Kind(
+        lambda room_id: Room(id=room_id, metadata=_nested()),
+        "create_room",
+        "update_room",
+        lambda store, room_id: store.get_room(room_id),
+    ),
+    "binding": _Kind(
+        lambda room_id: ChannelBinding(
+            room_id=room_id, channel_id="sms", channel_type=ChannelType.SMS, metadata=_nested()
+        ),
+        "add_binding",
+        "update_binding",
+        lambda store, room_id: store.get_binding(room_id, "sms"),
+    ),
+    "participant": _Kind(
+        lambda room_id: Participant(
+            id="p1", room_id=room_id, channel_id="sms", metadata=_nested()
+        ),
+        "add_participant",
+        "update_participant",
+        lambda store, room_id: store.get_participant(room_id, "p1"),
+    ),
+    "event": _Kind(
+        lambda room_id: make_event(room_id=room_id, id=f"e-{room_id}", metadata=_nested()),
+        "add_event",
+        "update_event",
+        lambda store, room_id: store.get_event(f"e-{room_id}"),
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", list(_KINDS))
+@pytest.mark.parametrize("op", ["add", "update"])
+async def test_a_written_record_is_copied_in(
+    contract_store: ConversationStore, kind: str, op: str
+) -> None:
+    """RFC §14.4: a store owns what it is written from the write on, a room,
+    a binding, a participant or an event: the caller's later change to the
+    object it passed reaches nothing the store keeps (RMK-984)."""
+    room_id = uuid4().hex
+    spec = _KINDS[kind]
+    if kind != "room":
+        await contract_store.create_room(Room(id=room_id))
+    record = spec.make(room_id)
+    try:
+        if op == "update":
+            await getattr(contract_store, spec.add)(record.model_copy(deep=True))
+        await getattr(contract_store, getattr(spec, op))(record)
+
+        record.metadata["nested"]["a"] = 999  # the caller mutates ITS object
+
+        assert (await spec.read(contract_store, room_id)).metadata["nested"]["a"] == 1
+    finally:
+        await contract_store.delete_room(room_id)

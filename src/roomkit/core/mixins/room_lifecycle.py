@@ -206,6 +206,9 @@ class RoomLifecycleMixin(HelpersMixin):
         A library has no caller or auth context of its own, so the scope has to
         come from the caller. Left unset, the read is unscoped and behaves as it
         always has.
+
+        The room is the store's snapshot (RFC §14.4): change it through a copy
+        and a write (``room.model_copy(update=...)``), never in place.
         """
         room = await self._store.get_room(room_id)
         if room is None or (

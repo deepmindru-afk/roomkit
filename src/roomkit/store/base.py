@@ -200,6 +200,13 @@ class ConversationStore(ABC):
 
     Implement this ABC to plug in any storage backend (SQL, Redis, etc.).
     The library ships with `InMemoryStore` for development and testing.
+
+    What a store returns is its snapshot, and what it is written is its own
+    (RFC §14.4): a room, binding, participant or event a read or a write
+    returns is treated as frozen by its caller, and may be the same object
+    for every reader or a new one per read; a write must keep the caller's
+    later change to the object it passed out of the store (copy it in, or
+    serialize it). A room's private state alone is the reader's copy.
     """
 
     # Capability used by RoomKit's lock-manager pairing guard. Persistent
