@@ -50,11 +50,33 @@ def _load(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# A turn that calls the kit it holds shares its context with the owner when
+# the turn runs in memory; across Redis it goes through its TurnHost instead
+# (tests/redis_turn_mode.py), which the scripted agents do not use.
+_IN_PROCESS = (
+    "a scripted agent's turn calls the kit it holds, whose context an in-memory turn "
+    "shares with the owner; across Redis it goes through its TurnHost"
+)
+
+
+def _turn_calls_the_kit(scenario: dict[str, Any]) -> bool:
+    """Whether an intelligence channel's turn makes a kit call while it runs."""
+    for channel in scenario.get("setup", {}).get("channels", []):
+        intelligence = channel.get("category", "intelligence" if channel["type"] == "ai" else "")
+        if intelligence == "intelligence" and any(
+            r.get("do") for r in channel.get("on_event", [])
+        ):
+            return True
+    return False
+
+
 def _cases() -> list[Any]:
     cases = []
     for path in _scenarios():
         scenario_id = path.relative_to(SCENARIOS).with_suffix("").as_posix()
         marks = []
+        if _turn_calls_the_kit(_load(path)):
+            marks.append(pytest.mark.in_process(_IN_PROCESS))
         if scenario_id in KNOWN_FAILURES:
             marks.append(
                 pytest.mark.xfail(
