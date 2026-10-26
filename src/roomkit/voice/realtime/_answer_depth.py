@@ -14,7 +14,7 @@ class AnswerDepth:
     that depth plus one instead of restarting from 0 on every utterance, so an
     agent that answers it is held by ``max_chain_depth``. The limit holds the
     model too: a text whose answer would reach it is injected silently, and
-    the model answers nothing (``injection_silent``).
+    the model answers nothing (``held_at_the_limit``).
     """
 
     heard: int = 0
