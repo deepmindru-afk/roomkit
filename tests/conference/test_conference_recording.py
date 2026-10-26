@@ -415,13 +415,14 @@ class TestBotTrack:
 
 class TestRecordingLifecycle:
     async def test_unpublishing_a_track_finalizes_only_its_recording(self) -> None:
-        _, _, backend, recorder = await _recording_conference()
+        _, channel, backend, recorder = await _recording_conference()
         await backend.simulate_participant_joined(ROOM, "p-alice")
         await backend.simulate_participant_joined(ROOM, "p-bob")
         alice = await backend.simulate_track_published(ROOM, "p-alice")
         bob = await backend.simulate_track_published(ROOM, "p-bob")
         await backend.simulate_audio(alice, speech_frame())
         await backend.simulate_audio(bob, speech_frame())
+        await drain_recordings(channel)
 
         await backend.simulate_track_unpublished(alice.id)
 
