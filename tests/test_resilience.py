@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from roomkit.channels.base import Channel
 from roomkit.core.circuit_breaker import CircuitBreaker
 from roomkit.core.event_router import EventRouter
+from roomkit.core.framework import RoomKit
 from roomkit.core.rate_limiter import TokenBucketRateLimiter
 from roomkit.core.retry import retry_with_backoff
 from roomkit.core.transcoder import DefaultContentTranscoder
@@ -516,19 +518,33 @@ class TestRouterRateLimit:
 # ============================================================================
 
 
+def _ago(seconds: int) -> datetime:
+    return datetime.now(UTC) - timedelta(seconds=seconds)
+
+
+async def _rewrite(
+    kit: RoomKit, room: Room, *, timers: dict[str, Any] | None = None, **fields: Any
+) -> None:
+    """Write *room* with *fields* and its *timers* changed: a room a store
+    returns is its snapshot, changed by a copy and a write (RFC §14.4)."""
+    if timers is not None:
+        fields["timers"] = room.timers.model_copy(update=timers)
+    await kit.store.update_room(room.model_copy(update=fields))
+
+
 class TestRoomTimers:
     async def _make_kit(self) -> tuple:
-        from roomkit.core.framework import RoomKit
-
         kit = RoomKit()
         return kit
 
     async def test_active_room_stays_active_within_threshold(self) -> None:
         kit = await self._make_kit()
         room = await kit.create_room("r1")
-        room.timers.inactive_after_seconds = 3600
-        room.timers.last_activity_at = datetime.now(UTC)
-        await kit.store.update_room(room)
+        await _rewrite(
+            kit,
+            room,
+            timers={"inactive_after_seconds": 3600, "last_activity_at": datetime.now(UTC)},
+        )
 
         result = await kit.check_room_timers("r1")
         assert result.status == RoomStatus.ACTIVE
@@ -536,9 +552,9 @@ class TestRoomTimers:
     async def test_inactive_room_transitions_to_paused(self) -> None:
         kit = await self._make_kit()
         room = await kit.create_room("r1")
-        room.timers.inactive_after_seconds = 60
-        room.timers.last_activity_at = datetime.now(UTC) - timedelta(seconds=120)
-        await kit.store.update_room(room)
+        await _rewrite(
+            kit, room, timers={"inactive_after_seconds": 60, "last_activity_at": _ago(120)}
+        )
 
         result = await kit.check_room_timers("r1")
         assert result.status == RoomStatus.PAUSED
@@ -546,10 +562,13 @@ class TestRoomTimers:
     async def test_paused_room_transitions_to_closed(self) -> None:
         kit = await self._make_kit()
         room = await kit.create_room("r1")
-        room.status = RoomStatus.PAUSED
-        room.paused_at = datetime.now(UTC) - timedelta(seconds=120)
-        room.timers.closed_after_seconds = 60
-        await kit.store.update_room(room)
+        await _rewrite(
+            kit,
+            room,
+            status=RoomStatus.PAUSED,
+            paused_at=_ago(120),
+            timers={"closed_after_seconds": 60},
+        )
 
         result = await kit.check_room_timers("r1")
         assert result.status == RoomStatus.CLOSED
@@ -560,9 +579,9 @@ class TestRoomTimers:
         room with a close timer and no inactivity timer stays ACTIVE."""
         kit = await self._make_kit()
         room = await kit.create_room("r1")
-        room.timers.closed_after_seconds = 60
-        room.timers.last_activity_at = datetime.now(UTC) - timedelta(seconds=120)
-        await kit.store.update_room(room)
+        await _rewrite(
+            kit, room, timers={"closed_after_seconds": 60, "last_activity_at": _ago(120)}
+        )
 
         result = await kit.check_room_timers("r1")
         assert result.status == RoomStatus.ACTIVE
@@ -570,10 +589,12 @@ class TestRoomTimers:
     async def test_closed_room_stays_closed(self) -> None:
         kit = await self._make_kit()
         room = await kit.create_room("r1")
-        room.status = RoomStatus.CLOSED
-        room.timers.inactive_after_seconds = 1
-        room.timers.last_activity_at = datetime.now(UTC) - timedelta(seconds=3600)
-        await kit.store.update_room(room)
+        await _rewrite(
+            kit,
+            room,
+            status=RoomStatus.CLOSED,
+            timers={"inactive_after_seconds": 1, "last_activity_at": _ago(3600)},
+        )
 
         result = await kit.check_room_timers("r1")
         assert result.status == RoomStatus.CLOSED
@@ -589,15 +610,15 @@ class TestRoomTimers:
 
         # r1: should pause
         r1 = await kit.create_room("r1")
-        r1.timers.inactive_after_seconds = 60
-        r1.timers.last_activity_at = datetime.now(UTC) - timedelta(seconds=120)
-        await kit.store.update_room(r1)
+        await _rewrite(
+            kit, r1, timers={"inactive_after_seconds": 60, "last_activity_at": _ago(120)}
+        )
 
         # r2: should stay active
         r2 = await kit.create_room("r2")
-        r2.timers.inactive_after_seconds = 3600
-        r2.timers.last_activity_at = datetime.now(UTC)
-        await kit.store.update_room(r2)
+        await _rewrite(
+            kit, r2, timers={"inactive_after_seconds": 3600, "last_activity_at": datetime.now(UTC)}
+        )
 
         transitioned = await kit.check_all_timers()
         ids = [r.id for r in transitioned]
@@ -608,10 +629,13 @@ class TestRoomTimers:
         kit = await self._make_kit()
 
         r1 = await kit.create_room("r1")
-        r1.status = RoomStatus.PAUSED
-        r1.paused_at = datetime.now(UTC) - timedelta(seconds=120)
-        r1.timers.closed_after_seconds = 60
-        await kit.store.update_room(r1)
+        await _rewrite(
+            kit,
+            r1,
+            status=RoomStatus.PAUSED,
+            paused_at=_ago(120),
+            timers={"closed_after_seconds": 60},
+        )
 
         transitioned = await kit.check_all_timers()
         assert len(transitioned) == 1
@@ -671,8 +695,7 @@ class TestRoomTimers:
         kit = await self._make_kit()
         room = await kit.create_room("r1")
         stamp = datetime.now(UTC) - timedelta(seconds=90)
-        room.timers.last_activity_at = stamp
-        await kit.store.update_room(room)
+        await _rewrite(kit, room, timers={"last_activity_at": stamp})
 
         updated = await kit.set_room_timers("r1", RoomTimers(closed_after_seconds=7200))
         assert updated.timers.closed_after_seconds == 7200

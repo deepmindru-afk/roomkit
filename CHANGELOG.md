@@ -26,6 +26,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`latency=100ms`), and an echo delay past WebRTC's 500 ms, which the
   backend tells the AEC as 500, is now logged as a warning once per session.
 
+### Changed
+
+- **BREAKING — `InMemoryStore` shares the rooms, bindings and participants it
+  returns** (RFC §14.4, RMK-984). Every read made a deep copy of each record,
+  21 reads per message to an agent: 17 % of a message's time. A room, a
+  binding or a participant a read returns is now the store's snapshot, as an
+  event already was: treat it as frozen and change it through a copy and a
+  write, `await kit.store.update_room(room.model_copy(update={...}))`. A write
+  copies its record in, so a change to the object passed to `create_room()`,
+  `update_room()`, `add_binding()`, `update_binding()`, `add_participant()` or
+  `update_participant()` no longer reaches the store, where until now it did.
+  A message to an echo agent takes 2.15 ms instead of 2.60. Migration: code
+  that changed a read record in place (`room.status = ...`,
+  `room.metadata["x"] = ...`) and then wrote it still works; code that changed
+  one without writing it, as a scratch copy, now changes the in-memory store
+  behind the write interface's back: copy it first. SQLiteStore and
+  PostgresStore return a new object per read and are unchanged.
+
 ### Security
 
 - **BREAKING — an agent's answer text is published only for a delegated

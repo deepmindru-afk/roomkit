@@ -41,6 +41,10 @@ class Participant(BaseModel):
 
     @model_validator(mode="after")
     def _include_primary_channel(self) -> Participant:
-        """Keep the RFC §5.5 primary-channel invariant true at the boundary."""
-        self.connected_via = list(dict.fromkeys([self.channel_id, *self.connected_via]))
+        """Keep the RFC §5.5 primary-channel invariant true at the boundary,
+        writing only when it does not hold: a model holding the participant
+        (a context) runs this on the store's snapshot."""
+        channels = list(dict.fromkeys([self.channel_id, *self.connected_via]))
+        if channels != self.connected_via:
+            self.connected_via = channels
         return self

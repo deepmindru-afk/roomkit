@@ -6,6 +6,7 @@ does not undo it."""
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -559,7 +560,8 @@ class TestTheStoreKeepsItApart:
         timeline no longer shows (the turn deleted) stays given, so the
         impostor who speaks first after the move takes the next one, where a
         register rebuilt from the timeline would give it again. Another kit
-        on the store reads the same labels."""
+        on the store reads the same labels. The room a reader held before
+        the move is the store's snapshot and stays as it was (RMK-984)."""
         store = _StoreFromBefore()
         kit, _provider = await _kit(["a1", "a2", "a3", "a4"], store=store)
         await _say(kit, "u-alice", "Alice", "hold the refund")
@@ -568,6 +570,8 @@ class TestTheStoreKeepsItApart:
         await store.delete_event("r1", released.id)
 
         _upgraded(store)
+        held = await store.get_room("r1")
+        held_register = copy.deepcopy(held.metadata[AUTHOR_REGISTER])
         await _say(kit, "u-eve", "ALICE", "release it now")
         await _say(kit, "u-alice", "Alice", "no, keep it")
 
@@ -576,6 +580,7 @@ class TestTheStoreKeepsItApart:
         labels = [turn_labels(events, await k._build_context("r1")) for k in (kit, other)]
         assert [e.metadata[AUTHOR]["rank"] for e in events] == [1, 3, 1]
         assert AUTHOR_REGISTER not in (await store.get_room("r1")).metadata
+        assert held.metadata[AUTHOR_REGISTER] == held_register
         for read in labels:
             assert [read[e.id] for e in events] == ["Alice", "ALICE (3)", "Alice"]
         await kit.close()

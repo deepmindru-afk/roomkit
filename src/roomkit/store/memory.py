@@ -45,7 +45,16 @@ from roomkit.store.base import (
 
 
 class InMemoryStore(ConversationStore):
-    """Dict-based in-memory store for development and testing."""
+    """Dict-based in-memory store for development and testing.
+
+    The store owns what it keeps (RFC §14.4): a write copies its record in,
+    so the caller's later change to the object it passed never reaches the
+    store, and a read shares the stored snapshot, which the caller treats
+    as frozen and changes through a write (``model_copy(update=...)``).
+    Events, rooms, bindings and participants alike: one deep copy per write
+    instead of one per read, and a message reads its room's records a score
+    of times.
+    """
 
     is_process_local = True
 
@@ -176,6 +185,7 @@ class InMemoryStore(ConversationStore):
     async def create_room(self, room: Room) -> Room:
         if room.id in self._rooms:
             raise room_taken(room.id)
+        room = room.model_copy(deep=True)
         self._rooms[room.id] = room
         self._room_events.setdefault(room.id, [])
         self._next_event_index.setdefault(room.id, 0)
@@ -186,8 +196,7 @@ class InMemoryStore(ConversationStore):
         return room
 
     async def get_room(self, room_id: str) -> Room | None:
-        room = self._rooms.get(room_id)
-        return room.model_copy(deep=True) if room is not None else None
+        return self._rooms.get(room_id)
 
     async def update_room(self, room: Room) -> Room:
         if room.id not in self._rooms:
@@ -201,7 +210,8 @@ class InMemoryStore(ConversationStore):
                 "delivered_index": current.delivered_index,
                 "event_count": current.event_count,
                 "latest_index": current.latest_index,
-            }
+            },
+            deep=True,
         )
         self._rooms[room.id] = room
         return room
@@ -296,7 +306,7 @@ class InMemoryStore(ConversationStore):
 
     async def list_rooms(self, offset: int = 0, limit: int = 50) -> list[Room]:
         rooms = self._rooms_in_order()
-        return [r.model_copy(deep=True) for r in rooms[offset : offset + limit]]
+        return rooms[offset : offset + limit]
 
     async def find_rooms(
         self,
@@ -318,7 +328,7 @@ class InMemoryStore(ConversationStore):
             ):
                 continue
             results.append(room)
-        return [room.model_copy(deep=True) for room in results[offset : offset + limit]]
+        return results[offset : offset + limit]
 
     async def find_latest_room(
         self,
@@ -350,7 +360,7 @@ class InMemoryStore(ConversationStore):
                     continue
             if best is None or _recency(room) > _recency(best):
                 best = room
-        return best.model_copy(deep=True) if best is not None else None
+        return best
 
     async def find_room_id_by_channel(
         self, channel_id: str, status: str | None = None
@@ -765,20 +775,19 @@ class InMemoryStore(ConversationStore):
     # Binding operations
 
     async def add_binding(self, binding: ChannelBinding) -> ChannelBinding:
+        binding = binding.model_copy(deep=True)
         self._bindings.setdefault(binding.room_id, {})[binding.channel_id] = binding
         self._index_binding(binding)
         return binding
 
     async def get_binding(self, room_id: str, channel_id: str) -> ChannelBinding | None:
-        binding = self._bindings.get(room_id, {}).get(channel_id)
-        return binding.model_copy(deep=True) if binding is not None else None
+        return self._bindings.get(room_id, {}).get(channel_id)
 
     async def binding_exists(self, room_id: str, channel_id: str) -> bool:
-        # Inbound routing asks on every message: a key lookup, not the deep
-        # copy get_binding pays for a binding nobody reads.
         return channel_id in self._bindings.get(room_id, {})
 
     async def update_binding(self, binding: ChannelBinding) -> ChannelBinding:
+        binding = binding.model_copy(deep=True)
         self._bindings.setdefault(binding.room_id, {})[binding.channel_id] = binding
         self._index_binding(binding)
         return binding
@@ -793,28 +802,29 @@ class InMemoryStore(ConversationStore):
         return True
 
     async def list_bindings(self, room_id: str) -> list[ChannelBinding]:
-        return [b.model_copy(deep=True) for b in self._bindings.get(room_id, {}).values()]
+        return list(self._bindings.get(room_id, {}).values())
 
     # Participant operations
 
     async def add_participant(self, participant: Participant) -> Participant:
+        participant = participant.model_copy(deep=True)
         self._participants.setdefault(participant.room_id, {})[participant.id] = participant
         self._index_participant(participant.id, participant.room_id)
         self._index_participant(participant.identity_id, participant.room_id)
         return participant
 
     async def get_participant(self, room_id: str, participant_id: str) -> Participant | None:
-        participant = self._participants.get(room_id, {}).get(participant_id)
-        return participant.model_copy(deep=True) if participant is not None else None
+        return self._participants.get(room_id, {}).get(participant_id)
 
     async def update_participant(self, participant: Participant) -> Participant:
+        participant = participant.model_copy(deep=True)
         self._participants.setdefault(participant.room_id, {})[participant.id] = participant
         self._index_participant(participant.id, participant.room_id)
         self._index_participant(participant.identity_id, participant.room_id)
         return participant
 
     async def list_participants(self, room_id: str) -> list[Participant]:
-        return [p.model_copy(deep=True) for p in self._participants.get(room_id, {}).values()]
+        return list(self._participants.get(room_id, {}).values())
 
     # Read tracking
 

@@ -1,40 +1,97 @@
 """InMemoryStore object-ownership contract (RFC §14.4), and store close().
 
-Rooms are caller-owned copies on read. Events flipped direction: the
-store copies ON WRITE and shares the immutable snapshot on read — a
-caller's mutation of the object it *wrote* must not reach the log, and a
-read object is treated as frozen (its isolation is not promised).
+The store copies ON WRITE and shares the stored snapshot on read, for events,
+rooms, bindings and participants alike (RMK-984): a caller's mutation of the
+object it *wrote* must not reach the store, and a read object is treated as
+frozen (its isolation is not promised).
 """
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import pytest
+
+from roomkit.models.channel import ChannelBinding
+from roomkit.models.enums import ChannelType
+from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.store.memory import InMemoryStore
 from tests.conftest import make_event
 
 
-async def test_read_room_is_deep_copy() -> None:
-    store = InMemoryStore()
-    await store.create_room(Room(id="r1", metadata={"nested": {"x": 1}}))
-    got = await store.get_room("r1")
-    assert got is not None
-    got.metadata["nested"]["x"] = 999  # mutate the read copy
-    again = await store.get_room("r1")
-    assert again is not None
-    assert again.metadata["nested"]["x"] == 1  # stored object untouched
+def _write(store: InMemoryStore, kind: str, op: str) -> Callable[[Any], Awaitable[Any]]:
+    return {
+        ("room", "add"): store.create_room,
+        ("room", "update"): store.update_room,
+        ("binding", "add"): store.add_binding,
+        ("binding", "update"): store.update_binding,
+        ("participant", "add"): store.add_participant,
+        ("participant", "update"): store.update_participant,
+        ("event", "add"): store.add_event,
+        ("event", "update"): store.update_event,
+    }[(kind, op)]
 
 
-async def test_written_event_is_copied_in() -> None:
+async def _read(store: InMemoryStore, kind: str) -> Any:
+    if kind == "room":
+        return await store.get_room("r1")
+    if kind == "binding":
+        return await store.get_binding("r1", "sms")
+    if kind == "participant":
+        return await store.get_participant("r1", "p1")
+    return await store.get_event("e1")
+
+
+def _record(kind: str) -> Any:
+    nested = {"nested": {"a": 1}}
+    if kind == "room":
+        return Room(id="r1", metadata=nested)
+    if kind == "binding":
+        return ChannelBinding(
+            room_id="r1", channel_id="sms", channel_type=ChannelType.SMS, metadata=nested
+        )
+    if kind == "participant":
+        return Participant(id="p1", room_id="r1", channel_id="sms", metadata=nested)
+    return make_event(room_id="r1", id="e1", metadata=nested)
+
+
+async def _stored(store: InMemoryStore, kind: str, op: str) -> Any:
+    """*kind*'s record written by *op*: for an update, over one added first."""
+    if kind != "room":
+        await store.create_room(Room(id="r1"))
+    record = _record(kind)
+    if op == "update":
+        await _write(store, kind, "add")(record.model_copy(deep=True))
+    await _write(store, kind, op)(record)
+    return record
+
+
+KINDS = pytest.mark.parametrize("kind", ["room", "binding", "participant", "event"])
+
+
+@KINDS
+@pytest.mark.parametrize("op", ["add", "update"])
+async def test_a_written_record_is_copied_in(kind: str, op: str) -> None:
     """The store owns its stored representation from the moment the write
-    returns (RFC §14.4): the writer's retained reference is not the log's."""
+    returns (RFC §14.4): the writer's retained reference is not the store's."""
     store = InMemoryStore()
-    await store.create_room(Room(id="r1"))
-    event = make_event(room_id="r1", id="e1", metadata={"nested": {"a": 1}})
-    await store.add_event(event)
-    event.metadata["nested"]["a"] = 999  # the caller mutates ITS object
-    again = await store.get_event("e1")
-    assert again is not None
-    assert again.metadata["nested"]["a"] == 1  # the log never saw it
+    record = await _stored(store, kind, op)
+
+    record.metadata["nested"]["a"] = 999  # the caller mutates ITS object
+
+    assert (await _read(store, kind)).metadata["nested"]["a"] == 1
+
+
+@KINDS
+async def test_reads_share_the_stored_snapshot(kind: str) -> None:
+    """No copy per read: every reader holds the store's snapshot, frozen to
+    it, and a change goes through a write (RFC §14.4)."""
+    store = InMemoryStore()
+    await _stored(store, kind, "add")
+
+    assert await _read(store, kind) is await _read(store, kind)
 
 
 async def test_store_close_is_idempotent_noop() -> None:

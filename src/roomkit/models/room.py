@@ -61,7 +61,8 @@ class Room(BaseModel):
     @model_validator(mode="after")
     def _no_index_without_events(self) -> Room:
         # A room stored before latest_index was nullable recorded 0 while it
-        # had no event; that 0 names no event.
-        if self.event_count == 0:
+        # had no event; that 0 names no event. Written only then: a model
+        # holding the room (a context) runs this on the store's snapshot.
+        if self.event_count == 0 and self.latest_index is not None:
             self.latest_index = None
         return self

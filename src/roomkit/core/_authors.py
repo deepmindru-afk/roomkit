@@ -372,7 +372,10 @@ async def _held_register(
     held = AuthorRegister.stored(await store.get_private_state(room.id, AUTHOR_REGISTER))
     if AUTHOR_REGISTER not in room.metadata or not _keeps_apart(store):
         return held, False
+    # The room is the store's snapshot (RFC §14.4): its register is copied
+    # before the turn extends it.
     legacy = AuthorRegister.stored(room.metadata[AUTHOR_REGISTER])
+    legacy = legacy.copy() if legacy is not None else None
     if held is None:
         return legacy, True
     if legacy is not None:

@@ -6729,6 +6729,20 @@ kit = RoomKit()  # Uses InMemoryStore automatically
 
 Data lives in Python dicts — fast for development, lost on restart.
 
+What a store returns is its snapshot (RFC §14.4): a room, a binding, a
+participant or an event read from it is treated as frozen, and changed by a
+copy and a write. `InMemoryStore` copies a record once as it is written and
+shares the stored object with every reader, so changing a read object in
+place changes the store behind the write interface's back; SQL stores return a
+new object per read, and the same code holds on all of them:
+
+```python
+from roomkit import RoomStatus
+
+room = await kit.store.get_room("persistent")
+await kit.store.update_room(room.model_copy(update={"status": RoomStatus.PAUSED}))
+```
+
 ## SQLiteStore
 
 `SQLiteStore` is included in the core package and uses only Python's stdlib
