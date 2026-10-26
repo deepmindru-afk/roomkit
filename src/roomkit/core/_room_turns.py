@@ -28,6 +28,7 @@ from typing import Any
 from roomkit.channels.base import Channel
 from roomkit.core._changes import for_channels
 from roomkit.core.lanes import anchor_index
+from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.event import RoomEvent
@@ -160,7 +161,8 @@ class RoomTurns:
         kept = sum(1 for event in now.recent_events if event.index <= horizon)
         latest = now.room.latest_index
         if kept < len(asked.recent_events) and latest is not None and latest > horizon:
-            limit = len(asked.recent_events) + latest - horizon
+            # Never past the ceiling a context holds, however many came.
+            limit = min(len(asked.recent_events) + latest - horizon, _RECENT_EVENTS_LIMIT)
             now = await self._context_of(room_id, recent_limit=limit)
         return for_channels(now)
 
