@@ -89,7 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message, `send_event()`, a hook's injection and `commit_event()` drop such
   a record. The update now keeps the record the event was committed with,
   whether its metadata names another or none, and writes none on an event
-  committed with none.
+  committed with none: `update_event(..., metadata={})` now clears every key
+  but that record, which it keeps.
 
 - **A task a locked hook left running calls into the room as a new arrival
   once the hook is over** (RFC §9.5.1, §13.5, RMK-978). The task kept the
@@ -102,8 +103,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the event, as roomkit-rs does since its step3-m2 18c7b94. Such a
   call is an ordinary arrival, neither refused nor adopted: a later hook of
   the same pass that awaits the task waits for the lock its pass holds, until
-  its own timeout, which cancels the task it awaited unless it shields it,
-  and the event commits after. Await work in the hook that starts it. An
+  its own timeout, which cancels the task it awaited unless it shields it.
+  Await work in the hook that starts it. An
   off-lock hook's body is held to the same rule: a task it starts stands in
   the event's admission order only while the body runs, and its call once
   the body has returned, while the check's next hook runs, takes a ticket and
@@ -133,7 +134,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   post, agent answer, tool call ends at `max_chain_depth`. An audit that
   posts once per tool call, which stopped after 50 in one cascade with an
   in-memory turn backend (each post drew one of the cascade's passes), posts
-  for every call, as it already did across a Redis turn backend.
+  for every call, as it already did across a Redis turn backend. Behaviour
+  change: an observer's call is one deeper than the event it observes, where
+  it started at depth 0, so with `max_chain_depth=2` an agent no longer
+  answers the follow-up an observer posts on a person's message. Migration:
+  raise `max_chain_depth`.
 
 ### Fixed
 

@@ -92,7 +92,7 @@ def lent_while_it_runs() -> Generator[None, None, None]:
     Such a call is an ordinary arrival, neither refused nor adopted: it waits
     for the lock the section holds. A later hook of the same pass that awaits
     the task therefore waits until its own timeout, which cancels the task
-    it awaited unless it shields it, and the event commits after."""
+    it awaited unless it shields it."""
     leases = _held_leases.get()
     if not leases:
         yield

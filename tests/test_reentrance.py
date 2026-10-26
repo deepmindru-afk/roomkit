@@ -218,8 +218,8 @@ class TestACallFromATaskALockedHookStarted:
         """The task's call once its hook is over is an ordinary new arrival,
         neither refused nor adopted: a later hook of the same pass that
         awaits the task waits for the lock its pass holds, until its own
-        timeout, which cancels the task it awaited; the event commits
-        after."""
+        timeout, which cancels the task it awaited; this fail-open hook's
+        event then commits."""
         kit = await _room(RoomKit(), SimpleChannel("ws"))
         over = asyncio.Event()
         started: list[asyncio.Task[int]] = []

@@ -189,8 +189,8 @@ the event it runs for. The call is part of that event's work (RFC §9.5.1):
   hook: its calls are new arrivals, which wait for the lock and commit after
   the event. A later hook of the same pass that awaits that task waits with
   it, until its own timeout (which cancels the task it awaited, unless it
-  shields it); the event then commits. Await work in the hook that starts
-  it, or leave it to run after the event.
+  shields it). Await work in the hook that starts it, or leave it to run
+  after the event.
 - From an off-lock hook's body (`needs_lock=False`), or a `hook_error`
   handler reporting that check's failure, it is **adopted beside** the event:
   no ticket, every hook under the lock, its own section for its commit,
