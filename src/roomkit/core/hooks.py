@@ -14,6 +14,7 @@ from roomkit.core._instructions import kept_metadata
 from roomkit.core._reentrance import (
     ReentryBudget,
     after_delivery,
+    orders_lent_while_it_runs,
     outside_the_rooms_work,
     work_budget,
 )
@@ -456,10 +457,10 @@ async def _run_body(
 
 async def _hook_body(hook: HookRegistration, *args: Any) -> Any:
     """*hook*'s body on *args* within its timeout, the room locks its caller
-    holds lent to it while it runs: a task it starts acts for it until it
-    returns, and calls into the room as a new arrival afterwards (RFC
-    §9.5.1, §13.5)."""
-    with lent_while_it_runs():
+    holds and the admission orders it stands in (an off-lock hook's) lent to
+    it while it runs: a task it starts acts for it until it returns, and
+    calls into the room as a new arrival afterwards (RFC §9.5.1, §13.5)."""
+    with lent_while_it_runs(), orders_lent_while_it_runs():
         return await asyncio.wait_for(hook.fn(*args), timeout=hook.timeout)
 
 

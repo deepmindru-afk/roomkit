@@ -194,7 +194,10 @@ the event it runs for. The call is part of that event's work (RFC §9.5.1):
 - From an off-lock hook's body (`needs_lock=False`), or a `hook_error`
   handler reporting that check's failure, it is **adopted beside** the event:
   no ticket, every hook under the lock, its own section for its commit,
-  still ahead of the event.
+  still ahead of the event. A task the body starts stands beside the event
+  only while the body runs: once the body has returned, while the check's
+  next hook runs, its calls are new arrivals, which take a ticket and commit
+  after the event.
 - Either way it answers at its commit (a `process_inbound()` result carries
   no `delivery_results`). Made under the lock, its delivery waits in the
   room's lane behind the work that made it, and `result.delivery.wait()`

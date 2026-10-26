@@ -175,7 +175,12 @@ class TestACallFromATaskALockedHookStarted:
         assert _order(await _messages(kit)) == ["2:ws", "3:sms"]
         await kit.close()
 
-    async def test_once_the_hook_is_over_its_call_is_a_new_arrival(self) -> None:
+    @pytest.mark.parametrize("needs_lock", [True, False], ids=["locked", "off-lock"])
+    async def test_once_the_hook_is_over_its_call_is_a_new_arrival(self, needs_lock: bool) -> None:
+        """Locked or off-lock: a hook stands for the work it began only while
+        its body runs. An off-lock hook's task, calling while the check's
+        next hook runs, stands in no admission order once the body is over:
+        it takes a ticket and commits after the event."""
         kit = await _room(RoomKit(), SimpleChannel("ws"))
         over, calling, committed = asyncio.Event(), asyncio.Event(), asyncio.Event()
         started: list[asyncio.Task[int]] = []
@@ -187,16 +192,16 @@ class TestACallFromATaskALockedHookStarted:
             committed.set()
             return sent.index
 
-        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="notifier")
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="notifier", needs_lock=needs_lock)
         async def notifier(event: RoomEvent, ctx: RoomContext) -> HookResult:
             if event.source.channel_id == "sms":
                 started.append(asyncio.create_task(notify()))
                 over.set()
             return HookResult.allow()
 
-        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="next", priority=10)
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="next", priority=10, needs_lock=needs_lock)
         async def next_hook(event: RoomEvent, ctx: RoomContext) -> HookResult:
-            # The pass's next hook, under the same lock, runs on once the task
+            # The same pass's, or check's, next hook runs on once the task
             # calls: an adopted call commits meanwhile, a new arrival waits.
             if event.source.channel_id == "sms":
                 await calling.wait()

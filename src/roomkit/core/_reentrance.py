@@ -144,7 +144,46 @@ class _Frame:
     hook_body: bool = False
 
 
-_frames: contextvars.ContextVar[tuple[_Frame, ...]] = contextvars.ContextVar(
+@dataclass(eq=False, slots=True)
+class _Call:
+    running: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class _LentFrame:
+    """An admission order lent to a call (a hook's body) while the call runs:
+    a task the call spawned keeps a copy of the context, and stands in the
+    order no more once the call is over, though the work goes on."""
+
+    frame: _Frame | _LentFrame
+    call: _Call
+
+    @property
+    def kind(self) -> _Kind:
+        return self.frame.kind
+
+    @property
+    def room_id(self) -> str:
+        return self.frame.room_id
+
+    @property
+    def budget(self) -> ReentryBudget:
+        return self.frame.budget
+
+    @property
+    def queued(self) -> QueuedInjections | None:
+        return self.frame.queued
+
+    @property
+    def hook_body(self) -> bool:
+        return self.frame.hook_body
+
+    @property
+    def active(self) -> bool:
+        return self.call.running and self.frame.active
+
+
+_frames: contextvars.ContextVar[tuple[_Frame | _LentFrame, ...]] = contextvars.ContextVar(
     "_roomkit_room_work_frames", default=()
 )
 
@@ -173,6 +212,30 @@ def _framed(frame: _Frame) -> Generator[None, None, None]:
     finally:
         # Copies the work's tasks hold share this frame: over, it is inert.
         frame.active = False
+        _frames.reset(token)
+
+
+@contextmanager
+def orders_lent_while_it_runs() -> Generator[None, None, None]:
+    """Run a call (a hook's body) with the admission orders this context
+    stands in lent to it while it runs (RFC §9.5.1 Reentrance): a task it
+    spawns, awaited or not, stands in them while it runs; once it is over,
+    that task stands in none, though the work goes on (an off-lock check's
+    next hook), and its calls into the room are new arrivals. The room
+    locks it holds are lent the same way (:func:`~roomkit.core.locks.lent_while_it_runs`)."""
+    frames = _frames.get()
+    if not any(frame.kind is _Kind.ADMITTED for frame in frames):
+        yield
+        return
+    call = _Call()
+    lent = tuple(
+        _LentFrame(frame, call) if frame.kind is _Kind.ADMITTED else frame for frame in frames
+    )
+    token = _frames.set(lent)
+    try:
+        yield
+    finally:
+        call.running = False
         _frames.reset(token)
 
 
@@ -353,7 +416,9 @@ class RoomWork:
             )
 
 
-def _innermost(room_id: str, *, locked: bool, kind: _Kind | None = None) -> _Frame | None:
+def _innermost(
+    room_id: str, *, locked: bool, kind: _Kind | None = None
+) -> _Frame | _LentFrame | None:
     """The innermost frame of *room_id* whose work still runs, of *kind* when
     given; a section counts only for a context that holds the room's lock
     (*locked*), which a task started in a context holding none does not."""

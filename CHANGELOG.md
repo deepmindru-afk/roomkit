@@ -103,7 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call is an ordinary arrival, neither refused nor adopted: a later hook of
   the same pass that awaits the task waits for the lock its pass holds, until
   its own timeout, which cancels the task it awaited unless it shields it,
-  and the event commits after. Await work in the hook that starts it.
+  and the event commits after. Await work in the hook that starts it. An
+  off-lock hook's body is held to the same rule: a task it starts stands in
+  the event's admission order only while the body runs, and its call once
+  the body has returned, while the check's next hook runs, takes a ticket and
+  commits after the event, where it was adopted ahead of it.
 
 - **An ASYNC hook on a SYNC trigger draws on the cascade's hook calls**
   (RFC §9.5.1, §10.1 step 16, RMK-978). An observer of a SYNC trigger ran
