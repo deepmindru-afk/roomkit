@@ -87,7 +87,12 @@ def lent_while_it_runs() -> Generator[None, None, None]:
     to it while it runs (RFC §9.5.1 Reentrance, §13.5): a task it spawns,
     awaited or not, acts for it under them while it runs; once it is over,
     that task holds none of them, though the section that holds the lock
-    goes on, and its calls into the room are new arrivals."""
+    goes on, and its calls into the room are new arrivals.
+
+    Such a call is an ordinary arrival, neither refused nor adopted: it waits
+    for the lock the section holds. A later hook of the same pass that awaits
+    the task therefore waits until its own timeout, which cancels the task
+    it awaited unless it shields it, and the event commits after."""
     leases = _held_leases.get()
     if not leases:
         yield

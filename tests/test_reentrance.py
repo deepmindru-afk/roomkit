@@ -209,6 +209,39 @@ class TestACallFromATaskALockedHookStarted:
         assert (sent, _order(await _messages(kit))) == ([3], ["2:sms", "3:ws"])
         await kit.close()
 
+    async def test_a_later_hook_awaiting_it_waits_until_its_timeout(self) -> None:
+        """The task's call once its hook is over is an ordinary new arrival,
+        neither refused nor adopted: a later hook of the same pass that
+        awaits the task waits for the lock its pass holds, until its own
+        timeout, which cancels the task it awaited; the event commits
+        after."""
+        kit = await _room(RoomKit(), SimpleChannel("ws"))
+        over = asyncio.Event()
+        started: list[asyncio.Task[int]] = []
+
+        async def notify() -> int:
+            await over.wait()
+            return (await kit.send_event("r1", "ws", TextContent(body="heads up"))).index
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="notifier")
+        async def notifier(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if event.source.channel_id == "sms":
+                started.append(asyncio.create_task(notify()))
+            return HookResult.allow()
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="waiter", priority=10, timeout=0.05)
+        async def waiter(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if event.source.channel_id == "sms":
+                over.set()
+                await started[0]
+            return HookResult.allow()
+
+        result = await kit.process_inbound(_message("hello"))
+        await asyncio.gather(*started, return_exceptions=True)
+        outcome = (result.blocked, _order(await _messages(kit)), started[0].cancelled())
+        assert outcome == (False, ["2:sms"], True)
+        await kit.close()
+
 
 class _Parser(SimpleChannel):
     """A transport whose parse sends a message into its room every time."""

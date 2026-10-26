@@ -82,7 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   held for it, and ran its hooks there. A hook's body now has the room locks
   lent to it only while it runs: a task it starts acts for it until it
   returns, awaited or not, and its later calls wait for the lock and commit
-  after the event, as roomkit-rs does since its step3-m2 18c7b94.
+  after the event, as roomkit-rs does since its step3-m2 18c7b94. Such a
+  call is an ordinary arrival, neither refused nor adopted: a later hook of
+  the same pass that awaits the task waits for the lock its pass holds, until
+  its own timeout, which cancels the task it awaited unless it shields it,
+  and the event commits after. Await work in the hook that starts it.
 
 ### Fixed
 
