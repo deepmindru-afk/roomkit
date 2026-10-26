@@ -11,6 +11,7 @@ covered with the other kinds of agent in ``test_delivery_cancel_turns.py``.
 from __future__ import annotations
 
 import asyncio
+import gc
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -26,10 +27,12 @@ from roomkit import (
     Loop,
     RoomKit,
 )
+from roomkit.core._room_turns import QueuedTurn, RoomTurns
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage, InboundResult
 from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
@@ -290,6 +293,102 @@ async def test_a_muted_agent_still_reads_each_message_at_once() -> None:
         assert await _said(kit, "agent") == []
     finally:
         await kit.close()
+
+
+async def test_a_turn_that_waited_long_reads_the_history_it_was_asked_with() -> None:
+    # Four later messages fill the agent's window of four while B waits.
+    provider = _Gated()
+    agent = Agent("agent", provider=provider, serialize_room_turns=True, max_context_events=4)
+    kit = await _bare_room(agent)
+    await kit.attach_channel("r", "agent", category=ChannelCategory.INTELLIGENCE)
+    room = Room(kit, provider)
+    try:
+        await room.send("task A")
+        await provider.until_started("task A")
+        await room.send("task B")
+        for later in range(4):
+            await room.send(f"later {later}")
+        await room.until_waiting(6)
+
+        provider.answer("task A")
+        await provider.until_started("task B")
+        assert provider.read["task B"] == ["task A", "answer to task A", "task B"]
+    finally:
+        for gate in provider.gates.values():
+            gate.set()
+        await kit.close()
+
+
+class _Buffered(AILikeChannel):
+    """A channel that declares it takes a room's turns one at a time and
+    answers beside a stream, which nobody would read."""
+
+    @property
+    def serializes_room_turns(self) -> bool:
+        return True
+
+
+async def test_a_turn_that_waited_its_place_and_answers_beside_its_stream_fails() -> None:
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(_Buffered("agent"))
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "sms")
+    await kit.attach_channel("r", "agent", category=ChannelCategory.INTELLIGENCE)
+    try:
+        message = InboundMessage(
+            channel_id="sms", sender_id="user", content=TextContent(body="go")
+        )
+        result = await asyncio.wait_for(kit.process_inbound(message, room_id="r"), WAIT)
+
+        assert isinstance(result.error, TypeError)
+        assert await _said(kit, "agent") == []
+    finally:
+        await kit.close()
+
+
+# -- The stream of a waiting turn --
+
+
+async def _no_turn() -> ChannelOutput:
+    return ChannelOutput.empty()
+
+
+def _line() -> RoomTurns:
+    async def react(*args: Any) -> ChannelOutput:
+        raise AssertionError("not asked")
+
+    return RoomTurns(react, None, None)
+
+
+async def test_a_waiting_turn_nobody_closes_gives_its_place_up_once_collected() -> None:
+    turns = _line()
+    unread = QueuedTurn(turns.join("r", "agent"), _no_turn, ResponseMetadata())
+    next_place = turns.join("r", "agent")
+
+    del unread
+    gc.collect()
+
+    await asyncio.wait_for(next_place.hold(), WAIT)
+
+
+async def test_a_waiting_turn_dropped_while_read_is_its_reader_s() -> None:
+    # A failure elsewhere gives up the delivery's streams while its reader
+    # waits for the place: the reader goes on, and closes it.
+    turns = _line()
+    running = turns.join("r", "agent")
+    waiting = QueuedTurn(turns.join("r", "agent"), _no_turn, ResponseMetadata())
+    read = asyncio.create_task(anext(waiting, "ended"))
+    async with asyncio.timeout(WAIT):
+        while not waiting._reading:  # noqa: SLF001
+            await asyncio.sleep(0)
+
+    waiting.drop()
+    running.leave()
+
+    assert await asyncio.wait_for(read, WAIT) == "ended"
+    await waiting.aclose()
+    assert turns._lines == {}  # noqa: SLF001
 
 
 async def _bare_room(*agents: Agent, **room: object) -> RoomKit:

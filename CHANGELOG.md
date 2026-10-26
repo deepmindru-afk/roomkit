@@ -25,9 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A muted agent still reads each message as it comes, its answer withheld.
   The order is the room owner's, per process, as an ACP agent's is; a strategy
   that takes the agent's turns (`Loop`, `Supervisor`) orders them itself. The
-  owner reads it
-  from `Channel.serializes_room_turns`, which `ChannelDeclaration` carries for
-  an agent built on an executor elsewhere. `examples/agent_turns_in_order.py`
+  owner reads it from `Channel.serializes_room_turns`, which
+  `ChannelDeclaration` carries for an agent built on an executor elsewhere. `examples/agent_turns_in_order.py`
   runs it.
 
 - `LocalAudioBackend(output_latency_ms=...)`: the output latency the speaker

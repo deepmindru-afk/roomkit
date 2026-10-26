@@ -397,7 +397,7 @@ class EventRouter:
         greeting_gate_fn: Callable[[str, float], Awaitable[None]] | None = None,
         turns: TurnClient | None = None,
         runner_of: Callable[[str | None, str], TurnRunner | None] | None = None,
-        context_of: Callable[[str], Awaitable[RoomContext]] | None = None,
+        context_of: Callable[..., Awaitable[RoomContext]] | None = None,
     ) -> None:
         self._channels = channels
         self._transcoder = transcoder or DefaultContentTranscoder()

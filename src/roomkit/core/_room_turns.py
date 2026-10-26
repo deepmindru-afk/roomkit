@@ -85,7 +85,7 @@ class RoomTurns:
     def __init__(
         self,
         react: Reaction,
-        context_of: Callable[[str], Awaitable[RoomContext]] | None,
+        context_of: Callable[..., Awaitable[RoomContext]] | None,
         telemetry: Any,
     ) -> None:
         self._react = react
@@ -137,7 +137,7 @@ class RoomTurns:
     ) -> ChannelOutput:
         """Run a turn that reached its place, under the span of the delivery
         that asked it; no turn when its channel left the room meanwhile."""
-        now = for_channels(await self._context_of(asked.room.id)) if self._context_of else asked
+        now = await self._room_now(asked)
         if now.get_binding(channel.channel_id) is None:
             return ChannelOutput.empty()
         context = room_as_asked(asked, now, channel.channel_id)
@@ -147,6 +147,22 @@ class RoomTurns:
             output = await self._react(channel, event, binding, context)
         _refuse_unstreamed(channel, output)
         return output
+
+    async def _room_now(self, asked: RoomContext) -> RoomContext:
+        """The room as it is now, holding as much of its history up to the
+        turn's horizon as the turn was asked with: the events committed while
+        it waited would otherwise push that history out of the window."""
+        if self._context_of is None:
+            return asked
+        room_id = asked.room.id
+        now = await self._context_of(room_id)
+        horizon = _horizon(asked)
+        kept = sum(1 for event in now.recent_events if event.index <= horizon)
+        latest = now.room.latest_index
+        if kept < len(asked.recent_events) and latest is not None and latest > horizon:
+            limit = len(asked.recent_events) + latest - horizon
+            now = await self._context_of(room_id, recent_limit=limit)
+        return for_channels(now)
 
 
 def _refuse_unstreamed(channel: Channel, output: ChannelOutput) -> None:
@@ -165,16 +181,21 @@ def room_as_asked(asked: RoomContext, now: RoomContext, channel_id: str) -> Room
     write. Its previous turns' answers are in it, and so is what changed
     meanwhile (an edit, a deletion, RFC §10.3); a message that came after it
     waits a turn of its own (RFC §6.4)."""
-    horizon = max(
-        (event.index for event in asked.recent_events),
-        default=anchor_index(asked.room.latest_index),
-    )
+    horizon = _horizon(asked)
     recent = [
         event
         for event in now.recent_events
         if event.index <= horizon or event.source.channel_id == channel_id
     ]
     return now.model_copy(update={"recent_events": recent})
+
+
+def _horizon(asked: RoomContext) -> int:
+    """The index of the room's last event when the turn was asked."""
+    return max(
+        (event.index for event in asked.recent_events),
+        default=anchor_index(asked.room.latest_index),
+    )
 
 
 async def _no_items() -> AsyncIterator[Any]:
