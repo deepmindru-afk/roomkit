@@ -1,4 +1,4 @@
-.PHONY: audit install lint format typecheck security test test-changed api-snapshot coverage stress llms-full check-models update-llamacpp all clean docs docs-imports docs-serve llms-sync llms-check conformance-sync deploy deploy-status release
+.PHONY: audit install lint format typecheck security test test-changed api-snapshot coverage stress llms-full check-models update-llamacpp all clean docs docs-imports docs-serve llms-sync llms-check conformance-sync conformance-check deploy deploy-status release
 
 install:
 	uv sync --extra dev
@@ -86,7 +86,7 @@ update-llamacpp:
 	uv run python scripts/update_llamacpp_build.py $(BUILD)
 	uv run ruff format src/roomkit/providers/llamacpp/_builds.py
 
-all: lint typecheck security test
+all: conformance-check lint typecheck security test
 
 clean:
 	rm -rf dist/ build/ .pytest_cache/ .ruff_cache/ htmlcov/ .coverage .testmondata*
@@ -145,6 +145,23 @@ conformance-sync:
 	(cd tests/conformance && find scenarios -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-64) \
 		> tests/conformance/SCENARIOS_SHA256 && \
 	echo "tests/conformance synced from roomkit-specs $$commit"
+
+# A local gate, which `make all` runs first: the copy's roomkit-specs commit is
+# on roomkit-specs' origin/main, so a copy synced from a commit not pushed yet
+# is never pushed itself. Skipped without a roomkit-specs checkout, as in CI;
+# ALLOW_UNPUSHED=1 only warns, for local work.
+conformance-check:
+	@commit=$$(cat tests/conformance/SPECS_COMMIT) && \
+	if ! git -C "$(SPECS_DIR)" rev-parse --git-dir >/dev/null 2>&1; then \
+		echo "conformance-check: no roomkit-specs checkout at $(SPECS_DIR), skipped"; \
+	elif git -C "$(SPECS_DIR)" merge-base --is-ancestor "$$commit" origin/main 2>/dev/null; then \
+		echo "conformance-check: roomkit-specs $$commit is on origin/main"; \
+	elif [ "$(ALLOW_UNPUSHED)" = 1 ]; then \
+		echo "warning: roomkit-specs $$commit is not on origin/main: sync again once it is"; \
+	else \
+		echo "conformance-check: roomkit-specs $$commit is not on origin/main: push it, fetch, and run make conformance-sync"; \
+		exit 1; \
+	fi
 
 # --- Website deployment ---
 
