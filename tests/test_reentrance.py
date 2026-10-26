@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -22,12 +23,15 @@ import pytest
 
 from roomkit import (
     ConferenceRealtimeConfig,
+    MockConferenceBackend,
     ReentrantCallError,
     ReentryLoopCapError,
     RoomKit,
 )
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.base import Channel
+from roomkit.channels.conference import ConferenceChannel
+from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.core.inbound_router import InboundRoomRouter
 from roomkit.delivery.memory import InMemoryDeliveryBackend
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -51,8 +55,8 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.mock import MockTelemetryProvider
-from roomkit.voice.realtime.mock import MockRealtimeProvider
-from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
+from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from tests.conference.test_conference_realtime import ROOM, _Source, realtime_kit, until
 from tests.conference.test_conference_tool_calls import LOOKUP
 from tests.test_framework import AILikeChannel, SimpleChannel
 
@@ -857,17 +861,96 @@ class _Elsewhere(AILikeChannel):
         return ChannelOutput.empty()
 
 
-async def _settled(kit: RoomKit) -> None:
+async def _settled(kit: RoomKit, room_id: str = "r1") -> None:
     """Wait until the room's lane has run everything queued."""
-    await kit._lanes.lane("r1").drain()  # noqa: SLF001
+    await kit._lanes.lane(room_id).drain()  # noqa: SLF001
 
 
-async def _observed(kit: RoomKit) -> None:
+async def _observed(kit: RoomKit, room_id: str = "r1") -> None:
     """Wait until the kit's observers and the room's lane have run all."""
     while kit._hook_engine.running_observers():  # noqa: SLF001
         await kit._hook_engine.drain_observers()  # noqa: SLF001
-        await _settled(kit)
-    await _settled(kit)
+        await _settled(kit, room_id)
+    await _settled(kit, room_id)
+
+
+class _AnsweringModel(MockRealtimeProvider):
+    """A speech-to-speech model that answers each text injected into its
+    session with a call to ``lookup``, as its receive loop would, in a
+    context of its own; a silent injection asks it nothing. It stops on
+    its own after *rounds* answers, so a loop nothing ends still ends."""
+
+    def __init__(self, rounds: int) -> None:
+        super().__init__()
+        self._rounds = rounds
+        self.answers: list[asyncio.Task[None]] = []
+
+    def answer(self, session: Any) -> None:
+        if len(self.answers) < self._rounds:
+            call = self.simulate_tool_call(session, f"c{len(self.answers)}", "lookup", {})
+            loop = asyncio.get_running_loop()
+            self.answers.append(loop.create_task(call, context=contextvars.Context()))
+
+    async def inject_text(self, session: Any, text: str, **kwargs: Any) -> Any:
+        result = await super().inject_text(session, text, **kwargs)
+        if not kwargs.get("silent"):
+            self.answer(session)
+        return result
+
+
+async def _until_the_model_rests(kit: RoomKit, model: _AnsweringModel, room_id: str) -> None:
+    """Wait until every call the model made is answered, its observers have
+    run and its room's lane is drained, and it made no call since."""
+    while True:
+        made = len(model.answers)
+        await asyncio.gather(*model.answers)
+        await until(lambda made=made: len(model.tool_results) == made)
+        await _observed(kit, room_id)
+        if len(model.answers) == made:
+            return
+
+
+async def _realtime_model_host(model: _AnsweringModel) -> tuple[RoomKit, str, str, Any]:
+    """A realtime voice channel serving *model* in room ``r1``, ``sms`` to post."""
+
+    async def lookup(name: str, arguments: dict[str, Any]) -> str:
+        return "found"
+
+    kit = await _room(RoomKit(max_chain_depth=4))
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=model,
+        transport=MockRealtimeTransport(),
+        tools=[LOOKUP],
+        tool_handler=lookup,
+    )
+    kit.register_channel(channel)
+    await kit.attach_channel("r1", "rt")
+    return kit, "r1", "sms", await channel.start_session("r1", "u", object())
+
+
+async def _conference_model_host(model: _AnsweringModel) -> tuple[RoomKit, str, str, Any]:
+    """A conference whose realtime configuration serves *model*, ``src`` to post."""
+
+    async def lookup(room_id: str, name: str, arguments: dict[str, Any]) -> str:
+        return "found"
+
+    config = ConferenceRealtimeConfig(provider=model, tools=[LOOKUP], tool_handler=lookup)
+    channel = ConferenceChannel("conf", backend=MockConferenceBackend(), realtime=config)
+    kit = RoomKit(max_chain_depth=4)
+    kit.register_channel(channel)
+    kit.register_channel(_Source("src", ChannelType.AI))
+    await kit.create_room(ROOM)
+    await kit.attach_channel(ROOM, "conf")
+    await kit.attach_channel(ROOM, "src")
+    session = await channel._realtime.ensure_session(ROOM)  # noqa: SLF001
+    return kit, ROOM, "src", session
+
+
+_MODEL_HOSTS: dict[str, Callable[[_AnsweringModel], Awaitable[tuple[RoomKit, str, str, Any]]]] = {
+    "realtime": _realtime_model_host,
+    "conference": _conference_model_host,
+}
 
 
 class TestACallFromAnAsyncHook:
@@ -1025,6 +1108,31 @@ class TestACallFromAnAsyncHook:
             await asyncio.wait_for(kit.process_inbound(_message()), 5)
             await asyncio.wait_for(_observed(kit), 5)
             assert [e.chain_depth for e in sorted(posted, key=lambda e: e.index)] == [1, 2]
+        finally:
+            await kit.close()
+
+    @pytest.mark.parametrize("trigger", [HookTrigger.ON_TOOL_CALL, HookTrigger.BEFORE_TOOL_USE])
+    @pytest.mark.parametrize("door", ["realtime", "conference"])
+    async def test_an_observer_of_a_realtime_tool_call_its_model_answers_ends_at_the_depth_limit(
+        self, door: str, trigger: HookTrigger
+    ) -> None:
+        """RMK-983: a loop of observer post, the speech-to-speech model's
+        answer, its tool call, the next post. The post is at least as deep
+        as the answer that issued the call (RFC §8.3), and a text past the
+        limit enters the model's session silently, so it answers nothing
+        and the loop ends at ``max_chain_depth``."""
+        model = _AnsweringModel(rounds=4 * BUDGET)
+        kit, room_id, poster, session = await _MODEL_HOSTS[door](model)
+        posted: list[RoomEvent] = []
+
+        @kit.hook(trigger, execution=HookExecution.ASYNC, name="audit")
+        async def audit(event: Any, ctx: RoomContext) -> None:
+            posted.append(await kit.send_event(room_id, poster, TextContent(body="called")))
+
+        try:
+            model.answer(session)
+            await asyncio.wait_for(_until_the_model_rests(kit, model, room_id), 5)
+            assert [e.chain_depth for e in sorted(posted, key=lambda e: e.index)] == [1, 2, 3]
         finally:
             await kit.close()
 

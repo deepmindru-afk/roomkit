@@ -6590,6 +6590,14 @@ turn). Past it, an answer or an injected event is stored `BLOCKED` with
 `reentry_loop_cap`, so a transport whose `deliver()` sends into its own room
 stops too.
 
+A speech-to-speech model (a `RealtimeVoiceChannel`, a conference's realtime
+configuration) is held the same way. What its tool call's gate, handler and
+hooks send into a room is at least as deep as the model's answer that issued
+the call, and a text whose answer would reach the limit enters its session
+silently, by a broadcast, a conference or `deliver()`: the model takes it into
+its context and answers nothing. An `ON_TOOL_CALL` hook that posts at each call
+the model then hears ends at the limit (`examples/realtime_tool_observer_depth.py`).
+
 ## Processing Timeout
 
 `process_timeout` (seconds, default 30) is one deadline from the call's start

@@ -1253,7 +1253,7 @@ class ConferenceChannel(
             # content its author wrote, never as the application's
             # instruction (RFC §12.4), as on a realtime voice channel;
             # silent for an event a hook injected, which asks no agent
-            # (RFC §9.4).
+            # (RFC §9.4), and past the depth limit (§8.3).
             await compile_mark_patterns()
             text = broadcast_text(event, event.content.body, context, self.channel_id)
             if text is None:
@@ -1261,7 +1261,7 @@ class ConferenceChannel(
             await self._realtime.deliver_text(
                 event.room_id,
                 text,
-                silent=injection_silent(binding),
+                silent=injection_silent(binding, event.chain_depth, self._framework),
                 chain_depth=event.chain_depth,
                 injected_from=event,
             )

@@ -2129,9 +2129,10 @@ class RealtimeVoiceChannel(
             return ChannelOutput.empty()
 
         # Into every live session of the room, as any injection goes: silent
-        # under a muted binding and for an event a hook injected, which asks
-        # no agent (RFC §9.4), one deeper than the event, announced once.
-        silent = injection_silent(binding)
+        # under a muted binding, for an event a hook injected, which asks no
+        # agent (RFC §9.4), and past the depth limit (§8.3); one deeper than
+        # the event, announced once.
+        silent = injection_silent(binding, event.chain_depth, self._framework)
         for session in self.get_room_sessions(event.room_id):
             try:
                 await self._inject(

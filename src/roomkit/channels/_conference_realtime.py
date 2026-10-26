@@ -62,6 +62,7 @@ from roomkit.channels._realtime_tool_executor import (
     ABANDONED_BY_PROVIDER,
     SESSION_ENDED,
     ToolCallDoor,
+    answer_depth,
     report_cancelled_call,
     report_interrupted_calls,
     run_tool_call,
@@ -990,6 +991,10 @@ class ConferenceRealtime:
         room = self._rooms.get(call.room_id or "")
         return room is None or room.session is not call.session
 
+    def _call_depth(self, call: RealtimeToolCall) -> int:
+        room = self._rooms.get(call.room_id or "")
+        return room.answer_depth.answer if room is not None else 0
+
     async def _serve_channel_tool(
         self, call: RealtimeToolCall, door: ToolCallDoor, carrying: RoomContext | None
     ) -> ToolOutcome | None:
@@ -1006,7 +1011,7 @@ class ConferenceRealtime:
             # as on every channel (RFC §9.3, §21.4).
             raise UnservedToolCallError(call.name)
         serve, asks = server
-        loop_ctx = await self._call_context(config, str(call.room_id))
+        loop_ctx = await self._call_context(config, str(call.room_id), answer_depth(self, call))
         with serving_tool_call(call, self._channel_id, loop_ctx):
             bound = config.tool_bound(call.name, waits=asks)
             answered = await answer_within(bound, call.name, serve())
@@ -1028,16 +1033,16 @@ class ConferenceRealtime:
         return partial(handler, str(call.room_id), call.name, call.arguments), False
 
     async def _call_context(
-        self, config: ConferenceRealtimeConfig, room_id: str
+        self, config: ConferenceRealtimeConfig, room_id: str, chain_depth: int
     ) -> _ToolLoopContext:
         """The tool call context a call of *room_id* is served in: the room,
-        the depth of its answer, and the session's declared toolset."""
-        room = self._rooms.get(room_id)
+        *chain_depth*, the depth of its answer, and the session's declared
+        toolset."""
         loop_ctx = await tool_loop_context(
             self._framework,
             room_id,
             actor_id=None,  # the mix names no participant
-            chain_depth=room.answer_depth.answer if room is not None else 0,
+            chain_depth=chain_depth,
         )
         # What the session declares is the call's resolved toolset (RFC §21.4).
         # A session that declares none names no list, its gate still judging.

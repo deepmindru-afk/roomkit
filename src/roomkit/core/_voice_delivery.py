@@ -19,6 +19,7 @@ from roomkit.voice.realtime.injection import VoiceInjectionResult
 
 if TYPE_CHECKING:
     from roomkit.core.delivery import DeliveryContext
+    from roomkit.core.framework import RoomKit
 
 logger = logging.getLogger("roomkit.delivery.voice")
 _SEVERITY = {"sent": 0, "blocked": 1, "unavailable": 2, "failed": 3, "unknown": 4}
@@ -45,14 +46,19 @@ def delivering_injected() -> Generator[None]:
         _INJECTED_DELIVERY.reset(token)
 
 
-def injection_silent(binding: ChannelBinding) -> bool:
-    """Whether text injected into a realtime host's model under *binding* asks
-    no answer: a muted, output-muted or unwritable binding withholds the
-    model's response, its context still taking the text (RFC §7.2, §7.5),
-    and so does the delivery of an event a hook injected, which asks no
-    agent (§9.4)."""
+def injection_silent(binding: ChannelBinding, chain_depth: int, kit: RoomKit | None) -> bool:
+    """Whether text *chain_depth* deep, injected into a realtime host's model
+    under *binding*, asks no answer: a muted, output-muted or unwritable
+    binding withholds the model's response, its context still taking the
+    text (RFC §7.2, §7.5); so does the delivery of an event a hook injected,
+    which asks no agent (§9.4), and text whose answer would be past *kit*'s
+    ``max_chain_depth``, as an agent past it is not asked (§8.3)."""
     return (
-        binding.muted or binding.output_muted or not binding.can_write or _INJECTED_DELIVERY.get()
+        binding.muted
+        or binding.output_muted
+        or not binding.can_write
+        or _INJECTED_DELIVERY.get()
+        or (kit is not None and chain_depth + 1 >= kit._max_chain_depth)
     )
 
 
@@ -152,7 +158,7 @@ async def _validate(
             reason="voice_session_replaced",
             error=DeliveryError(code="voice_session_replaced", message="Pinned session changed"),
         )
-    return injection_silent(binding), None
+    return injection_silent(binding, ctx.chain_depth, ctx.kit), None
 
 
 _INJECTION_OUTCOMES: dict[str, Callable[[VoiceInjectionResult, str], DeliveryOutcome]] = {

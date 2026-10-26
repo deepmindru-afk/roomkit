@@ -201,10 +201,19 @@ async def _settle() -> None:
 
 @HOSTS
 @pytest.mark.parametrize(
-    ("mute", "silent"), [(None, False), ("mute", True), ("mute_output", True)]
+    ("mute", "depth", "silent"),
+    [
+        (None, 1, False),
+        ("mute", 1, True),
+        ("mute_output", 1, True),
+        # The default max_chain_depth is 5: an answer to an event 4 deep would
+        # be past it, and the model is not asked, as an agent is not (RMK-983).
+        (None, 3, False),
+        (None, 4, True),
+    ],
 )
-async def test_a_broadcast_is_injected_silently_under_a_muted_binding(
-    host: str, mute: str | None, silent: bool
+async def test_a_broadcast_is_injected_silently_under_a_muted_binding_or_past_the_limit(
+    host: str, mute: str | None, depth: int, silent: bool
 ) -> None:
     provider = _Provider()
     rt = _Host(host, provider, [])
@@ -213,7 +222,7 @@ async def test_a_broadcast_is_injected_silently_under_a_muted_binding(
     if mute is not None:
         await getattr(rt.kit, mute)(ROOM, "host")
 
-    await rt.kit.send_event(ROOM, "src", TextContent(body="hello"), chain_depth=1)
+    await rt.kit.send_event(ROOM, "src", TextContent(body="hello"), chain_depth=depth)
     await until(lambda: bool(provider.injections))
     await rt.kit.close()
 

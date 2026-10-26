@@ -35,6 +35,7 @@ def _make_kit(
 ) -> MagicMock:
     """Build a mock RoomKit with store.list_bindings and get_channel."""
     kit = MagicMock()
+    kit._max_chain_depth = 5
     kit.store = MagicMock()
     kit.store.list_bindings = AsyncMock(return_value=bindings or [])
     kit.store.get_room = AsyncMock(return_value=Room(id="room-1"))

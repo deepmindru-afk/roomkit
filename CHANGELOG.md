@@ -138,6 +138,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_chain_depth=2` an agent no longer answers the follow-up an observer
   posts on a person's message. Migration: raise `max_chain_depth`.
 
+- **A speech-to-speech model's tool-call loop ends at `max_chain_depth`**
+  (RFC §8.3, §9.5.1, §12.4, RMK-983). An ASYNC `ON_TOOL_CALL` or
+  `BEFORE_TOOL_USE` hook that posted into the room at each call of a
+  realtime model (a `RealtimeVoiceChannel`, a conference's realtime
+  configuration) made it answer and call again without end: the hooks fired
+  outside the call's context, so each post started at depth 0, and the
+  channel injected a text into its model at any depth. A realtime or
+  conference tool call's gate, handler and reports, the observers they fire
+  included, now make their calls into a room at least as deep as the model's
+  answer that issued the call; and a text whose answer would be past the
+  limit (its depth plus one reaching `max_chain_depth`) enters the model's
+  session silently, through a broadcast, a conference or `deliver()`: the
+  model takes it into its context and answers nothing, as an agent past the
+  limit is not asked. With `max_chain_depth=4` the loop ends after three
+  posts. Behaviour change: in a room with a realtime model and an agent,
+  their exchange ends at the limit one turn sooner, as between two agents.
+  Example: `examples/realtime_tool_observer_depth.py`.
+
 ### Fixed
 
 - **A channel's `metadata_updates` are written on the room** (RFC §10.1 step

@@ -151,6 +151,18 @@ async def test_voice_refusal_permissions_and_muting() -> None:
         assert len(provider.injected_texts) == 1
 
 
+@pytest.mark.parametrize(("depth", "silent"), [(3, False), (4, True)])
+async def test_a_delivery_past_the_depth_limit_asks_the_model_nothing(
+    depth: int, silent: bool
+) -> None:
+    """RMK-983: the model's answer to content 4 deep would be past the default
+    max_chain_depth of 5, so the content joins its context silently."""
+    async with voice_room(1) as (kit, _, provider, _):
+        with patch.object(provider, "inject_text", wraps=provider.inject_text) as inject:
+            outcome = await kit.deliver("r", "result", channel_id="voice", chain_depth=depth)
+        assert (outcome.status, inject.call_args.kwargs["silent"]) == ("sent", silent)
+
+
 async def test_session_ending_during_binding_lookup_is_never_injected() -> None:
     async with voice_room(1) as (kit, channel, provider, sessions):
         from roomkit.core._delivery_targets import deliver_to_realtime_voice

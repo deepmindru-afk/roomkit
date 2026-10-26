@@ -20,6 +20,7 @@ from roomkit.channels._realtime_tool_executor import (
     ABANDONED_BY_PROVIDER,
     SESSION_ENDED,
     ToolCallDoor,
+    answer_depth,
     deliver_once,
     ended_outcome,
     judge_tool_call,
@@ -546,6 +547,10 @@ class RealtimeToolsMixin:
     def _call_ended(self, call: RealtimeToolCall) -> bool:
         return call.session.state == VoiceSessionState.ENDED
 
+    def _call_depth(self, call: RealtimeToolCall) -> int:
+        # The call belongs to the model's answer, as deep as its transcript.
+        return self._session_answer_depth(call.session.id).answer
+
     async def _serve_channel_tool(
         self, call: RealtimeToolCall, door: ToolCallDoor, carrying: RoomContext | None
     ) -> ToolOutcome | None:
@@ -648,8 +653,7 @@ class RealtimeToolsMixin:
             self._framework,
             call.room_id or session.room_id,
             actor_id=session.participant_id,
-            # The call belongs to the model's answer, as deep as its transcript.
-            chain_depth=self._session_answer_depth(session.id).answer,
+            chain_depth=answer_depth(self, call),
             room=gate_context.room if gate_context is not None else None,
         )
         # What the session declares is the call's resolved toolset, which

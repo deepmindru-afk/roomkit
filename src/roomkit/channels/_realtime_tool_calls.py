@@ -48,6 +48,9 @@ class RealtimeToolCall:
     arguments: dict[str, Any]
     room_id: str | None = None
     """The room the session served when the call ran."""
+    chain_depth: int | None = None
+    """The chain depth of the answer that issued the call, read when its work
+    first needs it and kept from then on; ``None`` before (RFC §8.3)."""
     unreadable: str | None = None
     """What the model reads when the call cannot be read (its arguments, or a
     ``call_tool`` transport's, are not an object, or it named no tool):
