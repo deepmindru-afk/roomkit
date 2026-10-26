@@ -337,6 +337,17 @@ class Channel(ABC):
         """
         return 0
 
+    @property
+    def serializes_room_turns(self) -> bool:
+        """Whether the room's owner runs this channel's turns in a room one
+        after the other, in the order they were asked (RFC §6.4): a turn waits
+        until the one before it is over, then reads the room as it stood when
+        it was asked, plus what the channel wrote since. Such a channel answers
+        through its stream. False here: the turns run side by side. An ACP
+        agent's channel orders its own, one prompt per session at a time.
+        """
+        return False
+
     @abstractmethod
     async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
         """Process an inbound message into a RoomEvent."""
@@ -528,6 +539,7 @@ class Channel(ABC):
             capabilities=self.capabilities(),
             takes_owner_tools=False,
             recent_events_window=self.recent_events_window,
+            serializes_room_turns=self.serializes_room_turns,
         )
 
     async def close(self) -> None:

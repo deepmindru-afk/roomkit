@@ -312,7 +312,11 @@ class TestLiveRecord:
         assert current_response_metadata() is None
 
     @pytest.mark.parametrize("streaming", [True, False])
-    async def test_tool_handler_write_lands_on_the_answer(self, advance, streaming: bool) -> None:
+    # A turn that waited its place in the room hands its record on all the same.
+    @pytest.mark.parametrize("serialized", [False, True], ids=["side by side", "one at a time"])
+    async def test_tool_handler_write_lands_on_the_answer(
+        self, advance, streaming: bool, serialized: bool
+    ) -> None:
         from roomkit.channels import SMSChannel
         from roomkit.providers.sms.mock import MockSMSProvider
 
@@ -322,6 +326,7 @@ class TestLiveRecord:
             provider=MockAIProvider(ai_responses=list(_TOOL_ROUNDS), streaming=streaming),
             tool_handler=_citing_handler,
             system_prompt="test",
+            serialize_room_turns=serialized,
         )
         kit.register_channel(ai)
         kit.register_channel(SMSChannel("sms1", provider=MockSMSProvider()))

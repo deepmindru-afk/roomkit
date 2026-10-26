@@ -587,11 +587,17 @@ class InboundStreamingMixin(HelpersMixin):
         *,
         response_events: list[RoomEvent] | None,
     ) -> _StreamingResult | None:
-        """Read one stream of *cascade* on the room as it stands now; a read
-        cancelled from outside tells *record* how the caller's turns ended."""
+        """Read one stream of *cascade* on the room as it stands now, then
+        close it; a read cancelled from outside tells *record* how the
+        caller's turns ended.
+
+        Closed once read, not with the cascade's other streams: a turn that
+        waited its place in the room gives it up when what it said is written,
+        and the next stream may be the same channel's next turn (RFC §6.4).
+        """
         context = await self._build_context(room_id)
         try:
-            return await self._handle_streaming_response(
+            result = await self._handle_streaming_response(
                 router,
                 sr,
                 room_id,
@@ -602,6 +608,8 @@ class InboundStreamingMixin(HelpersMixin):
         except asyncio.CancelledError:
             _record_cancelled_read(cascade, record, sr)
             raise
+        await _aclose_stream(sr.stream)
+        return result
 
     async def _admit_chained_stream(
         self, sr: StreamingResponse, cascade: DeliveryCascade, room_id: str

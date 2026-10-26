@@ -639,7 +639,8 @@ unscoped, as before.
 ## Cancelling a turn
 
 Cancelling a message's delivery stops its agents' turns and only those: a turn
-still waiting in the room's lane (or behind the room's ACP prompt) never
+still waiting in the room's lane (or behind the room's ACP prompt, or behind
+the agent's previous turn when it takes a room's turns one at a time) never
 starts, a running one is cut with its tools, and nothing answers after. The
 message itself is still delivered to the room's other channels and fires its
 `AFTER_BROADCAST` hooks. The room's other turns go on.

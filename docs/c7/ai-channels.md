@@ -180,6 +180,36 @@ await kit.attach_channel(room_id, "meteo")  # an intelligence binding
 
 Runnable: `examples/declared_agent.py`, `examples/declared_supervisor.py`.
 
+## A Room's Turns One After the Other
+
+By default an agent answers a room's messages side by side: two tasks handed
+to one agent in one room run at once, and the second turn reads the first
+task's order still unanswered, so it may do that task too. With
+`serialize_room_turns=True` the agent's turns in a room run one after the
+other, in the order the messages arrived:
+
+```python
+worker = Agent("worker", provider=provider, serialize_room_turns=True)
+```
+
+- A waiting turn starts once the turn before it has written its answer.
+- It reads the room as it stood when its message arrived, plus the agent's
+  answers since: never a message that came after it, which waits its own
+  turn. Three tasks A, B, C: B reads A and its answer, not C.
+- `kit.cancel_delivery(key)` (or the deferred handle's `cancel()`) on a
+  waiting turn's delivery: it never starts, the running one goes on. Cutting
+  the running turn lets the next one start.
+- A turn whose agent left the room while it waited never starts.
+- The order is kept by the room's owner, per process, as an ACP agent keeps
+  its own; two processes each handed a message of the room run them side by
+  side. A strategy that takes the agent's turns (`Loop`, `Supervisor`) orders
+  them itself. A memory provider that reads the store itself, rather than the
+  history it is handed, still sees later messages.
+- An agent the kit holds by its declaration says so with
+  `ChannelDeclaration(..., serializes_room_turns=True)`.
+
+Runnable: `examples/agent_turns_in_order.py`.
+
 ## Steering a Running Turn
 
 `steer()` hands a running tool loop a directive (`Cancel`, `InjectMessage`,

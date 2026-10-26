@@ -215,6 +215,7 @@ class AIChannel(
         text_coalesce_chars: int = 256,
         *,
         publish_text_deltas: bool = False,
+        serialize_room_turns: bool = False,
     ) -> None:
         super().__init__(channel_id)
         # Whether the agent speaks on an event (RFC §6.4): none, it answers every one.
@@ -255,6 +256,8 @@ class AIChannel(
         # delegation reads as its trace: BEFORE_BROADCAST does not see this
         # stream, so no turn it judges has its text published (RFC §23.3).
         self._publish_text_deltas = publish_text_deltas
+        # A room's turns one after the other, each reading the answers before it (RFC §6.4).
+        self._serialize_room_turns = serialize_room_turns
         self._text_coalesce_ms = text_coalesce_ms
         self._text_coalesce_chars = text_coalesce_chars
         self._retry_policy = retry_policy
@@ -786,6 +789,11 @@ class AIChannel(
     def recent_events_window(self) -> int:
         """Recent-events need = this channel's memory provider's window."""
         return self._memory.recent_events_window
+
+    @property
+    def serializes_room_turns(self) -> bool:
+        """Whether its turns in a room run one after the other (``serialize_room_turns``)."""
+        return self._serialize_room_turns
 
     async def close(self) -> None:
         """Close the channel: its running turns first (their calls cancelled

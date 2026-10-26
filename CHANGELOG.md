@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AIChannel(serialize_room_turns=True)` (and `Agent`): the agent's turns in a
+  room run one after the other, in the order its messages arrived (RFC §6.4,
+  RMK-900). By default they run side by side, and the turn for a second task
+  read the first one's order still unanswered, so it could do that task again.
+  A waiting turn starts once the one before it has written its answer, and
+  reads the room as it stood when its message arrived plus the agent's
+  answers since: never a message that came after it, which waits its own
+  turn. `kit.cancel_delivery(key)` on a waiting turn's delivery means it never
+  starts; cutting the running turn lets the next one start. The order is the
+  room owner's, per process, as an ACP agent's is; a strategy that takes the
+  agent's turns (`Loop`, `Supervisor`) orders them itself. The owner reads it
+  from `Channel.serializes_room_turns`, which `ChannelDeclaration` carries for
+  an agent built on an executor elsewhere. `examples/agent_turns_in_order.py`
+  runs it.
+
 - `LocalAudioBackend(output_latency_ms=...)`: the output latency the speaker
   asks PortAudio for, in milliseconds (RMK-554). The default (`None`) is
   unchanged: PortAudio's "low" with an `aec`, "high" without it, and "high"

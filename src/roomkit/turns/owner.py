@@ -12,7 +12,7 @@ import weakref
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
@@ -26,7 +26,6 @@ from roomkit.turns._owner_between import answer_room_call, publish_between_turns
 from roomkit.turns._owner_inputs import OwnerInputs
 from roomkit.turns._owner_turn import OwnerTurn
 from roomkit.turns._registry_tools import OwnerToolStore, RegistryOwnerTools
-from roomkit.turns._remote_stream import RemoteStream
 from roomkit.turns._rooms import RoomRecords
 from roomkit.turns.base import RoomOwner, TurnTimeouts
 from roomkit.turns.executor import TurnExecutor
@@ -445,11 +444,21 @@ class TurnClient(RoomOwner):
         await self.backend.close()
 
 
+@runtime_checkable
+class _TurnStream(Protocol):
+    """A turn's stream: the turn backend's, or a turn's that waits its place
+    in the room (RFC §6.4)."""
+
+    def drop(self) -> None: ...
+
+    def read_as_trace(self) -> None: ...
+
+
 def drop_unread(stream: object) -> None:
     """Give up a turn's stream nobody will read: a stream of the turn
     backend is closed in the background; a plain generator is left to its
     collection, which closes it."""
-    if isinstance(stream, RemoteStream):
+    if isinstance(stream, _TurnStream):
         stream.drop()
 
 
@@ -458,7 +467,7 @@ def read_as_trace(stream: object) -> None:
     task's trace, committed without crossing a hook (RFC §23.3 step 5): only
     such a turn's answer text is published (RFC §6.4). A plain generator is
     no turn's: its text is published by nobody."""
-    if isinstance(stream, RemoteStream):
+    if isinstance(stream, _TurnStream):
         stream.read_as_trace()
 
 

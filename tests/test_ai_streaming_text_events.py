@@ -133,9 +133,16 @@ async def test_a_delegated_answer_is_published_as_its_text_on_a_window(
     assert {data["channel_id"] for data in texts} == {"worker"}
 
 
-async def test_a_delegated_turns_text_reaches_its_child_room_while_it_is_written(kit):
+@pytest.mark.parametrize("serialized", [False, True], ids=["side by side", "one at a time"])
+async def test_a_delegated_turns_text_reaches_its_child_room_while_it_is_written(kit, serialized):
+    # A turn that waits its place in the room is read as a trace all the same.
     kit.register_channel(
-        Agent("worker", provider=_Rounds([(WORDS, None)]), publish_text_deltas=True)
+        Agent(
+            "worker",
+            provider=_Rounds([(WORDS, None)]),
+            publish_text_deltas=True,
+            serialize_room_turns=serialized,
+        )
     )
     observer = _Observer()
     order: list[str] = []

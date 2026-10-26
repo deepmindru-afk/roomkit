@@ -135,6 +135,9 @@ class ChannelDeclaration(BaseModel):
     channel's do, an external agent's over ACP do not."""
     recent_events_window: int = Field(default=AI_CHANNEL_CONTEXT_EVENTS, ge=0)
     """How many recent room events the owner loads for its turns."""
+    serializes_room_turns: bool = False
+    """Its turns in a room run one after the other, in the order they were
+    asked, which the room's owner keeps (RFC §6.4)."""
 
 
 class ChannelBinding(BaseModel):

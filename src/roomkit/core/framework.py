@@ -816,6 +816,7 @@ class RoomKit(
                 greeting_gate_fn=self._wait_greeting_gate,
                 turns=self._turns,
                 runner_of=self._turn_runners.get,
+                context_of=self._build_context,
             )
             self._event_router._framework_emitter = self._emit_framework_event
             self._event_router._defers = self._discussions.__contains__

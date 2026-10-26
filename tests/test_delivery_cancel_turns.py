@@ -6,8 +6,9 @@ channels and fires its AFTER_BROADCAST hooks. A caller names the delivery by a
 key of its own (``InboundMessage.delivery_key``), so code without its handle
 cancels it: ``kit.cancel_delivery(key)``.
 
-Every test runs on the three kinds of intelligence channel a turn can run on:
-an ``Agent`` (a tool loop), an ACP agent (its own process, one prompt at a time
+Every test runs on the kinds of intelligence channel a turn can run on: an
+``Agent`` (a tool loop), the same agent taking a room's turns one at a time
+(``serialize_room_turns``), an ACP agent (its own process, one prompt at a time
 per room) and a channel with no steering at all.
 """
 
@@ -160,7 +161,11 @@ def _steerless(seen: Seen, tmp_path: Path) -> Channel:
     return _Steerless(seen)
 
 
-PATHS = {"agent": _agent, "acp": _acp, "steerless": _steerless}
+def _serial(seen: Seen, tmp_path: Path) -> Channel:
+    return Agent("agent", provider=_Working(seen), serialize_room_turns=True)
+
+
+PATHS = {"agent": _agent, "acp": _acp, "steerless": _steerless, "serial": _serial}
 
 
 class _Transport(SimpleChannel):
@@ -253,6 +258,15 @@ async def _waiting_on_the_room_lock(room: Room) -> None:
             await asyncio.sleep(0.005)
 
 
+async def _waiting_its_place(room: Room) -> None:
+    """Until a turn of the agent waits its place in the room, behind the
+    turn that holds it."""
+    turns = room.kit._get_router()._room_turns  # noqa: SLF001
+    async with asyncio.timeout(WAIT):
+        while (line := turns._lines.get(("r", "agent"))) is None or line.users < 2:  # noqa: SLF001
+            await asyncio.sleep(0.005)
+
+
 async def _closed(room: Room) -> None:
     for gate in room.seen.gates.values():
         gate.set()
@@ -279,6 +293,10 @@ async def test_a_turn_queued_behind_the_room_s_turn_never_starts(
             # An ACP room's turns hold its session lock: B leaves the lane and
             # waits on that lock, which is where the cancel must find it.
             await _waiting_on_the_room_lock(room)
+        if path == "serial":
+            # An agent that takes a room's turns one at a time: B leaves the
+            # lane and waits its place in its stream, behind A.
+            await _waiting_its_place(room)
         assert room.seen.started == ["task A"]  # B queued behind A
 
         assert await room.kit.cancel_delivery("b") == 1
@@ -313,6 +331,9 @@ async def test_a_running_turn_is_cut_and_the_room_s_next_turn_runs(
         a = await room.send("task A", "a")
         await room.seen.until_started("task A")
         b = await room.send("task B", "b")
+        if path == "serial":
+            await _waiting_its_place(room)
+            assert room.seen.started == ["task A"]
 
         assert await room.kit.cancel_delivery("a") == 1
         assert a.delivery is not None and b.delivery is not None
