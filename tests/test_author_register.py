@@ -29,7 +29,6 @@ from roomkit.core._authors import (
     name_keys,
     source_of,
 )
-from roomkit.core._private_state import PRIVATE_STATE_KEYS
 from roomkit.core.framework import RoomKit
 from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -694,18 +693,4 @@ class TestOnlyTheRuntimeWritesTheRegister:
         ]
         assert (ranks, outcome) == ([("u-alice", 1), ("u-mallory", 2)], "refused")
         assert AUTHOR_REGISTER not in (await kit.get_room("r1")).metadata
-        await kit.close()
-
-    @pytest.mark.parametrize("key", sorted(PRIVATE_STATE_KEYS))
-    async def test_an_integrator_s_write_of_a_private_state_key_raises(self, key: str) -> None:
-        """Every key of the room's private state, the way the
-        ``roomkit:channel_state:`` keys are: nothing of the write is kept."""
-        kit = RoomKit()
-        with pytest.raises(ValueError, match=key):
-            await kit.create_room(room_id="r2", metadata={key: {}, "crm": "c_42"})
-        await kit.create_room(room_id="r1")
-        with pytest.raises(ValueError, match=key):
-            await kit.update_room_metadata("r1", {key: {}, "crm": "c_42"})
-        stored = (await kit.store.get_room("r2"), (await kit.get_room("r1")).metadata)
-        assert stored == (None, {})
         await kit.close()

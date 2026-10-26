@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from roomkit.channels.base import Channel
+from roomkit.core._private_state import PRIVATE_STATE_KEYS
 from roomkit.core.exceptions import RoomAlreadyExistsError
 from roomkit.core.framework import (
     ChannelAlreadyRegisteredError,
@@ -152,6 +153,30 @@ class TestRoomLifecycle:
         await kit.create_room(room_id="r1")
         room = await kit.update_room_metadata("r1", {"key": "val"})
         assert room.metadata["key"] == "val"
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            *sorted(PRIVATE_STATE_KEYS),
+            "roomkit:detached_channels",
+            "roomkit:channel_state:ws",
+            "roomkit:anything",
+        ],
+    )
+    async def test_a_key_only_the_framework_writes_is_refused(
+        self, kit: RoomKit, key: str
+    ) -> None:
+        """RFC §5.1, §14.1 (RMK-978): the implementation's namespace,
+        ``roomkit:``, and the keys of the room's private state are the
+        framework's alone; a room's creation and an integrator's metadata
+        update that name one raise, nothing of them kept."""
+        with pytest.raises(ValueError, match=key):
+            await kit.create_room(room_id="r2", metadata={key: {}, "crm": "c_42"})
+        await kit.create_room(room_id="r1")
+        with pytest.raises(ValueError, match=key):
+            await kit.update_room_metadata("r1", {key: {}, "crm": "c_42"})
+        stored = (await kit.store.get_room("r2"), (await kit.get_room("r1")).metadata)
+        assert stored == (None, {})
 
 
 class TestTimelineQuery:

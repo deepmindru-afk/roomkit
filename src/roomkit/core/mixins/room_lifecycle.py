@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.core._participant_channels import channels_reached, warn_cross_channel
-from roomkit.core._private_state import refuse_private_state
+from roomkit.core._room_metadata import refuse_framework_keys
 from roomkit.core.exceptions import (
     IdentityNotFoundError,
     ParticipantNotFoundError,
@@ -26,7 +26,6 @@ from roomkit.models.enums import (
 )
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room, RoomTimers
-from roomkit.turns._rooms import refuse_room_state
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
@@ -102,8 +101,9 @@ class RoomLifecycleMixin(HelpersMixin):
 
         Args:
             room_id: Optional explicit room ID (auto-generated if omitted).
-            metadata: Optional room metadata dict; none of what a room keeps
-                for a channel (``roomkit:channel_state:``) nor a key of its
+            metadata: Optional room metadata dict; none of the framework's
+                keys, the ``roomkit:`` namespace (a detach's revocation, what
+                the room keeps for a channel) and the keys of the room's
                 private state (``author_register``), ``ValueError``.
             recorders: Optional list of :class:`RoomRecorderBinding` for
                 room-level media recording.
@@ -137,8 +137,7 @@ class RoomLifecycleMixin(HelpersMixin):
                 is written, so no room exists afterwards and the recordings
                 already started are stopped (RFC §12.11).
         """
-        refuse_room_state(metadata or {})
-        refuse_private_state(metadata or {})
+        refuse_framework_keys(metadata or {})
         room = Room(
             id=room_id or uuid4().hex,
             organization_id=organization_id,
@@ -396,14 +395,14 @@ class RoomLifecycleMixin(HelpersMixin):
         """Update room metadata.
 
         Raises:
-            ValueError: a key under ``roomkit:channel_state:``, what the room
-                keeps for a channel, which ``channel_call`` alone writes; or a
-                key of the room's private state (``author_register``,
-                ``_speak_queue_results``), which the runtime alone writes
-                (RFC §14.1). Nothing is written.
+            ValueError: a key only the framework writes, nothing written: one
+                under ``roomkit:`` (RFC §5.1), a detach's revocation
+                (``roomkit:detached_channels``) and what the room keeps for a
+                channel (``roomkit:channel_state:``) among them, or a key of
+                the room's private state (``author_register``,
+                ``_speak_queue_results``, RFC §14.1).
         """
-        refuse_room_state(metadata)
-        refuse_private_state(metadata)
+        refuse_framework_keys(metadata)
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
             room = room.model_copy(

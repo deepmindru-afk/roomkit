@@ -27,22 +27,6 @@ def room_state_key(channel_id: str) -> str:
     return f"{ROOM_STATE_KEY}{channel_id}"
 
 
-def refuse_room_state(metadata: dict[str, object]) -> None:
-    """Refuse *metadata* that writes what a room keeps for a channel: only
-    ``kit.channel_call`` writes it, since it sets up the channel's next
-    session (an ACP agent's mode, RFC §6.4).
-
-    Raises:
-        ValueError: a key under :data:`ROOM_STATE_KEY`.
-    """
-    reserved = sorted(key for key in metadata if key.startswith(ROOM_STATE_KEY))
-    if reserved:
-        raise ValueError(
-            f"Room metadata {reserved} is what the room keeps for a channel, "
-            "written by kit.channel_call alone"
-        )
-
-
 def stored_room_state(metadata: dict[str, object], channel_id: str) -> dict[str, object]:
     """What *metadata* holds for *channel_id*; empty when it holds nothing
     readable."""

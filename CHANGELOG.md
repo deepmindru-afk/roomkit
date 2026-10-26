@@ -65,6 +65,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still write. Migration: an application that kept its own value under one of
   these keys renames it.
 
+- **BREAKING — every `roomkit:` key of a room's metadata is the framework's
+  alone** (RFC §5.1, §7.5 rule 7, RMK-978). `create_room(metadata=...)` and
+  `update_room_metadata()` refused only `roomkit:channel_state:` keys: an
+  integrator's caller who could write the metadata cleared a detach's
+  revocation (`roomkit:detached_channels`), and the next message on the
+  detached channel attached it again and was delivered, as a post from a
+  detached host channel was. Both now raise `ValueError` on any `roomkit:`
+  key, nothing written, from a hook's body too, as a turn's
+  `TurnHost.update_room_metadata` already did; a channel's
+  `metadata_updates` have it dropped with a warning. The framework writes
+  these keys through the store, which takes any key. Migration: an
+  application that kept its own value under a `roomkit:` key renames it;
+  only `attach_channel()` grants a detached channel back.
+
 - **`update_event()` keeps the record of the author the event was committed
   with** (RFC §10.1 step 12, RMK-978). It stored the caller's
   `metadata["author"]` as given: an update naming another author at rank 1

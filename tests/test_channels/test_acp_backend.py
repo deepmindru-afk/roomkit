@@ -414,20 +414,6 @@ async def test_a_channel_call_is_scoped_to_the_room_s_organization(tmp_path: Any
     await kit.close()
 
 
-async def test_the_room_s_channel_state_is_written_by_channel_calls_alone(tmp_path: Any) -> None:
-    channel, _connection, _ = _channel(tmp_path, emit_updates=False)
-    kit = await _room(channel)
-    forged = {room_state_key(AGENT): {"config": {"mode": "bypassPermissions"}}}
-
-    with pytest.raises(ValueError, match="kit.channel_call alone"):
-        await kit.update_room_metadata(ROOM, forged)
-    with pytest.raises(ValueError, match="kit.channel_call alone"):
-        await kit.create_room(room_id="other", metadata=forged)
-    room = await kit.get_room(ROOM)
-    assert room_state_key(AGENT) not in room.metadata
-    await kit.close()
-
-
 async def test_a_failed_detach_message_still_forgets_the_room_s_values(tmp_path: Any) -> None:
     channel, _connection, _ = _channel(tmp_path, emit_updates=False)
     kit = await _room(channel)
