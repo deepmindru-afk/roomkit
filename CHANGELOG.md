@@ -84,6 +84,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns, awaited or not, and its later calls wait for the lock and commit
   after the event, as roomkit-rs does since its step3-m2 18c7b94.
 
+### Fixed
+
+- **A channel's `metadata_updates` are written on the room** (RFC §10.1 step
+  15, RMK-976). The core collected them in `BroadcastResult.metadata_updates`
+  and never wrote them, and dropped a transport's `deliver()` ones: a
+  transport returning `{"crm_contact": "c_42"}` left the room's metadata
+  without it, on every store. The updates of `on_event()` and `deliver()`
+  are now merged key by key in the order the targets answered and written
+  once per delivery set, a partial update under the room lock, before
+  `AFTER_BROADCAST`. A key only the framework writes, under `roomkit:` or of
+  the room's private state (`author_register`, `_speak_queue_results`), is
+  dropped with a warning naming the channel, the rest applied.
+
 ## [0.109.0] — 2026-10-25
 
 ### Added

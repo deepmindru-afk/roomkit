@@ -815,7 +815,12 @@ class LaneExecutionMixin(HelpersMixin):
             # (RFC §9.4, §10.2 step 3), and its AFTER_BROADCAST fires like
             # any other's; no reentry and no delivery report follow it.
             await self._persist_side_effects(
-                room_id, result.tasks, result.observations, event, context
+                room_id,
+                result.tasks,
+                result.observations,
+                event,
+                context,
+                result.metadata_updates,
             )
             if plan.fire_after_broadcast:
                 await self._run_after_delivery(
@@ -851,6 +856,7 @@ class LaneExecutionMixin(HelpersMixin):
                 plan.hook_observations + result.observations,
                 event,
                 context,
+                result.metadata_updates,
             )
         if plan.fire_after_broadcast and not plan.rerun:
             await self._run_after_delivery(

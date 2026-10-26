@@ -14,6 +14,7 @@ from roomkit.core._changes import for_channels
 from roomkit.core._failure_log import log_failure
 from roomkit.core._instructions import response_metadata
 from roomkit.core._reentrance import within_turn
+from roomkit.core._room_metadata import channel_updates
 from roomkit.core._turn_runners import TurnRunner
 from roomkit.core._voice_delivery import delivering_injected
 from roomkit.core.circuit_breaker import CircuitBreaker
@@ -352,6 +353,17 @@ class BroadcastResult:
     # intact — ``errors`` only carries ``str(exc)``. An intelligence turn's is
     # the one the owner rebuilt from the turn's error record (RFC §10.6.8).
     errors_exc: dict[str, Exception] = field(default_factory=dict)
+
+
+def _merge_updates(
+    result: BroadcastResult, output: ChannelOutput, channel_id: str, room_id: str
+) -> None:
+    """Merge *output*'s room metadata updates into *result*'s, key by key,
+    without a key only the framework writes (RFC §10.1 step 15)."""
+    if output.metadata_updates:
+        result.metadata_updates.update(
+            channel_updates(output.metadata_updates, channel_id=channel_id, room_id=room_id)
+        )
 
 
 @dataclass
@@ -791,14 +803,17 @@ class EventRouter:
                     drop_unread(tr.streaming_response.stream)
             raise
 
-        # Merge per-target results into BroadcastResult (single-threaded)
+        # Merge per-target results into BroadcastResult (single-threaded), in
+        # the order the targets answered: on_event()'s room metadata updates,
+        # then deliver()'s (RFC §10.1 step 15).
         for tr in target_results:
             if tr.output is not None:
                 result.outputs[tr.channel_id] = tr.output
                 result.tasks.extend(tr.output.tasks)
-                result.metadata_updates.update(tr.output.metadata_updates)
+                _merge_updates(result, tr.output, tr.channel_id, event.room_id)
             if tr.delivery_output is not None:
                 result.delivery_outputs[tr.channel_id] = tr.delivery_output
+                _merge_updates(result, tr.delivery_output, tr.channel_id, event.room_id)
             if tr.streaming_response is not None:
                 result.streaming_responses.append(tr.streaming_response)
             if tr.error is not None:

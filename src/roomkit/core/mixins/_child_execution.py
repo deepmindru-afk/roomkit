@@ -319,7 +319,12 @@ async def _broadcast_and_collect(
         # effects kept, whichever path broadcast the trigger (RFC §8.3).
         await kit._commit_blocked_events(child_room_id, result)
         await kit._persist_side_effects(
-            child_room_id, result.tasks, result.observations, msg_event, context
+            child_room_id,
+            result.tasks,
+            result.observations,
+            msg_event,
+            context,
+            result.metadata_updates,
         )
         # A responder that failed answering (raised, or returned its error)
         # fires ON_ERROR once, by the reporter a room's turn uses, whichever

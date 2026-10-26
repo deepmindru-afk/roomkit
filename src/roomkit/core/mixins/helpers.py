@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
@@ -31,7 +31,7 @@ from roomkit.core._authors import own_record_id, reached, stored_register, with_
 from roomkit.core._participant_channels import channels_reached, warn_cross_channel
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.hooks import SyncPipelineResult
-from roomkit.core.locks import lent_while_it_runs
+from roomkit.core.locks import RoomLockManager, lent_while_it_runs
 from roomkit.core.task_utils import run_to_its_end
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundResult
@@ -192,6 +192,7 @@ class HelpersMixin:
     _room_close_epoch: int  # counted by _store_refusing_room — set by RoomKit.__init__
     _room_timers: TimerTransitions  # the rooms' due timer transitions — set by RoomKit.__init__
     _process_timeout: float  # the pre-commit bound (RFC §13.6) — set by RoomKit.__init__
+    _lock_manager: RoomLockManager  # the per-room lock — set by RoomKit.__init__
     turn_executor: Any  # RoomKit's own TurnExecutor, whose wiring the turn triggers run on
     get_room: Any  # RoomLifecycleMixin's, the room read with the caller's scope (RFC §17.2)
 
@@ -708,8 +709,11 @@ class HelpersMixin:
         observations: list[Observation],
         event: RoomEvent,
         context: RoomContext,
+        metadata_updates: Mapping[str, Any] | None = None,
     ) -> None:
-        """Persist tasks and observations, fire ON_TASK_CREATED hooks for new tasks."""
+        """Persist tasks and observations, write the room metadata updates
+        the channels returned (RFC §10.1 step 15), fire ON_TASK_CREATED
+        hooks for new tasks."""
         persisted_tasks: list[Task] = []
         for task in tasks:
             try:
@@ -730,6 +734,7 @@ class HelpersMixin:
                     observation.id,
                     extra={"room_id": room_id, "observation_id": observation.id},
                 )
+        await self._write_metadata_updates(room_id, metadata_updates)
         # Fire ON_TASK_CREATED hooks only for successfully persisted tasks
         for task in persisted_tasks:
             task_event = RoomEvent(
@@ -743,6 +748,26 @@ class HelpersMixin:
             )
             await self._hook_engine.run_async_hooks(
                 room_id, HookTrigger.ON_TASK_CREATED, task_event, context
+            )
+
+    async def _write_metadata_updates(
+        self, room_id: str, updates: Mapping[str, Any] | None
+    ) -> None:
+        """Write *updates*, the room metadata updates a delivery set's
+        channels returned, merged in the order they answered, on the room
+        once, as a partial update under the room lock (RFC §10.1 step 15):
+        a concurrent write of the room's metadata loses none of them. A
+        failure is logged; the delivery set stands."""
+        if not updates:
+            return
+        try:
+            async with self._lock_manager.locked(room_id):
+                await self._store.patch_room_metadata(room_id, dict(updates))
+        except Exception:
+            logger.exception(
+                "Failed to write the room metadata updates %s",
+                sorted(updates),
+                extra={"room_id": room_id},
             )
 
     async def _emit_system_event(

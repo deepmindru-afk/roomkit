@@ -32,6 +32,7 @@ from roomkit.core._authors import (
 from roomkit.core._private_state import PRIVATE_STATE_KEYS
 from roomkit.core.framework import RoomKit
 from roomkit.memory.sliding_window import SlidingWindowMemory
+from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelType, HookTrigger, TaskStatus
@@ -47,6 +48,7 @@ from roomkit.tasks.models import DelegatedTaskResult
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from tests.test_framework import SimpleChannel
 from tests.test_speaker_attribution import _kit, _say, _sources, _user_texts
 
 
@@ -625,8 +627,29 @@ def _forged_register(sender_id: str, name: str) -> dict[str, Any]:
     return {"version": 3, "names": {key: f"{source}:1" for key in name_keys("r1", name)}}
 
 
+class _Updating(SimpleChannel):
+    """A transport whose first delivery returns room metadata updates (RFC
+    §10.1 step 15)."""
+
+    def __init__(self, channel_id: str, updates: dict[str, Any]) -> None:
+        super().__init__(channel_id)
+        self._updates = updates
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        updates, self._updates = self._updates, {}
+        return ChannelOutput(metadata_updates=updates)
+
+
 async def _plant(kit: RoomKit, writer: str, metadata: dict[str, Any]) -> str:
     """Write *metadata* on room ``r1`` the way *writer* does; what came of it."""
+    if writer == "a channel's metadata_updates":
+        kit.register_channel(_Updating("crm", metadata))
+        await kit.attach_channel("r1", "crm")
+        await _say(kit, "u-bob", "Bob", "first")
+        planted = set(metadata) & set((await kit.get_room("r1")).metadata)
+        return "written" if planted else "refused"
     if writer == "update_room_metadata":
         try:
             await kit.update_room_metadata("r1", metadata)
@@ -652,7 +675,9 @@ class TestOnlyTheRuntimeWritesTheRegister:
     metadata who planted a register there would take another sender's name
     at rank 1, and the real sender would read ``Alice (2)``."""
 
-    @pytest.mark.parametrize("writer", ["update_room_metadata", "a hook"])
+    @pytest.mark.parametrize(
+        "writer", ["update_room_metadata", "a hook", "a channel's metadata_updates"]
+    )
     async def test_a_forged_register_takes_nobody_s_rank(self, writer: str) -> None:
         kit, _provider = await _kit(["a1", "a2", "a3"])
         forged = {AUTHOR_REGISTER: _forged_register("u-mallory", "Alice")}

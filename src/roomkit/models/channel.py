@@ -214,6 +214,11 @@ class ChannelOutput(BaseModel):
     tasks: list[Task] = Field(default_factory=list)
     observations: list[Observation] = Field(default_factory=list)
     metadata_updates: dict[str, Any] = Field(default_factory=dict)
+    """Keys the framework writes on the room's metadata once the delivery set
+    has run, merged with the other targets' in the order they answered,
+    ``on_event()``'s and ``deliver()``'s alike (RFC §10.1 step 15). A key only
+    the framework writes, under ``roomkit:`` or of the room's private state
+    (``author_register``), is dropped with a warning, the rest applied."""
     error: Exception | None = Field(default=None, exclude=True)
     """An error the channel met while producing this output.
 

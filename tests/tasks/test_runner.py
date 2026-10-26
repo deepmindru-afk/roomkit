@@ -21,6 +21,7 @@ class _MockBroadcastResult:
         self.blocked_events: list[RoomEvent] = []
         self.tasks: list[object] = []
         self.observations: list[object] = []
+        self.metadata_updates: dict[str, object] = {}
         if response_text:
             resp_event = RoomEvent(
                 room_id="child-1",

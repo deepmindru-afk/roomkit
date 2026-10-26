@@ -114,7 +114,7 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 |--------|-------------|
 | `ChannelBinding` | Binding of a channel to a room |
 | `ChannelCapabilities` | Declared capabilities of a channel |
-| `ChannelOutput` | Output of a channel delivery |
+| `ChannelOutput` | Output of a channel delivery; its `metadata_updates` are written on the room once the delivery set has run, a `roomkit:` key or a key of the room's private state dropped with a warning |
 | `EventSource` | Source attribution for an event |
 | `FrameworkEvent` | Lightweight framework lifecycle event |
 | `HookResult` | Result from sync hooks: `.allow()`, `.block(reason)`, `.modify(event)` |

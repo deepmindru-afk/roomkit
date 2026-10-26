@@ -27,10 +27,6 @@ SCENARIOS = HERE / "scenarios"
 # Scenario id → the rule this implementation breaks (roomkit-specs
 # conformance/README.md, "Known failures").
 KNOWN_FAILURES: dict[str, str] = {
-    "inbound/an-agent-s-output-updates-the-room": (
-        "RFC §10.1 step 15: the room metadata updates of the channel outputs are "
-        "collected (BroadcastResult.metadata_updates) and never applied to the room"
-    ),
     "injection/an-injection-from-an-unregistered-channel-raises": (
         "RFC §10.5, RMK-977: send_event() from a channel no one registered raises "
         "ChannelNotFoundError, as for a channel the room does not bind"

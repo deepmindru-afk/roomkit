@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 import pytest
 
 from roomkit.channels.base import Channel
@@ -71,6 +74,32 @@ class TaskCreatorChannel(Channel):
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
         return ChannelOutput.empty()
+
+
+class UpdatingChannel(Channel):
+    """A channel whose output carries room metadata updates: an intelligence
+    channel's from on_event, a transport's from deliver."""
+
+    def __init__(self, channel_id: str, updates: dict[str, Any], *, agent: bool = False) -> None:
+        super().__init__(channel_id)
+        self.channel_type = ChannelType.AI if agent else ChannelType.WEBSOCKET
+        self.category = ChannelCategory.INTELLIGENCE if agent else ChannelCategory.TRANSPORT
+        self._updates = updates
+
+    async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
+        raise NotImplementedError
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if self.category is ChannelCategory.INTELLIGENCE:
+            return ChannelOutput(metadata_updates=dict(self._updates))
+        return ChannelOutput.empty()
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        return ChannelOutput(metadata_updates=dict(self._updates))
 
 
 @pytest.fixture
@@ -246,3 +275,38 @@ class TestOnTaskCreatedHookFires:
         )
         await kit.process_inbound(msg)
         assert len(fired) == 1
+
+
+class TestBroadcastMetadataUpdatesApplied:
+    async def test_the_targets_updates_are_written_on_the_room(
+        self, kit: RoomKit, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """RFC §10.1 step 15 (RMK-976): the room metadata updates of the
+        targets' outputs, on_event's and deliver's alike, are merged into the
+        room's metadata, which keeps its other keys; a key only the framework
+        writes, of its namespace (§5.1) or of the room's private state
+        (§14.1), is dropped with a warning, the rest applied."""
+        kit.register_channel(SimpleChannel("sms1"))
+        kit.register_channel(
+            UpdatingChannel("ai1", {"stage": "qualified", "roomkit:forged": True}, agent=True)
+        )
+        kit.register_channel(
+            UpdatingChannel("crm", {"crm_contact": "c_42", "author_register": {"version": 3}})
+        )
+        await kit.create_room(room_id="r1", metadata={"topic": "loan"})
+        for channel_id in ("sms1", "ai1", "crm"):
+            await kit.attach_channel("r1", channel_id)
+
+        with caplog.at_level(logging.WARNING, logger="roomkit.framework"):
+            await kit.process_inbound(
+                InboundMessage(
+                    channel_id="sms1", sender_id="user1", content=TextContent(body="I want a loan")
+                )
+            )
+
+        room = await kit.get_room("r1")
+        assert room.metadata == {"topic": "loan", "stage": "qualified", "crm_contact": "c_42"}
+        dropped = sorted(r.getMessage() for r in caplog.records if "drops" in r.getMessage())
+        assert len(dropped) == 2
+        assert "'author_register'" in dropped[0] and "crm" in dropped[0]
+        assert "'roomkit:forged'" in dropped[1] and "ai1" in dropped[1]
