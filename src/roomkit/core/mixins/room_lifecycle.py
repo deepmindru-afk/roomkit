@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.core._participant_channels import channels_reached, warn_cross_channel
+from roomkit.core._private_state import refuse_private_state
 from roomkit.core.exceptions import (
     IdentityNotFoundError,
     ParticipantNotFoundError,
@@ -102,7 +103,8 @@ class RoomLifecycleMixin(HelpersMixin):
         Args:
             room_id: Optional explicit room ID (auto-generated if omitted).
             metadata: Optional room metadata dict; none of what a room keeps
-                for a channel (``roomkit:channel_state:``, ``ValueError``).
+                for a channel (``roomkit:channel_state:``) nor a key of its
+                private state (``author_register``), ``ValueError``.
             recorders: Optional list of :class:`RoomRecorderBinding` for
                 room-level media recording.
             orchestration: Orchestration strategy for this room. Overrides
@@ -136,6 +138,7 @@ class RoomLifecycleMixin(HelpersMixin):
                 already started are stopped (RFC §12.11).
         """
         refuse_room_state(metadata or {})
+        refuse_private_state(metadata or {})
         room = Room(
             id=room_id or uuid4().hex,
             organization_id=organization_id,
@@ -394,9 +397,13 @@ class RoomLifecycleMixin(HelpersMixin):
 
         Raises:
             ValueError: a key under ``roomkit:channel_state:``, what the room
-                keeps for a channel, which ``channel_call`` alone writes.
+                keeps for a channel, which ``channel_call`` alone writes; or a
+                key of the room's private state (``author_register``,
+                ``_speak_queue_results``), which the runtime alone writes
+                (RFC §14.1). Nothing is written.
         """
         refuse_room_state(metadata)
+        refuse_private_state(metadata)
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
             room = room.model_copy(

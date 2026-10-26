@@ -321,11 +321,11 @@ kit = RoomKit(
 
 | Method | Description |
 |--------|-------------|
-| `create_room(room_id?, metadata?, orchestration?)` | Create a room |
+| `create_room(room_id?, metadata?, orchestration?)` | Create a room; *metadata* takes neither a `roomkit:channel_state:` key nor a key of the room's private state (`author_register`, `_speak_queue_results`), `ValueError` |
 | `get_room(room_id)` | Get room by ID |
 | `close_room(room_id)` | Close a room; a CLOSED room is returned as stored, an ARCHIVED one raises `TransitionRefusedError` |
 | `archive_room(room_id)` | Archive a room, the terminal status; an ARCHIVED room is returned as stored |
-| `update_room_metadata(room_id, metadata)` | Update room metadata; a `roomkit:channel_state:` key raises `ValueError` (written by `channel_call` alone), and a turn's `TurnHost.update_room_metadata` refuses every `roomkit:` key |
+| `update_room_metadata(room_id, metadata)` | Update room metadata; a `roomkit:channel_state:` key raises `ValueError` (written by `channel_call` alone), and so does a key of the room's private state (`author_register`, `_speak_queue_results`), written by the runtime alone; a turn's `TurnHost.update_room_metadata` refuses those and every `roomkit:` key |
 | `check_room_timers(room_id)` | Apply one room's due timer transitions, each at the instant it fell due (RFC §5.1) |
 | `check_all_timers()` | Check every ACTIVE and PAUSED room; returns those that transitioned |
 

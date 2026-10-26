@@ -49,6 +49,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store less of it than was published, the text its executor read ahead of
   the reader.
 
+- **BREAKING — a room's private-state keys are the runtime's alone in its
+  metadata** (RFC §14.1, §10.1 step 12, RMK-978). A register of authors the
+  room's metadata held under `author_register` was merged into the store's at
+  the room's next named turn, whoever wrote it: an integrator's caller who
+  could write the metadata planted a register giving its own source rank 1
+  under another sender's name, so its messages read `Alice` and the real
+  Alice read `Alice (2)`. `create_room(metadata=...)` and
+  `update_room_metadata()`, from a hook's body too, now raise `ValueError` on
+  a key of the room's private state (`author_register`,
+  `_speak_queue_results`), nothing written, as they raise on a
+  `roomkit:channel_state:` key; a turn's `TurnHost.update_room_metadata`
+  refuses them with the `roomkit:` keys. The merge stays, for a room stored
+  before and a process of an earlier release, which only the runtime can
+  still write. Migration: an application that kept its own value under one of
+  these keys renames it.
+
 ## [0.109.0] — 2026-10-25
 
 ### Added

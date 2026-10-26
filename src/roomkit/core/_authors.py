@@ -28,6 +28,7 @@ from typing import Any
 
 from roomkit._lookalike import skeletons
 from roomkit._text import person_name
+from roomkit.core._private_state import AUTHOR_REGISTER
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, EventStatus
 from roomkit.models.event import RoomEvent
@@ -38,11 +39,6 @@ from roomkit.store.base import ConversationStore
 AUTHOR = "author"
 """The event metadata key holding the record of its author, fixed when the
 event is committed: ``{"name": "Alice", "rank": 2, "source": "<digest>"}``."""
-
-AUTHOR_REGISTER = "author_register"
-"""The key of the room's private state holding its register of authors
-(RFC §10.1 step 12); the room metadata key it was kept under before, which a
-store without private state of its own keeps it under still."""
 
 _VERSION = 3
 _PAGE = 500

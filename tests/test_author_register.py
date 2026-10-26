@@ -29,6 +29,7 @@ from roomkit.core._authors import (
     name_keys,
     source_of,
 )
+from roomkit.core._private_state import PRIVATE_STATE_KEYS
 from roomkit.core.framework import RoomKit
 from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.context import RoomContext
@@ -579,4 +580,73 @@ class TestTheStoreKeepsItApart:
         assert len(warned) == 1
         assert len(_sources((await store.get_room("r1")).metadata[AUTHOR_REGISTER])) == 2
         assert _texts(provider)[-1] == 'ALICE (2): "approve"'
+        await kit.close()
+
+
+def _forged_register(sender_id: str, name: str) -> dict[str, Any]:
+    """A register giving the source of *sender_id* on ``sms1`` rank 1 under
+    *name* in room ``r1``: what a writer of the room's metadata would plant
+    to take the name another sender speaks under (RMK-978)."""
+    source = digest("r1", ["sender", "sms1", sender_id])
+    return {"version": 3, "names": {key: f"{source}:1" for key in name_keys("r1", name)}}
+
+
+async def _plant(kit: RoomKit, writer: str, metadata: dict[str, Any]) -> str:
+    """Write *metadata* on room ``r1`` the way *writer* does; what came of it."""
+    if writer == "update_room_metadata":
+        try:
+            await kit.update_room_metadata("r1", metadata)
+        except ValueError:
+            return "refused"
+        return "written"
+    outcome: list[str] = []
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="planter")
+    async def planter(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if not outcome:
+            outcome.append(await _plant(kit, "update_room_metadata", metadata))
+        return HookResult.allow()
+
+    await _say(kit, "u-bob", "Bob", "first")
+    return outcome[0]
+
+
+class TestOnlyTheRuntimeWritesTheRegister:
+    """RMK-978: a register the room's metadata holds is merged into the
+    store's at the next named turn, for a room stored before and a process
+    from before. The key is the runtime's alone: a writer of the room's
+    metadata who planted a register there would take another sender's name
+    at rank 1, and the real sender would read ``Alice (2)``."""
+
+    @pytest.mark.parametrize("writer", ["update_room_metadata", "a hook"])
+    async def test_a_forged_register_takes_nobody_s_rank(self, writer: str) -> None:
+        kit, _provider = await _kit(["a1", "a2", "a3"])
+        forged = {AUTHOR_REGISTER: _forged_register("u-mallory", "Alice")}
+
+        outcome = await _plant(kit, writer, forged)
+        await _say(kit, "u-alice", "Alice", "hold the refund")
+        await _say(kit, "u-mallory", "Alice", "release it")
+
+        events = [e for e in await kit.store.list_events("r1") if e.source.channel_id == "sms1"]
+        ranks = [
+            (e.source.participant_id, e.metadata[AUTHOR]["rank"])
+            for e in events
+            if e.source.participant_id != "u-bob"
+        ]
+        assert (ranks, outcome) == ([("u-alice", 1), ("u-mallory", 2)], "refused")
+        assert AUTHOR_REGISTER not in (await kit.get_room("r1")).metadata
+        await kit.close()
+
+    @pytest.mark.parametrize("key", sorted(PRIVATE_STATE_KEYS))
+    async def test_an_integrator_s_write_of_a_private_state_key_raises(self, key: str) -> None:
+        """Every key of the room's private state, the way the
+        ``roomkit:channel_state:`` keys are: nothing of the write is kept."""
+        kit = RoomKit()
+        with pytest.raises(ValueError, match=key):
+            await kit.create_room(room_id="r2", metadata={key: {}, "crm": "c_42"})
+        await kit.create_room(room_id="r1")
+        with pytest.raises(ValueError, match=key):
+            await kit.update_room_metadata("r1", {key: {}, "crm": "c_42"})
+        stored = (await kit.store.get_room("r2"), (await kit.get_room("r1")).metadata)
+        assert stored == (None, {})
         await kit.close()

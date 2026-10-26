@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from roomkit.core._private_state import private_state_keys_in
 from roomkit.models._time import UtcDatetime
 from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
@@ -108,7 +109,7 @@ writes none of them."""
 
 class UpdateRoomMetadata(_Verb):
     """``update_room_metadata``: keys merged into a room's metadata, none of
-    the framework's own."""
+    the framework's own nor a key of the room's private state."""
 
     room_id: str
     metadata: dict[str, Any]
@@ -118,6 +119,7 @@ class UpdateRoomMetadata(_Verb):
     @classmethod
     def _not_the_framework_s(cls, metadata: dict[str, Any]) -> dict[str, Any]:
         reserved = sorted(key for key in metadata if key.startswith(FRAMEWORK_KEYS))
+        reserved += private_state_keys_in(metadata)
         if reserved:
             raise ValueError(f"A turn cannot write the framework's room metadata {reserved}")
         return metadata

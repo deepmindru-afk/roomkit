@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from roomkit.core._private_state import SPEAK_QUEUE_RESULTS
 from roomkit.core.exceptions import ChannelNotFoundError
 from roomkit.core.task_utils import hold_task
 from roomkit.models.enums import ChannelType, EventStatus, EventType
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.orchestration.discussion")
 
-RESULTS_KEY = "_speak_queue_results"
+RESULTS_KEY = SPEAK_QUEUE_RESULTS
 """The key a room's listed results are kept under, in its private state."""
 
 _FLOOR_POLL = 0.05

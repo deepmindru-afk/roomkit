@@ -186,7 +186,9 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   room's deletion takes its private state. The keys are the
   implementation's, and each reserves the same key in the room's metadata:
   the base class keeps the value there, and `set` removes the copy there, so
-  an application must not write its own metadata under one. A register the
+  only the runtime writes one there: the kit's `create_room()` and
+  `update_room_metadata()` raise `ValueError` on `author_register` or
+  `_speak_queue_results`, as on a `roomkit:channel_state:` key. A register the
   metadata holds (a room stored before, or a process from an older RoomKit
   writing there) is merged into the store's at the room's next turn that
   names its sender (a BLOCKED turn does not): a register only adds, so the

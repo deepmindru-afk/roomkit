@@ -317,6 +317,7 @@ async def test_the_write_verbs_between_turns_keep_their_refusals() -> None:
         refusals = []
         for attempt in (
             turn_host.update_room_metadata("r", {"roomkit:channel_state:ana": {}}),
+            turn_host.update_room_metadata("r", {"author_register": {}}),
             turn_host.post_status("ana", TASK_ACTION, "pending"),
             turn_host.post_status("ana", "x", "info", metadata={"room_id": "other"}),
             turn_host.send_event(room_id="other", channel_id="ana", content=TextContent(body="x")),
@@ -337,7 +338,7 @@ async def test_the_write_verbs_between_turns_keep_their_refusals() -> None:
 
     assert room.metadata["thought"] == "kept"
     assert [o.id for o in observations] == ["o1"]
-    assert refusals == [True] * 4
+    assert refusals == [True] * 5
     # Work a turn began starts fresh once the turn is over (RFC §8.3).
     assert sent.chain_depth == 0
 
