@@ -132,7 +132,17 @@ as the cascade's work (RMK-978). They run as any task started from the
 turn's work does: a post they make while the turn's delivery runs draws one
 of that cascade's passes, a direct change (``update_event``) draws nothing.
 What they send is at least as deep as the turn was when the trigger fired,
-once the turn is over too."""
+once the turn is over too (:data:`FLOOR_KEEPING_TRIGGERS`)."""
+
+FLOOR_KEEPING_TRIGGERS: frozenset[HookTrigger] = PER_TOOL_CALL_TRIGGERS | frozenset(
+    {HookTrigger.ON_TRANSCRIPTION, HookTrigger.ON_PARTIAL_TRANSCRIPTION}
+)
+"""The triggers whose observers keep the depth floor the trigger fired under
+once the work that gave it is over: those of a tool call, and those of a
+speech-to-speech model's words, which run at the depth of its answer (RFC
+§8.3, RMK-983). A hook on either that tells the model something each time
+then ends at the limit. Another trigger's observer that calls once its work
+is over is work of its own (RMK-930)."""
 
 TYPED_TURN_TRIGGERS: frozenset[HookTrigger] = frozenset(
     {HookTrigger.BEFORE_TOOL_USE, HookTrigger.ON_TOOL_CALL, HookTrigger.ON_USER_INPUT_REQUIRED}
@@ -461,8 +471,10 @@ async def _run_body(
 
 async def _at_least(floor: int, work: Coroutine[Any, Any, None]) -> None:
     """*work*, every call it makes into a room at least *floor* deep, while
-    it runs (RFC §8.3): the depth a tool call's observers read as the
-    trigger fires, which the call's turn no longer gives once it is over."""
+    it runs (RFC §8.3, §9.5.1): the depth the observers of a
+    :data:`FLOOR_KEEPING_TRIGGERS` trigger read as it fires, which the work
+    that fired it (a turn, a tool call, a model's answer) no longer gives
+    once it is over."""
     with within_turn(floor):
         await work
 
@@ -1475,16 +1487,17 @@ class HookEngine:
         fires per tool call (:data:`PER_TOOL_CALL_TRIGGERS`) are not the
         cascade's work: they run as any task the turn's work starts does,
         but what they send is at least as deep as the turn was when the
-        trigger fired, even once it is over (:func:`_at_least`). Named in
-        :func:`held_runs`, so a ``close()`` it runs spares it rather than
-        wait for itself.
+        trigger fired, even once it is over (:func:`_at_least`), and so do
+        the observers of a speech-to-speech model's words, at its answer's
+        depth (:data:`FLOOR_KEEPING_TRIGGERS`). Named in :func:`held_runs`,
+        so a ``close()`` it runs spares it rather than wait for itself.
         """
         if not hooks:
             return
         per_tool_call = trigger in PER_TOOL_CALL_TRIGGERS
         budget = None if per_tool_call else work_budget(room_id)
         work = self._run_async_hooks_list(hooks, room_id, trigger, event, context, budget=budget)
-        if per_tool_call:
+        if trigger in FLOOR_KEEPING_TRIGGERS:
             work = _at_least(chain_floor(), work)
         task = start_named(
             work,

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._realtime_tool_calls import transcript_starts_answer
 from roomkit.channels._room_hooks import RoomHooks
+from roomkit.core._reentrance import within_turn
 from roomkit.core.exceptions import ChannelNotFoundError
 from roomkit.models.enums import HookTrigger
 from roomkit.models.event import TextContent
@@ -154,8 +155,15 @@ class RealtimeTranscriptionMixin:
 
         with self._state_lock:
             lock = self._transcription_order_locks.setdefault(session.id, asyncio.Lock())
+        # What the model says is its answer: the hooks it fires call into a
+        # room at least that deep, as a turn's (RFC §8.3, RMK-983), so a
+        # hook that tells the model something at each answer ends at the
+        # limit. The user's words open a chain: 0.
         async with lock:
-            await self._process_transcription_locked(session, text, role, is_final, chain_depth)
+            with within_turn(chain_depth):
+                await self._process_transcription_locked(
+                    session, text, role, is_final, chain_depth
+                )
 
     async def _process_transcription_locked(
         self, session: VoiceSession, text: str, role: str, is_final: bool, chain_depth: int

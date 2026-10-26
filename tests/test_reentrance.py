@@ -903,6 +903,37 @@ class _AnsweringModel(MockRealtimeProvider):
         return result
 
 
+class _TalkingModel(MockRealtimeProvider):
+    """A speech-to-speech model that answers each text asked of it by saying
+    something (its transcription, a partial first when *partials*), from its
+    own receive loop; it stops on its own after *rounds* answers."""
+
+    def __init__(self, rounds: int, *, partials: bool) -> None:
+        super().__init__()
+        self._rounds = rounds
+        self._partials = partials
+        self.answers: list[asyncio.Task[None]] = []
+        self.silences: list[bool] = []
+
+    def answer(self, session: Any) -> None:
+        if len(self.answers) < self._rounds:
+            loop = asyncio.get_running_loop()
+            say = self._say(session, len(self.answers) + 1)
+            self.answers.append(loop.create_task(say, context=contextvars.Context()))
+
+    async def _say(self, session: Any, n: int) -> None:
+        if self._partials:
+            await self.simulate_transcription(session, "well", "assistant", False)
+        await self.simulate_transcription(session, f"answer {n}", "assistant", True)
+
+    async def inject_text(self, session: Any, text: str, **kwargs: Any) -> Any:
+        result = await super().inject_text(session, text, **kwargs)
+        self.silences.append(bool(kwargs.get("silent")))
+        if not kwargs.get("silent"):
+            self.answer(session)
+        return result
+
+
 async def _until_the_model_rests(kit: RoomKit, model: _AnsweringModel, room_id: str) -> None:
     """Wait until every call the model made is answered, its observers have
     run and its room's lane is drained, and it made no call since."""
@@ -1192,6 +1223,54 @@ class TestACallFromAnAsyncHook:
             assert (len(model.answers), model.silences) == (3, [False, False, True])
             depths = [e.chain_depth for e in sorted(posted, key=lambda e: e.index)]
             assert depths == ([1, 2, 3] if tells == "a post" else [])
+        finally:
+            await kit.close()
+
+    @pytest.mark.parametrize("tells", ["a post", "an injection"])
+    @pytest.mark.parametrize(
+        ("trigger", "execution"),
+        [
+            (HookTrigger.ON_TRANSCRIPTION, HookExecution.SYNC),
+            (HookTrigger.ON_TRANSCRIPTION, HookExecution.ASYNC),
+            (HookTrigger.ON_PARTIAL_TRANSCRIPTION, HookExecution.ASYNC),
+        ],
+    )
+    async def test_a_hook_on_the_model_s_words_that_tells_it_again_ends_at_the_depth_limit(
+        self, trigger: HookTrigger, execution: HookExecution, tells: str
+    ) -> None:
+        """RMK-983: a hook on what the speech-to-speech model says (its
+        transcription, final or partial) tells it something each time, and
+        the model answers that. The hook runs at the depth of the answer it
+        hears and sends at least that deep, an ASYNC one once the words'
+        processing is over too, so the third text is past the limit and asks
+        the model nothing."""
+        model = _TalkingModel(rounds=12, partials=trigger is not HookTrigger.ON_TRANSCRIPTION)
+        kit = await _room(RoomKit(max_chain_depth=4))
+        channel = RealtimeVoiceChannel("rt", provider=model, transport=MockRealtimeTransport())
+        kit.register_channel(channel)
+        await kit.attach_channel("r1", "rt")
+        session = await channel.start_session("r1", "u", object())
+
+        @kit.hook(trigger, execution=execution, name="echo")
+        async def echo(event: Any, ctx: Any) -> HookResult | None:
+            if event.role == "assistant":
+                if trigger is HookTrigger.ON_TRANSCRIPTION and execution is HookExecution.ASYNC:
+                    # An observer, not awaited: a slow one acts once the
+                    # words were processed (a partial's hooks are awaited).
+                    async with channel._transcription_order_locks[session.id]:  # noqa: SLF001
+                        pass
+                if tells == "a post":
+                    await kit.send_event("r1", "sms", TextContent(body="heard you"))
+                else:
+                    await channel.inject_text(session, "heard you")
+            return HookResult.allow() if execution is HookExecution.SYNC else None
+
+        try:
+            model.answer(session)
+            await until(lambda: (model.silences or [False])[-1] or len(model.answers) >= 12)
+            await asyncio.gather(*model.answers)
+            await _observed(kit)
+            assert (len(model.answers), model.silences) == (3, [False, False, True])
         finally:
             await kit.close()
 
