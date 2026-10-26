@@ -56,7 +56,11 @@ def _cases() -> list[Any]:
         scenario_id = path.relative_to(SCENARIOS).with_suffix("").as_posix()
         marks = []
         if scenario_id in KNOWN_FAILURES:
-            marks.append(pytest.mark.xfail(reason=KNOWN_FAILURES[scenario_id], strict=True))
+            marks.append(
+                pytest.mark.xfail(
+                    reason=KNOWN_FAILURES[scenario_id], strict=True, raises=AssertionError
+                )
+            )
         cases.append(pytest.param(path, id=scenario_id, marks=marks))
     return cases
 
@@ -80,23 +84,13 @@ def test_the_copy_is_the_one_synced_from_its_specs_commit() -> None:
     )
 
 
-def test_every_scenario_holds_only_members_the_runner_reads() -> None:
-    unknown = [
-        f"{path.name}: {member}"
-        for path in _scenarios()
-        for member in unknown_members(_load(path))
-    ]
-    assert not unknown, "\n".join(unknown)
-
-
-def test_every_known_failure_names_a_scenario() -> None:
-    ids = {path.relative_to(SCENARIOS).with_suffix("").as_posix() for path in _scenarios()}
-    assert set(KNOWN_FAILURES) <= ids
-
-
 @pytest.mark.parametrize("path", _cases())
 async def test_scenario(path: Path) -> None:
     scenario = _load(path)
     assert scenario["id"] == path.relative_to(SCENARIOS).with_suffix("").as_posix()
+    # A member the runner does not know fails the scenario, a known failure's
+    # too: pytest.fail is not the AssertionError its xfail expects.
+    if unknown := unknown_members(scenario):
+        pytest.fail("members the runner does not know:\n" + "\n".join(unknown))
     problems = await Harness(scenario).run()
     assert not problems, "\n".join(problems)
