@@ -8,9 +8,11 @@ from unittest.mock import patch
 import pytest
 
 from roomkit import HookExecution, HookResult, HookTrigger, Queued, RoomKit
+from roomkit.core._reentrance import within_turn
 from roomkit.delivery.base import DeliveryItem, DeliveryItemStatus
 from roomkit.delivery.memory import InMemoryDeliveryBackend
 from roomkit.delivery.worker import execute_delivery
+from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import TextContent
 from tests.test_addressing import _room
@@ -187,6 +189,138 @@ async def test_queued_keeps_incompatible_targets_and_keyed_publications_separate
             assert agents["a"].solicited == ["first\n\nfirst"]
         assert results[0].event_id == results[1].event_id
         assert results[2].event_id != results[0].event_id
+
+
+async def test_a_queued_follower_is_delivered_at_its_own_depth() -> None:
+    """RMK-983: one caller drains a shared Queued strategy for all; a
+    follower's delivery runs as the follower made it, never inside the
+    leader's work. An application's message at depth 0 is stored at 0,
+    though the leader delivers from work 3 deep."""
+    kit, _, _ = await _room("a")
+    strategy = Queued(buffer=0)
+    entered, release = asyncio.Event(), asyncio.Event()
+    wait = _first_wait_held(entered, release)
+
+    async def lead():
+        with within_turn(3):
+            return await kit.deliver("room-1", "leader", addressed_to=[], strategy=strategy)
+
+    async with kit:
+        with patch("roomkit.core.delivery._wait_for_voice_idle", side_effect=wait):
+            leader = asyncio.create_task(lead())
+            await entered.wait()
+            follower = asyncio.create_task(
+                kit.deliver("room-1", "app", addressed_to=[], strategy=strategy)
+            )
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.wait_for(asyncio.gather(leader, follower), 2)
+        depths = {
+            e.content.body: e.chain_depth
+            for e in await kit.get_timeline("room-1")
+            if isinstance(e.content, TextContent)
+        }
+    assert depths == {"leader": 3, "app": 0}
+
+
+async def test_a_queue_drained_under_the_room_lock_lets_its_followers_deliver() -> None:
+    """RMK-983: a locked BEFORE_BROADCAST hook delivers through a shared
+    Queued strategy, and an application's request for the room, which its
+    batch cannot take (another metadata), waits behind it. The hook delivers
+    its own batch and hands the drain on: the application delivers once the
+    hook's section is over, never waiting on a lock the hook holds."""
+    kit, _, _ = await _room("a")
+    strategy = Queued(buffer=0)
+    entered, release = asyncio.Event(), asyncio.Event()
+    wait = _first_wait_held(entered, release)
+    got: dict[str, object] = {}
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="lead")
+    async def lead(event, ctx):
+        if isinstance(event.content, TextContent) and event.content.body == "go":
+            got["hook"] = await kit.deliver("room-1", "hook", addressed_to=[], strategy=strategy)
+        return HookResult.allow()
+
+    async with kit:
+        with patch("roomkit.core.delivery._wait_for_voice_idle", side_effect=wait):
+            go = asyncio.create_task(kit.process_inbound(_said("go")))
+            await entered.wait()
+            app = asyncio.create_task(
+                kit.deliver(
+                    "room-1", "app", addressed_to=[], strategy=strategy, metadata={"from": "app"}
+                )
+            )
+            await asyncio.sleep(0)
+            release.set()
+            inbound, delivered = await asyncio.wait_for(asyncio.gather(go, app), 2)
+    assert (inbound.blocked, got["hook"].status, delivered.status) == (False, "sent", "sent")
+
+
+async def test_a_queued_batch_is_delivered_once_its_idle_wait_times_out() -> None:
+    """RFC §22.2: a wait for idle longer than ``playback_timeout`` delivers
+    the batch anyway, as WaitForIdle's does (RMK-983)."""
+    kit, _, _ = await _room("a")
+    async with kit:
+        with patch("roomkit.core.delivery._wait_for_voice_idle", side_effect=TimeoutError):
+            outcome = await kit.deliver(
+                "room-1", "late", addressed_to=[], strategy=Queued(buffer=0)
+            )
+        bodies = [
+            e.content.body
+            for e in await kit.get_timeline("room-1")
+            if isinstance(e.content, TextContent)
+        ]
+    assert (outcome.status, bodies) == ("sent", ["late"])
+
+
+async def test_a_drain_cut_short_hands_the_queue_on() -> None:
+    """RFC §22.2: every waiting caller receives its own outcome. The caller
+    draining a shared Queued strategy is cancelled while it waits for idle;
+    the caller behind it, which nothing cancelled, gets the drain and its
+    message is delivered (RMK-983)."""
+    kit, _, _ = await _room("a")
+    strategy = Queued(buffer=0)
+    entered, release = asyncio.Event(), asyncio.Event()
+    wait = _first_wait_held(entered, release)
+    async with kit:
+        with patch("roomkit.core.delivery._wait_for_voice_idle", side_effect=wait):
+            first = asyncio.create_task(
+                kit.deliver("room-1", "first", addressed_to=[], strategy=strategy)
+            )
+            await entered.wait()
+            second = asyncio.create_task(
+                kit.deliver(
+                    "room-1", "second", addressed_to=[], strategy=strategy, metadata={"k": 1}
+                )
+            )
+            await asyncio.sleep(0)
+            first.cancel()
+            outcome = await asyncio.wait_for(second, 2)
+        bodies = [
+            e.content.body
+            for e in await kit.get_timeline("room-1")
+            if isinstance(e.content, TextContent)
+        ]
+    assert (first.cancelled(), outcome.status, bodies) == (True, "sent", ["second"])
+
+
+def _first_wait_held(entered: asyncio.Event, release: asyncio.Event):
+    """A voice-idle wait whose first call holds until *release*, *entered*
+    set as it starts: a drain that waits, others queued behind it."""
+    waits = 0
+
+    async def wait(*args):
+        nonlocal waits
+        waits += 1
+        if waits == 1:
+            entered.set()
+            await release.wait()
+
+    return wait
+
+
+def _said(body: str):
+    return InboundMessage(channel_id="human", sender_id="u", content=TextContent(body=body))
 
 
 async def test_queued_accepts_reentrant_delivery_from_agent_without_deadlocking() -> None:

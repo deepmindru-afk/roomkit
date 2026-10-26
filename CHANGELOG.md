@@ -229,6 +229,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A queued delivery is made by the caller that queued it** (RFC §8.3, §22.2,
+  RMK-983). A `Queued` strategy shared by several callers (the kit's
+  `delivery_strategy="queued"`) delivered every caller's request from the
+  first caller's drain, inside that caller's work: an application's message at
+  depth 0, queued while a hook delivered from work 3 deep, was stored 3 deep,
+  and at the limit no agent was asked; a voice text queued behind a
+  hook-injected one entered silently. The caller that drains now delivers the
+  batch its own request heads, then hands the drain to the caller whose
+  request heads the queue, which delivers that batch in its own task, with its
+  own depth, frames and room lock: a locked hook that drains no longer leaves
+  the callers behind it waiting on the lock it holds. A caller cancelled while
+  it waits withdraws its request, and hands on a drain it was handed; a caller
+  cancelled while it drains hands the drain on too, where every caller behind
+  it was cancelled: each receives its own outcome. A wait for idle longer than
+  `playback_timeout` delivers the batch anyway, as `WaitForIdle`'s does, where
+  it failed `strategy_failed`.
+
 - **A realtime session that ended keeps no transcription state** (RMK-983).
   A transcription the provider handed on once the channel ended its session,
   or while a start that then failed was running, left the session's answer

@@ -130,6 +130,10 @@ class _QueuedRequest:
     context: DeliveryContext
     channel_id: str
     result: asyncio.Future[DeliveryOutcome]
+    turn: asyncio.Future[None] = field(default_factory=lambda: _loop_future())
+    """Set when the drain passes to this request's caller, its request at the
+    head of the queue: it delivers the batch it heads in its own task, as it
+    made the request (RFC §8.3, §22.2)."""
 
     def compatible(self, other: _QueuedRequest) -> bool:
         """Keyed publications retain individual events and outcomes."""
@@ -154,7 +158,16 @@ class Queued(DeliveryStrategy):
     """Batch compatible unkeyed requests at idle; preserve each caller's outcome.
 
     Keyed requests publish individually, including duplicate keys. One caller
-    owns the drain; followers wait for their own request to be processed.
+    drains the queue at a time: it delivers the batch its request heads, then
+    passes the drain to the caller whose request heads the queue next, which
+    delivers that batch in its own task, with its own depth, frames and room
+    lock: a request that heads a batch is delivered as its caller made it,
+    and a draining caller that holds the room's lock leaves the callers
+    behind it free to deliver once it returns. A compatible request batched
+    behind another is delivered with it, by that request's caller. A caller
+    holding the room's lock that waits behind another caller's batch for
+    that room still waits on itself. Followers wait for their own request's
+    outcome or for their turn.
     """
 
     def __init__(
@@ -171,66 +184,102 @@ class Queued(DeliveryStrategy):
         if refusal is not None:
             return refusal
         assert channel_id is not None
-        request = _QueuedRequest(ctx, channel_id, asyncio.get_running_loop().create_future())
+        request = _QueuedRequest(ctx, channel_id, _loop_future())
         self._queue.append(request)
-        if self._delivering:
-            return await request.result
+        if self._delivering and not await self._wait_for_turn(request):
+            return request.result.result()
         self._delivering = True
         try:
-            await self._drain()
-        finally:
-            self._delivering = False
-            # Cancellation of the drain must wake every waiting caller.
-            for pending in self._queue:
-                pending.result.cancel()
-            self._queue.clear()
+            await self._drain(request)
+        except BaseException:
+            # A drain cut short (its caller cancelled) withdraws its own
+            # request, and the callers behind it get the drain: each still
+            # receives its own outcome (RFC §22.2).
+            request.result.cancel()
+            self._pass_on()
+            raise
         return request.result.result()
 
-    async def _drain(self) -> None:
-        while self._queue:
-            first = self._queue[0]
-            if first.result.cancelled():
-                self._queue.pop(0)
-                continue
-            channel = first.context.kit.get_channel(first.channel_id)
-            try:
-                if channel is not None:
-                    await _wait_for_voice_idle(
-                        channel,
-                        first.context.room_id,
-                        self.playback_timeout,
-                        self.buffer,
-                        first.context._voice_sessions,
-                    )
-            except Exception as exc:
-                first.result.set_result(_strategy_failure(exc))
-                self._queue.pop(0)
-                continue
+    async def _wait_for_turn(self, request: _QueuedRequest) -> bool:
+        """Wait for *request*'s outcome or for the drain to pass to its
+        caller; whether it passed. A caller cancelled meanwhile withdraws its
+        request, and hands on a drain it was handed."""
+        try:
+            await asyncio.wait({request.result, request.turn}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            request.result.cancel()
+            if request.turn.done():
+                self._pass_on()
+            raise
+        return not request.result.done()
 
-            batch = [first]
-            remainder = []
-            for pending in self._queue[1:]:
-                if not pending.result.cancelled() and first.compatible(pending):
-                    batch.append(pending)
-                else:
-                    remainder.append(pending)
-            self._queue = remainder
-            ctx = replace(
-                first.context,
-                content=self.separator.join(item.context.content for item in batch),
-                _wait_for_turn=False,
-            )
-            try:
-                outcome = await _deliver_to_channel(ctx, first.channel_id)
-            except asyncio.CancelledError:
-                for pending in batch:
-                    pending.result.cancel()
-                raise
-            except Exception as exc:
-                outcome = _strategy_failure(exc)
+    async def _drain(self, mine: _QueuedRequest) -> None:
+        """Deliver the batch *mine* heads, then hand the drain on."""
+        while self._queue and self._queue[0].result.cancelled():
+            self._queue.pop(0)
+        if self._queue and self._queue[0] is mine:
+            await self._deliver_batch(mine)
+        self._pass_on()
+
+    def _pass_on(self) -> None:
+        """Hand the drain to the caller whose request heads the queue, or let
+        it go when none waits."""
+        while self._queue and self._queue[0].result.cancelled():
+            self._queue.pop(0)
+        if self._queue:
+            self._queue[0].turn.set_result(None)
+        else:
+            self._delivering = False
+
+    async def _deliver_batch(self, first: _QueuedRequest) -> None:
+        """Deliver *first* at idle, with the compatible requests behind it,
+        and give each its outcome."""
+        channel = first.context.kit.get_channel(first.channel_id)
+        try:
+            if channel is not None:
+                await _wait_for_voice_idle(
+                    channel,
+                    first.context.room_id,
+                    self.playback_timeout,
+                    self.buffer,
+                    first.context._voice_sessions,
+                )
+        except TimeoutError:
+            # A wait longer than playback_timeout delivers the batch anyway,
+            # as WaitForIdle's does (RFC §22.2).
+            logger.warning("Voice idle timeout in room %s; delivering", first.context.room_id)
+        except Exception as exc:
+            first.result.set_result(_strategy_failure(exc))
+            self._queue.pop(0)
+            return
+        batch = [first]
+        remainder = []
+        for pending in self._queue[1:]:
+            if not pending.result.cancelled() and first.compatible(pending):
+                batch.append(pending)
+            else:
+                remainder.append(pending)
+        self._queue = remainder
+        ctx = replace(
+            first.context,
+            content=self.separator.join(item.context.content for item in batch),
+            _wait_for_turn=False,
+        )
+        try:
+            outcome = await _deliver_to_channel(ctx, first.channel_id)
+        except asyncio.CancelledError:
             for pending in batch:
-                if not pending.result.done():
-                    pending.result.set_result(outcome.model_copy())
+                pending.result.cancel()
+            raise
+        except Exception as exc:
+            outcome = _strategy_failure(exc)
+        for pending in batch:
+            if not pending.result.done():
+                pending.result.set_result(outcome.model_copy())
+
+
+def _loop_future() -> asyncio.Future[Any]:
+    return asyncio.get_running_loop().create_future()
 
 
 def _strategy_failure(exc: Exception) -> DeliveryOutcome:
