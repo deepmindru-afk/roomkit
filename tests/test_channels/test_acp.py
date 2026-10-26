@@ -74,7 +74,11 @@ from roomkit.models.streaming import (
 from roomkit.providers.ai.base import ProviderError
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
 from roomkit.realtime.memory import InMemoryRealtime
-from roomkit.tools.external import ExternalToolHandler, ToolDecision
+from roomkit.tools.external import (
+    ExternalToolHandler,
+    PolicyExternalToolHandler,
+    ToolDecision,
+)
 from tests.conftest import make_event
 from tests.test_framework import SimpleChannel
 
@@ -1431,6 +1435,67 @@ class TestACPChannel:
         assert handler._before_tool_hook is not None
         assert handler._on_tool_hook is not None
         await kit.close()
+
+    @pytest.mark.in_process(
+        "the observer runs on the turn's executor and calls the owner's kit it holds, "
+        "whose context an in-memory turn shares; across Redis it holds no frame of the "
+        "room's work, and the loop is unbounded there, as on 2d6e6267"
+    )
+    @pytest.mark.parametrize("trigger", [HookTrigger.ON_TOOL_CALL, HookTrigger.BEFORE_TOOL_USE])
+    async def test_an_observer_posting_per_tool_call_the_agent_answers_stops(
+        self, tmp_path: Any, trigger: HookTrigger
+    ) -> None:
+        """RMK-978: an ACP turn carries no depth, and an observer of a
+        trigger that fires per tool call runs as any task the turn starts:
+        its post draws one of the cascade's passes through the turn's work.
+        A loop of observer post, the agent's answer, its tool call, the
+        next post, stops at the cap (``10 × max_chain_depth``)."""
+        options = [
+            PermissionOption(option_id="a", name="Allow", kind="allow_once"),
+            PermissionOption(option_id="r", name="Reject", kind="reject_once"),
+        ]
+        handler = PolicyExternalToolHandler()
+        channel, connection, _ = _channel(tmp_path, handler=handler, emit_updates=False)
+        prompts: list[str] = []
+
+        async def prompt(session_id: str, *args: Any, **kwargs: Any) -> PromptResponse:
+            call_id = f"tool-{len(prompts)}"
+            prompts.append(call_id)
+            update = acp.start_tool_call(call_id, "Write", kind="edit", status="in_progress")
+            await connection.client.session_update(session_id, update)
+            request = acp.update_tool_call(call_id, title="Write", raw_input={"path": "x"})
+            await connection.client.request_permission(session_id, request, options)
+            done = acp.update_tool_call(call_id, status="completed", raw_output={"ok": True})
+            await connection.client.session_update(session_id, done)
+            return PromptResponse(stop_reason="end_turn")
+
+        connection.prompt = prompt  # type: ignore[method-assign]
+        kit = RoomKit(max_chain_depth=2)  # the agent answers at depth 1: 20 passes
+        for transport in ("sms", "bot"):
+            kit.register_channel(SimpleChannel(transport))
+        kit.register_channel(channel)
+        await kit.create_room(room_id="room-1")
+        await kit.attach_channel("room-1", "sms")
+        await kit.attach_channel("room-1", "bot")
+        await kit.attach_channel("room-1", "acp-agent", category=ChannelCategory.INTELLIGENCE)
+        posted: list[RoomEvent] = []
+
+        @kit.hook(trigger, execution=HookExecution.ASYNC, name="echo")
+        async def echo(event: Any, ctx: RoomContext) -> None:
+            if len(posted) <= 40:  # well past the cap: a loop it misses fails
+                posted.append(await kit.send_event("room-1", "bot", TextContent(body="next")))
+
+        try:
+            message = InboundMessage(
+                channel_id="sms", sender_id="u", content=TextContent(body="go")
+            )
+            await asyncio.wait_for(kit.process_inbound(message), 5)
+            while kit.hook_engine.running_observers():
+                await asyncio.wait_for(kit.hook_engine.drain_observers(), 5)
+            ordered = sorted(posted, key=lambda event: event.index)
+            assert [e.blocked_by for e in ordered] == [None] * 20 + ["reentry_loop_cap"]
+        finally:
+            await kit.close()
 
 
 class TestEndOfTurnReport:

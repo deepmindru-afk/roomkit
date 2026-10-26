@@ -124,21 +124,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `reentry_loop_cap`). So do the observers of `BEFORE_BROADCAST`,
   `BEFORE_DELIVER`, `BEFORE_TTS`, `BEFORE_AI_CONTEXT_BUILD`,
   `BEFORE_AI_GENERATION`, `ON_SPEAK_DECISION`, `ON_VERIFICATION_REQUIRED` and
-  the other SYNC triggers, but for those that fire per tool call or per
-  round (`BEFORE_TOOL_USE`, `ON_TOOL_CALL`, `AFTER_TOOL_ROUND`, and
-  `ON_USER_INPUT_REQUIRED`, which an ACP agent fires per tool it asks to
-  run): a turn may make hundreds of tool calls, so their observers run on a
-  budget of their own, fresh at each firing. What they send into the room is
-  still one deeper than the event the call's turn answers, read as the call
-  is made, even when they post once the turn is over, so a loop of observer
-  post, agent answer, tool call ends at `max_chain_depth`. An audit that
-  posts once per tool call, which stopped after 50 in one cascade with an
-  in-memory turn backend (each post drew one of the cascade's passes), posts
-  for every call, as it already did across a Redis turn backend. Behaviour
-  change: an observer's call is one deeper than the event it observes, where
-  it started at depth 0, so with `max_chain_depth=2` an agent no longer
-  answers the follow-up an observer posts on a person's message. Migration:
-  raise `max_chain_depth`.
+  the other SYNC triggers that fire once per event. The triggers that fire
+  per tool call, per round or per input request (`BEFORE_TOOL_USE`,
+  `ON_TOOL_CALL`, `AFTER_TOOL_ROUND`, `ON_USER_INPUT_REQUIRED`) are left as
+  they were: their observers run as any task the turn's work starts, so a
+  post they make while the turn's delivery runs draws one of the cascade's
+  passes and stops at `10 × max_chain_depth`, and a direct change
+  (`update_event()`, a progress card) draws nothing. Behaviour change: an
+  observer's call is one deeper than the event it observes, where it started
+  at depth 0, so with `max_chain_depth=2` an agent no longer answers the
+  follow-up an observer posts on a person's message. Migration: raise
+  `max_chain_depth`.
 
 ### Fixed
 

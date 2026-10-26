@@ -71,16 +71,11 @@ class ReentryBudget:
     answers block no notice. Shared by reference between the cascades that
     draw on it."""
 
-    __slots__ = ("_hook_calls", "_passes", "_size")
+    __slots__ = ("_hook_calls", "_passes")
 
     def __init__(self, passes: int) -> None:
-        self._size = passes
         self._passes = passes
         self._hook_calls = passes
-
-    def fresh(self) -> ReentryBudget:
-        """A budget of its own, of this one's size, nothing of it spent."""
-        return ReentryBudget(self._size)
 
     def take(self) -> bool:
         """Take one pass; ``False`` once the passes are spent."""

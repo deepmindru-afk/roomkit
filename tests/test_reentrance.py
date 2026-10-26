@@ -921,18 +921,24 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
+    @pytest.mark.in_process(
+        "the observer runs on the turn's executor and calls the owner's kit it holds, "
+        "whose context an in-memory turn shares; across Redis it holds no frame of the "
+        "room's work, and its posts take a budget of their own, as on 2d6e6267"
+    )
     @pytest.mark.parametrize(
         "trigger",
         [HookTrigger.ON_TOOL_CALL, HookTrigger.BEFORE_TOOL_USE, HookTrigger.AFTER_TOOL_ROUND],
     )
-    async def test_an_observer_of_a_trigger_per_tool_call_keeps_a_budget_of_its_own(
+    async def test_an_observer_of_a_trigger_per_tool_call_runs_as_the_turn_s_task(
         self, trigger: HookTrigger
     ) -> None:
-        """RMK-978: a turn may make hundreds of tool calls, so the observers
-        of the triggers that fire per tool call or per round do not draw on
-        the cascade's hook calls: an audit that posts once per tool call
-        posts for every call, past the cap."""
-        # The agent answers at depth 1: max_chain_depth=2, 20 hook calls.
+        """RMK-978, as on 2d6e6267: the observers of the triggers that fire
+        per tool call or per round are not the cascade's work, as the other
+        observers are, but run as any task the turn starts. A post they
+        make while the turn's delivery runs draws one of the cascade's
+        passes and stops at the cap; a direct change draws nothing."""
+        # The agent answers at depth 1: max_chain_depth=2, 20 passes.
         kit = await _room(RoomKit(max_chain_depth=2), SimpleChannel("log"))
         rounds = 2 * BUDGET + 5
 
@@ -953,10 +959,13 @@ class TestACallFromAnAsyncHook:
         tools = [AITool(name="lookup", description="d")]
         kit.register_channel(AIChannel("ai", provider=provider, tool_handler=lookup, tools=tools))
         await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        note = await kit.send_event("r1", "log", TextContent(body="card"), visibility="log")
         posted: list[RoomEvent] = []
+        updated: list[RoomEvent | None] = []
 
         @kit.hook(trigger, execution=HookExecution.ASYNC, name="audit")
         async def audit(event: Any, ctx: RoomContext) -> None:
+            updated.append(await kit.update_event("r1", note.id, metadata={"n": len(updated)}))
             posted.append(
                 await kit.send_event("r1", "log", TextContent(body="called"), visibility="log")
             )
@@ -964,55 +973,10 @@ class TestACallFromAnAsyncHook:
         try:
             await asyncio.wait_for(kit.process_inbound(_message()), 5)
             await asyncio.wait_for(_observed(kit), 5)
-            assert [e.blocked_by for e in posted] == [None] * rounds
-        finally:
-            await kit.close()
-
-    async def test_an_observer_of_a_tool_call_its_agent_answers_ends_at_the_depth_limit(
-        self,
-    ) -> None:
-        """RMK-978: a tool call's observer keeps a budget of its own, but its
-        post is as deep as the turn that made the call, even once that turn
-        is over: a loop of observer post, the agent's answer, its tool call,
-        the observer's next post, deepens at each round and ends at
-        ``max_chain_depth``."""
-        kit = await _room(RoomKit(max_chain_depth=3))
-        posted: list[RoomEvent] = []
-
-        async def lookup(name: str, arguments: dict[str, Any]) -> str:
-            return f"found {len(posted)}"
-
-        rounds = 4 * BUDGET
-        provider = MockAIProvider(
-            ai_responses=[
-                response
-                for n in range(rounds)
-                for response in (
-                    AIResponse(
-                        content="",
-                        finish_reason="tool_calls",
-                        tool_calls=[AIToolCall(id=f"t{n}", name="lookup", arguments={})],
-                    ),
-                    AIResponse(content=f"Answer {n}.", finish_reason="stop"),
-                )
-            ]
-        )
-        tools = [AITool(name="lookup", description="d")]
-        kit.register_channel(AIChannel("ai", provider=provider, tool_handler=lookup, tools=tools))
-        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
-
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
-        async def audit(event: Any, ctx: RoomContext) -> None:
-            # It posts once the turn that made the call is over, as a slow
-            # progress card would.
-            await _settled(kit)
-            if len(posted) < rounds:
-                posted.append(await kit.send_event("r1", "sms", TextContent(body="called")))
-
-        try:
-            await asyncio.wait_for(kit.process_inbound(_message()), 5)
-            await asyncio.wait_for(_observed(kit), 5)
-            assert [e.chain_depth for e in sorted(posted, key=lambda e: e.index)] == [1, 2]
+            blocked = [e.blocked_by for e in sorted(posted, key=lambda e: e.index)]
+            capped = blocked.index("reentry_loop_cap")
+            assert blocked == [None] * capped + ["reentry_loop_cap"] * (rounds - capped)
+            assert (0 < capped < rounds, len([u for u in updated if u])) == (True, rounds)
         finally:
             await kit.close()
 
