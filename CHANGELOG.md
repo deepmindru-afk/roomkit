@@ -126,12 +126,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the other SYNC triggers, but for those that fire per tool call or per
   round (`BEFORE_TOOL_USE`, `ON_TOOL_CALL`, `AFTER_TOOL_ROUND`, and
   `ON_USER_INPUT_REQUIRED`, which an ACP agent fires per tool it asks to
-  run): a turn may make hundreds of tool calls, so their observers stand in
-  none of the room's work, and what they send into the room is a new arrival
-  on a budget of its own, as deep as the turn. An audit that posts once per
-  tool call, which stopped after 50 in one cascade with an in-memory turn
-  backend (each post drew one of the cascade's passes), posts for every call,
-  as it already did across a Redis turn backend.
+  run): a turn may make hundreds of tool calls, so their observers run on a
+  budget of their own, fresh at each firing. What they send into the room is
+  still one deeper than the event the call's turn answers, read as the call
+  is made, even when they post once the turn is over, so a loop of observer
+  post, agent answer, tool call ends at `max_chain_depth`. An audit that
+  posts once per tool call, which stopped after 50 in one cascade with an
+  in-memory turn backend (each post drew one of the cascade's passes), posts
+  for every call, as it already did across a Redis turn backend.
 
 ### Fixed
 

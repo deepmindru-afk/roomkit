@@ -14,8 +14,9 @@ from roomkit.core._instructions import kept_metadata
 from roomkit.core._reentrance import (
     ReentryBudget,
     after_delivery,
+    chain_floor,
     orders_lent_while_it_runs,
-    outside_the_rooms_work,
+    within_turn,
     work_budget,
 )
 from roomkit.core.exceptions import ReentryLoopCapError
@@ -439,6 +440,7 @@ async def _run_body(
     context: RoomContext,
     room_id: str,
     budget: ReentryBudget | None,
+    depth: int | None = None,
 ) -> None:
     """*hook*'s body within its timeout. On *budget*, the budget of the
     cascade that fired it once an event's delivery set has run, or of the
@@ -446,11 +448,19 @@ async def _run_body(
     what it sends into the room, and a direct change it makes, draws on the
     budget's hook calls and is at least one deeper than *event*, and a task
     it starts that calls afterwards has a budget and a depth of its own
-    (RFC §8.3, §9.5.1, §10.1 step 16, §10.3)."""
-    if budget is None:
+    (RFC §8.3, §9.5.1, §10.1 step 16, §10.3). *depth* stands for the
+    event's when the payload is no event (a tool call's, the depth of the
+    answer its turn makes less one): what the body sends is one deeper,
+    with a budget or without."""
+    if budget is None and depth is None:
         await _hook_body(hook, event, context)
         return
-    depth = event.chain_depth if isinstance(event, RoomEvent) else 0
+    if depth is None:
+        depth = event.chain_depth if isinstance(event, RoomEvent) else 0
+    if budget is None:
+        with within_turn(depth + 1):
+            await _hook_body(hook, event, context)
+        return
     with after_delivery(room_id, budget, depth):
         await _hook_body(hook, event, context)
 
@@ -1460,23 +1470,26 @@ class HookEngine:
         sends into the room draws one of the cascade's hook calls, and past
         the cap is refused as theirs is, so an observer that posts on every
         event it observes stops (RMK-978). The observers of a trigger that
-        fires per tool call (:data:`PER_TOOL_CALL_TRIGGERS`) stand in none of
-        the room's work: what they send into the room is a new arrival on a
-        budget of its own, as deep as the turn. Named in :func:`held_runs`,
-        so a ``close()`` it runs spares it rather than wait for itself.
+        fires per tool call (:data:`PER_TOOL_CALL_TRIGGERS`) run so on a
+        budget of their own, fresh at each firing, since a turn may make
+        hundreds of calls; and what they send is one deeper than the event
+        the call's turn answers, read as the call is made, so that a loop
+        through the agent's answers ends at ``max_chain_depth`` even when
+        they post once the turn is over. Named in :func:`held_runs`, so a
+        ``close()`` it runs spares it rather than wait for itself.
         """
         if not hooks:
             return
-        run_in = unlocked_context()
+        budget, depth = work_budget(room_id), None
         if trigger in PER_TOOL_CALL_TRIGGERS:
-            budget = None
-            outside_the_rooms_work(run_in)
-        else:
-            budget = work_budget(room_id)
+            budget = budget.fresh() if budget is not None else None
+            depth = chain_floor() - 1
         task = start_named(
-            self._run_async_hooks_list(hooks, room_id, trigger, event, context, budget=budget),
+            self._run_async_hooks_list(
+                hooks, room_id, trigger, event, context, budget=budget, depth=depth
+            ),
             name=f"roomkit-observers-{trigger}",
-            context=run_in,
+            context=unlocked_context(),
         )
         self._observers.add(task)
         task.add_done_callback(self._observers.discard)
@@ -1516,10 +1529,12 @@ class HookEngine:
         context: RoomContext,
         *,
         budget: ReentryBudget | None = None,
+        depth: int | None = None,
     ) -> None:
         """Run a list of hooks concurrently. Errors are logged, never raised.
 
-        Each body runs on *budget* when given (:func:`_run_body`)."""
+        Each body runs on *budget*, at one deeper than *depth*, when given
+        (:func:`_run_body`)."""
         if not hooks:
             return
 
@@ -1543,7 +1558,7 @@ class HookEngine:
                     },
                 )
             try:
-                await _run_body(hook, event, context, room_id, budget)
+                await _run_body(hook, event, context, room_id, budget, depth)
                 if span_id is not None:
                     self._telemetry.end_span(span_id)
             except TimeoutError:

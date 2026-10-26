@@ -1674,9 +1674,11 @@ sends into the room draws one of the cascade's hook calls, as an
 `AFTER_BROADCAST` body's does, so one that posts on every event it observes
 stops at the cap (RMK-978). The observers of the triggers that fire per tool
 call or per round (`BEFORE_TOOL_USE`, `ON_TOOL_CALL`, `AFTER_TOOL_ROUND`,
-`ON_USER_INPUT_REQUIRED`) stand in none of the room's work: a turn may make
-hundreds of tool calls, and what they send into the room is a new arrival on
-a budget of its own, as deep as the turn.
+`ON_USER_INPUT_REQUIRED`) run on a budget of their own, fresh at each
+firing: a turn may make hundreds of tool calls. What they send into the room
+is still one deeper than the event the call's turn answers, even once that
+turn is over, so a loop through the agent's answers ends at
+`max_chain_depth`.
 SYNC-registered hooks (the default) on an ASYNC trigger
 fire like any other observer. Triggers marked *Reserved* exist in the enum but
 are not fired by any built-in code.
