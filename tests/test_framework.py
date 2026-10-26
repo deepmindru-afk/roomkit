@@ -482,6 +482,31 @@ class TestSendEvent:
         assert hook_calls[0].id == event.id
         assert hook_calls[0].content.body == "test message"
 
+    @pytest.mark.parametrize("channel", ["never registered", "bound, then unregistered"])
+    async def test_a_channel_the_kit_does_not_register_is_refused(
+        self, kit: RoomKit, channel: str
+    ) -> None:
+        """RFC §10.5 (RMK-977): the channel an injection names MUST be
+        registered, before the room's binding is read: a channel the room
+        still binds after the kit unregistered it writes and delivers
+        nothing either."""
+        sms = SimpleChannel("sms1")
+        kit.register_channel(sms)
+        kit.register_channel(SimpleChannel("ws1"))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "sms1")
+        await kit.attach_channel("r1", "ws1")
+        channel_id = "nope"
+        if channel == "bound, then unregistered":
+            kit.unregister_channel("ws1")
+            channel_id = "ws1"
+
+        with pytest.raises(ChannelNotRegisteredError, match=channel_id):
+            await kit.send_event("r1", channel_id, TextContent(body="x"))
+
+        messages = [e for e in await kit.store.list_events("r1") if e.type == EventType.MESSAGE]
+        assert (messages, sms.delivered) == ([], [])
+
 
 class TestChainDepth:
     async def test_ai_response_chain(self, kit: RoomKit) -> None:

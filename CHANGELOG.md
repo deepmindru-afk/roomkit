@@ -97,6 +97,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the room's private state (`author_register`, `_speak_queue_results`), is
   dropped with a warning naming the channel, the rest applied.
 
+- **BREAKING — `send_event()` refuses a channel the kit does not register**
+  (RFC §10.5, RMK-977). A channel never registered raised
+  `ChannelNotFoundError`, as a channel the room does not bind does, and one
+  the room still bound after `unregister_channel()` wrote and delivered the
+  event. Both now raise `ChannelNotRegisteredError` before anything is read,
+  nothing written. `post()` already refused an unregistered host channel so,
+  and `commit_event()`, whose record reaches no one, takes any source as
+  before. A task's posted result, the agent's message, is still committed
+  from a process that does not register the agent (RFC §19.7.5 rule 19).
+  Migration: a caller that caught `ChannelNotFoundError` for an unknown
+  channel catches `ChannelNotRegisteredError` too, or `RoomKitError`.
+
 ## [0.109.0] — 2026-10-25
 
 ### Added

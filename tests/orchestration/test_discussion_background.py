@@ -347,7 +347,8 @@ async def test_a_result_being_posted_when_the_strategy_is_uninstalled_is_posted_
     await _room(kit, comms, _provider("sre here"), helper, hand_back="post")
     discussion: Any = None
     stopped, read, locked = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    send_event, get_binding = kit.send_event, kit._get_binding
+    # A posted result commits through the framework's door (RFC §23.3).
+    send_event, get_binding = kit._send_event, kit._get_binding
 
     def posting() -> bool:
         return discussion is not None and discussion.driver.posting is not None
@@ -367,7 +368,7 @@ async def test_a_result_being_posted_when_the_strategy_is_uninstalled_is_posted_
             await asyncio.wait_for(locked.wait(), 5)
         return binding
 
-    kit.send_event = slow_send  # type: ignore[method-assign]
+    kit._send_event = slow_send  # type: ignore[method-assign]
     kit._get_binding = slow_binding  # type: ignore[method-assign]
     await _say(kit, "@comms please go through all the support tickets")
     discussion = kit._discussions["r1"]
@@ -558,7 +559,7 @@ async def test_an_uninstall_cut_while_it_posts_a_result_leaves_it_posted(
     await a.close()  # the result stays kept, no process holds it
     b = RoomKit(store=store, lock_manager=locks)
     b.register_channel(SimpleChannel("ops"))
-    send_event, posting = b.send_event, asyncio.Event()
+    send_event, posting = b._send_event, asyncio.Event()
 
     async def cut_once(*args: Any, **kwargs: Any) -> Any:
         if (kwargs.get("metadata") or {}).get("task_id") and not posting.is_set():
@@ -566,7 +567,7 @@ async def test_an_uninstall_cut_while_it_posts_a_result_leaves_it_posted(
             await asyncio.Event().wait()  # until the uninstall is cut
         return await send_event(*args, **kwargs)
 
-    b.send_event = cut_once  # type: ignore[method-assign]
+    b._send_event = cut_once  # type: ignore[method-assign]
     uninstall = asyncio.get_running_loop().create_task(b.uninstall_strategy("r1"))
     await asyncio.wait_for(posting.wait(), 5)
     uninstall.cancel()

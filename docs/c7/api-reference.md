@@ -265,7 +265,7 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 | `IdempotencyKeyTakenError` | A store's `commit_event()` of an event under a key its source channel holds in the room for another event; nothing written (RFC §13.4, §14.3) |
 | `RoomNotAttachedError` | Channel acted on a room it is no longer attached to |
 | `ChannelNotFoundError` | Channel not attached to room |
-| `ChannelNotRegisteredError` | Channel not registered with framework |
+| `ChannelNotRegisteredError` | Channel not registered with framework (`send_event()` from it, whether or not the room still binds it) |
 | `ParticipantNotFoundError` | Participant not found in room |
 | `ParticipantNotAdmittedError` | Participant barred from what was asked for them |
 | `IdentityNotFoundError` | Identity not found |
@@ -398,7 +398,7 @@ kit = RoomKit(
 | `setup_task_tools(agent)` | Give an agent (or the id of one the kit holds) `task_status` and `cancel_task`, served by the room's owner: the room's own tasks only (RFC §23.4) |
 | `await start_task(room_id, agent_id, task, hand_back?, organization_id?)` | Start an agent's background task from the host, for any agent of the room |
 | `send_greeting(room_id, channel_id?, greeting?, ..., organization_id=None)` | Send greeting |
-| `send_event(room_id, channel_id, content, ...)` | Send event directly: `INBOUND` from a transport, `OUTBOUND` from an intelligence channel; from the room's own work (a hook, a parse, a delivery, a turn) it draws on that work's reentry budget (RFC §10.5, §9.5.1) |
+| `send_event(room_id, channel_id, content, ...)` | Send event directly: `INBOUND` from a transport, `OUTBOUND` from an intelligence channel; from the room's own work (a hook, a parse, a delivery, a turn) it draws on that work's reentry budget (RFC §10.5, §9.5.1). A channel the kit does not register raises `ChannelNotRegisteredError` before anything is read, one the room still binds included; one the room does not bind, `ChannelNotFoundError` |
 | `await post(room_id, content, *, participant_id?, addressed_to=(), metadata?, channel_id?, organization_id?, idempotency_key?, chain_depth=0)` | Write to the room's people in the host's own name, from a `HostChannel` attached on a room's first post (refused for a room it was detached from, or closed); solicits no agent unless addressed; speaks as a participant the host channel reaches (`ParticipantNotFoundError` for any other id); a key the channel holds returns the original, sending nothing again (RFC §10.5) |
 | `await steer(directive, channel_id, *, room_id=None, turn_id=None, organization_id=None)` | Steer the running turns of an intelligence channel the kit started, wherever they run; answers the loops reached (RFC §21.3, §10.6.8) |
 | `await channel_call(channel_id, room_id, verb, *, organization_id=None, **arguments)` | Run a per-room verb of a channel attached to the room, on the executor holding the room's state (an ACP agent's `set_config_option`, `close_session`, `session_config`, `config_options`); what the room keeps for the channel is stored in its metadata, written by this call alone (RFC §10.6.3, §6.4) |

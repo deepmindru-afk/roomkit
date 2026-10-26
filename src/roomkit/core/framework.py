@@ -1243,6 +1243,9 @@ class RoomKit(
         (RFC §8.3).
 
         Raises:
+            ChannelNotRegisteredError: the kit registers no channel
+                *channel_id*, raised before anything is read (RFC §10.5),
+                whether or not the room still binds it.
             RoomNotFoundError: the room is missing, or another organization's.
             ChannelNotFoundError: the room does not bind *channel_id*.
             RoomClosedError: the room's status refuses new events (RFC §5.1).
@@ -1251,6 +1254,13 @@ class RoomKit(
             ValueError: an argument the pipeline would refuse, *content*
                 holding more than five composite levels included (RFC §5.3).
         """
+        # The channel an injection names is registered, checked before
+        # anything is read (RFC §10.5): one the room still binds once
+        # unregistered included. The framework's own records take its door
+        # (_send_event) and are not injections: a task's posted result is the
+        # agent's message, which any process posts (§23.3, §19.7.5 rule 19).
+        if channel_id not in self._channels:
+            raise ChannelNotRegisteredError(f"Channel {channel_id} not registered")
         return await self._send_event(
             room_id,
             channel_id,

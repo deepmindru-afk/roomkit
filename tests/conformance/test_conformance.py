@@ -26,16 +26,7 @@ SCENARIOS = HERE / "scenarios"
 
 # Scenario id → the rule this implementation breaks (roomkit-specs
 # conformance/README.md, "Known failures").
-KNOWN_FAILURES: dict[str, str] = {
-    "injection/an-injection-from-an-unregistered-channel-raises": (
-        "RFC §10.5, RMK-977: send_event() from a channel no one registered raises "
-        "ChannelNotFoundError, as for a channel the room does not bind"
-    ),
-    "injection/an-injection-from-a-bound-unregistered-channel-raises": (
-        "RFC §10.5, RMK-977: send_event() from a channel the room binds but the kit "
-        "unregistered commits the event and delivers it"
-    ),
-}
+KNOWN_FAILURES: dict[str, str] = {}
 
 
 def _scenarios() -> list[Path]:

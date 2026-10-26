@@ -99,7 +99,10 @@ async def send_posted(kit: RoomKit, event: RoomEvent) -> None:
         return
     agent = event.source.channel_id
     try:
-        await kit.send_event(
+        # The framework's door: a posted result is the agent's message,
+        # committed whichever process posts it, one that does not register
+        # the agent's channel included (RFC §23.3, §19.7.5 rule 19).
+        await kit._send_event(
             event.room_id,
             agent,
             event.content,
