@@ -88,6 +88,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own timeout, which cancels the task it awaited unless it shields it,
   and the event commits after. Await work in the hook that starts it.
 
+- **An ASYNC hook on a SYNC trigger draws on the cascade's hook calls**
+  (RFC §9.5.1, §10.1 step 16, RMK-978). An observer of a SYNC trigger ran
+  as work of its own: an ASYNC `BEFORE_BROADCAST` hook that called
+  `send_event()` into its room on every event never stopped, each post firing
+  it again on a budget of its own (more than 5,000 calls in 8 s, and
+  `process_inbound()` never returned). Fired from the room's work (a pass's
+  section, an event's admission work, a delivery set's work), an observer's
+  body is now that cascade's work, as an `AFTER_BROADCAST` body is: a call it
+  makes into the room is a new arrival that draws one of the cascade's hook
+  calls, at least one deeper than its event, and past the cap it is refused
+  as theirs are (`send_event()` and `post()` store it `BLOCKED` with
+  `reentry_loop_cap`). Every SYNC trigger's observers run so.
+
 ### Fixed
 
 - **A channel's `metadata_updates` are written on the room** (RFC §10.1 step

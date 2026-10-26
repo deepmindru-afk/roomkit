@@ -857,6 +857,14 @@ async def _settled(kit: RoomKit) -> None:
     await kit._lanes.lane("r1").drain()  # noqa: SLF001
 
 
+async def _observed(kit: RoomKit) -> None:
+    """Wait until the kit's observers and the room's lane have run all."""
+    while kit._hook_engine.running_observers():  # noqa: SLF001
+        await kit._hook_engine.drain_observers()  # noqa: SLF001
+        await _settled(kit)
+    await _settled(kit)
+
+
 class TestACallFromAnAsyncHook:
     """RFC §10.1 step 16, §10.3, §9.5.1: while the body of an ASYNC hook its
     cascade fires runs (``AFTER_BROADCAST`` once an event's delivery set has
@@ -881,6 +889,30 @@ class TestACallFromAnAsyncHook:
             await asyncio.wait_for(kit.process_inbound(_message()), 5)
             await asyncio.wait_for(_settled(kit), 5)
             assert [e.blocked_by for e in posted] == [None] * BUDGET + ["reentry_loop_cap"]
+        finally:
+            await kit.close()
+
+    async def test_an_observer_of_a_sync_trigger_posting_on_every_event_stops_at_the_cap(
+        self,
+    ) -> None:
+        """RMK-978: an ASYNC hook on a SYNC trigger observes the payload the
+        chain left, and is the cascade's work as an ``AFTER_BROADCAST``
+        body is: what it sends into the room draws one of the cascade's
+        hook calls, its own post's ``BEFORE_BROADCAST`` firing it again."""
+        kit = await _room(RoomKit(max_chain_depth=1))
+        posted: list[RoomEvent] = []
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="echo")
+        async def echo(event: RoomEvent, ctx: RoomContext) -> None:
+            if event.type is EventType.MESSAGE and len(posted) <= 2 * BUDGET:
+                posted.append(await kit.send_event("r1", "sms", TextContent(body="posted")))
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            await asyncio.wait_for(_observed(kit), 5)
+            # In index order: the post past the cap returns first, unwaited.
+            in_order = sorted(posted, key=lambda e: e.index)
+            assert [e.blocked_by for e in in_order] == [None] * BUDGET + ["reentry_loop_cap"]
         finally:
             await kit.close()
 

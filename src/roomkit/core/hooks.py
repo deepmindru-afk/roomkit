@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Protocol
 
 from roomkit.core._changes import holds_change
 from roomkit.core._instructions import kept_metadata
-from roomkit.core._reentrance import ReentryBudget, after_delivery
+from roomkit.core._reentrance import ReentryBudget, after_delivery, work_budget
 from roomkit.core.exceptions import ReentryLoopCapError
 from roomkit.core.locks import lent_while_it_runs, unlocked_context
 from roomkit.core.task_utils import held_runs, start_named
@@ -1434,13 +1434,20 @@ class HookEngine:
         Started in a context that holds no room lock: an observer of a
         locked section's chain calls into the room as a new arrival, which
         waits for the section, never as the lock's holder beside it (RFC
-        §9.5.1). Named in :func:`held_runs`, so a ``close()`` it runs spares
-        it rather than wait for itself.
+        §9.5.1). Fired from the room's work (a pass's section, an event's
+        admission work, a delivery set's work), each body is that cascade's
+        work as an ``AFTER_BROADCAST`` body is (:func:`_run_body`): what it
+        sends into the room draws one of the cascade's hook calls, and past
+        the cap is refused as theirs is, so an observer that posts on every
+        event it observes stops (RMK-978). Named in :func:`held_runs`, so a
+        ``close()`` it runs spares it rather than wait for itself.
         """
         if not hooks:
             return
         task = start_named(
-            self._run_async_hooks_list(hooks, room_id, trigger, event, context),
+            self._run_async_hooks_list(
+                hooks, room_id, trigger, event, context, budget=work_budget(room_id)
+            ),
             name=f"roomkit-observers-{trigger}",
             context=unlocked_context(),
         )

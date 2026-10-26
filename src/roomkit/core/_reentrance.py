@@ -213,6 +213,17 @@ def after_delivery(room_id: str, budget: ReentryBudget, depth: int) -> Generator
         yield
 
 
+def work_budget(room_id: str) -> ReentryBudget | None:
+    """The budget of the room's work this context runs in: the innermost
+    frame of *room_id* whose work still runs (a pass's section while the
+    context holds the lock, an event's admission work, a delivery set's
+    work, an ASYNC hook's body); ``None`` outside the room's work. The
+    observers of a SYNC trigger fired from that work run on it (RFC
+    §9.5.1, :meth:`~roomkit.core.hooks.HookEngine.run_observers`)."""
+    frame = _innermost(room_id, locked=_has_room_lock(room_id))
+    return frame.budget if frame is not None else None
+
+
 def charge_direct_change(change: Entry, room_id: str, call: str) -> None:
     """Draw the hook call *change*, a direct change of *room_id* made from
     an ASYNC hook's body, costs before it writes (RFC §9.5.1, §10.3);
