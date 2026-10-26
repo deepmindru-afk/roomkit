@@ -97,6 +97,15 @@ class Harness:
         per_room = getattr(self.observed, kind).setdefault(room_id, {})
         per_room.setdefault(channel_id, []).append(event.model_dump(mode="json"))
 
+    def record_streamed(self, room_id: str, channel_id: str, item: dict[str, Any]) -> None:
+        """One item a streaming channel's ``deliver_stream`` read, as the
+        scenario reads it: ``{"text": ...}``, ``{"row": event}``, or
+        ``{"failed": true}`` where the stream raised."""
+        if not self._recording:
+            return
+        per_room = self.observed.streamed.setdefault(room_id, {})
+        per_room.setdefault(channel_id, []).append(item)
+
     def record_hook(self, name: str, trigger: str, room_id: str, payload: Any) -> None:
         if not self._recording:
             return

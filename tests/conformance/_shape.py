@@ -25,13 +25,15 @@ CHANNEL = {
     "parse",
     "on_event",
     "deliver",
+    "streams",
+    "deliver_stream",
     "model",
     "tools",
     "tool_policy",
     "max_tool_rounds",
 }
 MODEL = {"rounds"}
-MODEL_ROUND = {"text", "calls", "finish_reason", "usage"}
+MODEL_ROUND = {"text", "deltas", "calls", "finish_reason", "usage", "fails"}
 MODEL_CALL = {"id", "name", "arguments", "cut"}
 TOOL = {"name", "description", "parameters", "returns", "raises", "fails", "refuses", "hangs"}
 RAISES = {"kind", "message"}
@@ -51,7 +53,17 @@ HOOK = {
     "needs_lock",
     "reactions",
 }
-REACTION = {"when", "repeat", "gate", "do", "fail", "respond", "output", "result"}
+REACTION = {
+    "when",
+    "repeat",
+    "gate",
+    "do",
+    "fail",
+    "respond",
+    "output",
+    "result",
+    "stop_after",
+}
 WHEN = {"room_id", "text", "type", "source_channel_id", "chain_depth"}
 OUTPUT = {"tasks", "observations", "metadata_updates"}
 RESULT = {"action", "event", "reason", "injected_events", "tasks", "observations", "metadata"}
@@ -72,6 +84,7 @@ EXPECT = {
     "actions",
     "lifecycle",
     "models",
+    "streamed",
 }
 NEW_ROOM = {"id", "organization_id", "metadata", "timers"}
 
@@ -169,7 +182,7 @@ def _members(value: Any, known: set[str], path: str, found: list[str]) -> None:
 
 def _channel(channel: Mapping[str, Any], path: str, found: list[str]) -> None:
     _members(channel, CHANNEL, path, found)
-    for kind in ("parse", "on_event", "deliver"):
+    for kind in ("parse", "on_event", "deliver", "deliver_stream"):
         for index, reaction in enumerate(channel.get(kind, [])):
             _reaction(reaction, f"{path}.{kind}[{index}]", found)
     if "model" in channel:

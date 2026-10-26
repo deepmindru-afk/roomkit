@@ -11,18 +11,23 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from roomkit.channels.ai import AIChannel
 from roomkit.core.exceptions import ToolFailedError, ToolRefusedError
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.providers.ai import AIContext, AIProvider, AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.base import StreamEvent, StreamTextDelta, response_stream_events
 from roomkit.tools.policy import ToolPolicy
 
 
 class ModelPastItsScriptError(Exception):
     """The agent asked the scripted model for a generation its script lacks."""
+
+
+class ModelFailedError(Exception):
+    """What a round's ``fails`` raises, once its deltas are written."""
 
 
 class ScriptedModel(AIProvider):
@@ -38,11 +43,38 @@ class ScriptedModel(AIProvider):
         return "scripted"
 
     async def generate(self, context: AIContext) -> AIResponse:
+        return _response(self._next_round(context))
+
+    async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        """The round's text as its deltas, then its calls and its end; a round
+        that ``fails`` raises once its deltas are written. The model waits
+        between two deltas, so each reaches the reader apart: deltas yielded
+        without waiting may cross as one (RFC §10.6.4)."""
+        round_ = self._next_round(context)
+        for position, delta in enumerate(_deltas(round_)):
+            if position:
+                await asyncio.sleep(0)
+            yield StreamTextDelta(text=delta)
+        if (message := round_.get("fails")) is not None:
+            raise ModelFailedError(message)
+        # The calls and the end as generate()'s whole response gives them.
+        for event in response_stream_events(_response(round_).model_copy(update={"content": ""})):
+            yield event
+
+    def _next_round(self, context: AIContext) -> Mapping[str, Any]:
         self.requests.append({"tool_results": tool_results(context)})
         position = len(self.requests) - 1
         if position >= len(self._rounds):
             raise ModelPastItsScriptError(f"generation {position + 1} is past the script")
-        return _response(self._rounds[position])
+        return self._rounds[position]
+
+
+def _deltas(round_: Mapping[str, Any]) -> list[str]:
+    """The pieces a round writes its text in: its ``deltas``, or its whole text."""
+    if "deltas" in round_:
+        return list(round_["deltas"])
+    text = round_.get("text", "")
+    return [text] if text else []
 
 
 def _response(round_: Mapping[str, Any]) -> AIResponse:
@@ -56,7 +88,7 @@ def _response(round_: Mapping[str, Any]) -> AIResponse:
         for call in round_.get("calls", [])
     ]
     return AIResponse(
-        content=round_.get("text", ""),
+        content="".join(_deltas(round_)),
         finish_reason=round_.get("finish_reason", "tool_calls" if calls else "stop"),
         usage=dict(round_.get("usage", {})),
         tool_calls=calls,

@@ -7,7 +7,7 @@ hooks") defines what each does; this module builds them on the Python core.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -172,6 +172,8 @@ class ScriptedChannel(Channel):
         self._parse = Reactions(spec.get("parse"))
         self._on_event = Reactions(spec.get("on_event"))
         self._deliver = Reactions(spec.get("deliver"))
+        self._streams = bool(spec.get("streams", False))
+        self._deliver_stream = Reactions(spec.get("deliver_stream"))
 
     def capabilities(self) -> ChannelCapabilities:
         return self._capabilities
@@ -207,6 +209,39 @@ class ScriptedChannel(Channel):
     ) -> ChannelOutput:
         self._harness.record("deliveries", event.room_id, self.channel_id, event)
         return await self._react(self._deliver, event, respond=False)
+
+    @property
+    def supports_streaming_delivery(self) -> bool:
+        return self._streams
+
+    async def deliver_stream(
+        self,
+        text_stream: AsyncIterator[Any],
+        event: RoomEvent,
+        binding: ChannelBinding,
+        context: RoomContext,
+    ) -> ChannelOutput:
+        """Reads the stream it is handed, recording each delta and row, until
+        its end, or until the delta its reaction's ``stop_after`` names."""
+        room_id = binding.room_id
+        reaction = self._deliver_stream.pick({"room_id": room_id}) or {}
+        await perform(self._harness, {**reaction, "fail": None}, {"room": room_id})
+        stop_after = reaction.get("stop_after")
+        try:
+            async for item in text_stream:
+                if isinstance(item, str):
+                    self._harness.record_streamed(room_id, self.channel_id, {"text": item})
+                    if item == stop_after:
+                        break
+                elif isinstance(item, RoomEvent):
+                    row = {"row": item.model_dump(mode="json")}
+                    self._harness.record_streamed(room_id, self.channel_id, row)
+        except Exception:
+            self._harness.record_streamed(room_id, self.channel_id, {"failed": True})
+            raise
+        if (message := reaction.get("fail")) is not None:
+            raise ScriptedFailureError(message)
+        return ChannelOutput.empty()
 
     async def on_event(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
