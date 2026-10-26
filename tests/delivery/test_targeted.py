@@ -257,19 +257,24 @@ async def test_a_queue_drained_under_the_room_lock_lets_its_followers_deliver() 
     assert (inbound.blocked, got["hook"].status, delivered.status) == (False, "sent", "sent")
 
 
+@pytest.mark.parametrize("into", ["its room", "another room"])
 @pytest.mark.parametrize("drains", ["another caller", "the kit, the hook's own message"])
-async def test_a_caller_holding_the_room_lock_delivers_past_a_drain_under_way(drains: str) -> None:
-    """RMK-997: a locked BEFORE_BROADCAST hook delivers into its room through
-    a shared Queued strategy while another caller drains it: an application
-    whose idle wait is still running, or the kit-wide strategy delivering the
-    very message whose pass runs the hook. Behind that batch, whose delivery
-    needs the lock the hook holds, it waited on itself until
-    ``process_timeout``; it now delivers at once, unbatched, and every
-    delivery completes (RFC §9.5.1, §22.2)."""
+async def test_a_caller_holding_the_room_lock_delivers_past_a_drain_under_way(
+    drains: str, into: str
+) -> None:
+    """RMK-997: a locked BEFORE_BROADCAST hook delivers, into its room or
+    another one, through a shared Queued strategy while another caller
+    drains it: an application whose idle wait is still running, or the
+    kit-wide strategy delivering the very message whose pass runs the hook.
+    Behind that batch, whose delivery needs the lock the hook holds, it
+    waited on itself until ``process_timeout``; it now delivers at once,
+    unbatched, and every delivery completes (RFC §9.5.1, §22.2)."""
     kit = RoomKit(process_timeout=0.5, delivery_strategy="queued")
     kit.register_channel(SimpleChannel("human"))
-    await kit.create_room(room_id="room-1")
-    await kit.attach_channel("room-1", "human")
+    for room_id in ("room-1", "room-2"):
+        await kit.create_room(room_id=room_id)
+        await kit.attach_channel(room_id, "human")
+    target = "room-1" if into == "its room" else "room-2"
     strategy = Queued(buffer=0) if drains == "another caller" else None
     entered, release = asyncio.Event(), asyncio.Event()
     hooked = asyncio.Event()
@@ -279,7 +284,7 @@ async def test_a_caller_holding_the_room_lock_delivers_past_a_drain_under_way(dr
     async def hook(event, ctx):
         if isinstance(event.content, TextContent) and event.content.body == "go":
             got["hook"] = await kit.deliver(
-                "room-1", "from the hook", addressed_to=[], strategy=strategy, metadata={"h": 1}
+                target, "from the hook", addressed_to=[], strategy=strategy, metadata={"h": 1}
             )
             hooked.set()
         return HookResult.allow()
@@ -294,7 +299,7 @@ async def test_a_caller_holding_the_room_lock_delivers_past_a_drain_under_way(dr
                     kit.deliver("room-1", "app", addressed_to=[], strategy=strategy)
                 )
                 await entered.wait()
-                go = asyncio.create_task(kit.process_inbound(_said("go")))
+                go = asyncio.create_task(kit.process_inbound(_said("go"), room_id="room-1"))
                 await asyncio.wait_for(hooked.wait(), 1)  # the app's wait still runs
                 release.set()
             else:
@@ -304,7 +309,8 @@ async def test_a_caller_holding_the_room_lock_delivers_past_a_drain_under_way(dr
             outcomes = await asyncio.wait_for(asyncio.gather(first, *[go] if go else []), 2)
         bodies = [
             e.content.body
-            for e in await kit.get_timeline("room-1")
+            for room_id in ("room-1", "room-2")
+            for e in await kit.get_timeline(room_id)
             if isinstance(e.content, TextContent)
         ]
     assert [getattr(o, "status", None) or o.blocked for o in outcomes] == (

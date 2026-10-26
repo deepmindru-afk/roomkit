@@ -148,10 +148,10 @@ class _SessionTeardown:
 class _SessionLeftovers:
     """What a session's forgotten records leave to close (``_forget_session``)."""
 
-    resamplers: Any
+    resamplers: Any  # the (inbound, outbound) pair ``_session_resamplers`` holds
     session_span_id: str | None
     turn_span_id: str | None
-    send_queue: Any
+    send_queue: asyncio.Queue[Any] | None
 
 
 @dataclass

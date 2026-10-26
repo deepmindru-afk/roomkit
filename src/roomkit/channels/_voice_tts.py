@@ -543,7 +543,7 @@ class VoiceTTSMixin:
 
         full_text = self._streamed_text(text.text(), gate, budget)
         await self._close_streamed_response(
-            delivered, playbacks, full_text, room_id, context, _vs_parent, event.chain_depth
+            delivered, playbacks, full_text, event, context, _vs_parent
         )
         if text.failure is not None:
             # The response failed: what it produced was spoken, the failure is the turn's.
@@ -617,12 +617,12 @@ class VoiceTTSMixin:
         delivered: list[VoiceSession],
         playbacks: dict[str, TTSPlaybackState],
         full_text: str,
-        room_id: str,
+        event: RoomEvent,
         context: RoomContext,
         parent_span: str | None,
-        chain_depth: int,
     ) -> None:
-        """Close a streamed response on the sessions that heard it (RFC §12.2 step 13s).
+        """Close the streamed response *event* on the sessions that heard it
+        (RFC §12.2 step 13s).
 
         Each gets the whole text as its playback and final transcript, and
         AFTER_TTS reports what was sent; with no such session, nothing was.
@@ -650,7 +650,9 @@ class VoiceTTSMixin:
 
         # BEFORE_TTS ran on each sentence (12s.b); AFTER_TTS reports what was sent
         if full_text:
-            await self._run_after_tts(room_id, full_text, context, parent_span, chain_depth)
+            await self._run_after_tts(
+                event.room_id, full_text, context, parent_span, event.chain_depth
+            )
 
     async def _run_after_tts(
         self,

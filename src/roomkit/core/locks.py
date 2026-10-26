@@ -71,6 +71,11 @@ def _has_room_lock(room_id: str, manager: RoomLockManager | None = None) -> bool
     )
 
 
+def _holds_a_room_lock(manager: RoomLockManager | None = None) -> bool:
+    """Whether this context holds a live lock on any room of *manager*."""
+    return any(_has_room_lock(room_id, manager) for room_id in _held_rooms.get())
+
+
 def unlocked_context() -> contextvars.Context:
     """A copy of the current context that holds no room lock: a task started
     in it from under a lock asks for the lock as any later caller does, and

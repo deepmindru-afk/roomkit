@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import contextvars
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import pytest
@@ -58,9 +58,11 @@ from roomkit.store.memory import InMemoryStore
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.mock import MockTelemetryProvider
 from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.voice.base import AudioChunk
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from roomkit.voice.realtime.reasoning import AgentReasoningBackend
 from roomkit.voice.stt.mock import MockSTTProvider
+from roomkit.voice.tts.base import TTSProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 from tests.conference.test_conference_realtime import ROOM, _Source, realtime_kit, until
 from tests.conference.test_conference_tool_calls import LOOKUP
@@ -950,11 +952,32 @@ def _answering_agent(*, streaming: bool = False) -> AIChannel:
     return AIChannel("ai", provider=MockAIProvider(responses=replies, streaming=streaming))
 
 
+class _StreamingInputTTS(TTSProvider):
+    """A TTS that reads a streamed reply sentence by sentence, one chunk each."""
+
+    @property
+    def supports_streaming_input(self) -> bool:
+        return True
+
+    async def synthesize(self, text: str, *, voice: str | None = None) -> Any:
+        raise NotImplementedError
+
+    async def synthesize_stream_input(
+        self, text_stream: AsyncIterator[str], *, voice: str | None = None
+    ) -> AsyncIterator[AudioChunk]:
+        async for _ in text_stream:
+            yield AudioChunk(data=b"\x00\x00" * 160, sample_rate=16000)
+
+
 async def _voice_speaker(*, streaming: bool = False) -> RoomKit:
-    """Room ``r1``: ``sms``, an agent, and a voice channel that speaks its answers."""
-    stt, tts, backend = MockSTTProvider(transcripts=[]), MockTTSProvider(), MockVoiceBackend()
+    """Room ``r1``: ``sms``, an agent, and a voice channel that speaks its
+    answers, read sentence by sentence as they stream when *streaming*."""
+    stt, backend = MockSTTProvider(transcripts=[]), MockVoiceBackend()
+    tts = _StreamingInputTTS() if streaming else MockTTSProvider()
     kit = await _room(RoomKit(stt=stt, tts=tts, voice=backend, max_chain_depth=4))
-    kit.register_channel(VoiceChannel("voice", stt=stt, tts=tts, backend=backend))
+    voice = VoiceChannel("voice", stt=stt, tts=tts, backend=backend)
+    assert voice.supports_streaming_delivery is streaming
+    kit.register_channel(voice)
     kit.register_channel(_answering_agent(streaming=streaming))
     await kit.attach_channel("r1", "voice")
     await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
@@ -1331,13 +1354,19 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
-    @pytest.mark.parametrize("speaker", ["a voice channel", "a streamed reply", "a conference"])
     @pytest.mark.parametrize(
-        ("trigger", "execution"),
+        ("trigger", "execution", "speaker"),
         [
-            (HookTrigger.AFTER_TTS, HookExecution.ASYNC),
-            (HookTrigger.BEFORE_TTS, HookExecution.SYNC),
-            (HookTrigger.BEFORE_TTS, HookExecution.ASYNC),
+            (trigger, execution, speaker)
+            for speaker in ("a voice channel", "a streamed reply", "a conference")
+            for trigger, execution in (
+                (HookTrigger.AFTER_TTS, HookExecution.ASYNC),
+                (HookTrigger.BEFORE_TTS, HookExecution.SYNC),
+                (HookTrigger.BEFORE_TTS, HookExecution.ASYNC),
+            )
+            # A SYNC BEFORE_TTS hook that awaits a post into its room waits
+            # on itself on a streamed reply: RMK-1006.
+            if (speaker, execution) != ("a streamed reply", HookExecution.SYNC)
         ],
     )
     async def test_a_hook_on_what_a_voice_agent_says_that_tells_it_again_ends_at_the_depth_limit(

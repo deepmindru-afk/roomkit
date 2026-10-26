@@ -302,17 +302,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `playback_timeout` delivers the batch anyway, as `WaitForIdle`'s does, where
   it failed `strategy_failed`.
 
-- **A caller holding a room's lock delivers into it past a queue another
-  caller drains** (RFC §9.5.1, §22.2, RMK-997). A locked hook (a SYNC
-  `BEFORE_BROADCAST`) that delivered into its room through a shared `Queued`
-  strategy while another caller drained it waited behind a batch whose
-  delivery needed the lock the hook held: both ended at `process_timeout`,
-  the hook's message refused, nothing written. So did a hook delivering from
-  the very message the kit-wide strategy (`delivery_strategy="queued"`) was
-  delivering. Such a caller now delivers at once, unbatched, as `Immediate`
-  does: it is nested in the section that holds the lock, which a batch
-  cannot wait on. A caller holding the lock that finds no drain under way
-  drains as before.
+- **A caller holding a room's lock delivers past a queue another caller
+  drains** (RFC §9.5.1, §22.2, RMK-997). A locked hook (a SYNC
+  `BEFORE_BROADCAST`) that delivered, into its room or another one, through
+  a shared `Queued` strategy while another caller drained it waited behind a
+  batch whose delivery needed the lock the hook held: both ended at
+  `process_timeout`, the hook's message refused, nothing written. So did a
+  hook delivering from the very message the kit-wide strategy
+  (`delivery_strategy="queued"`, one queue for every room) was delivering.
+  Such a caller now delivers at once, unbatched, as `Immediate` does: it is
+  nested in the section that holds the lock, which a batch cannot wait on. A
+  caller holding a lock that finds no drain under way drains as before.
 
 - **`find_tools` finds a tool asked for by its name** (RMK-993). A query
   that is a tool's name returns that tool first, compared without case;
