@@ -1,8 +1,9 @@
 """The shared conformance suite, run on the Python core (RFC §1.4, §26.1).
 
 The scenarios come from roomkit-specs ``conformance/``, copied here by ``make
-conformance-sync``, which records the specs commit in ``SPECS_COMMIT``; the
-specs' checker validates them against their schema there. A
+conformance-sync``, which records the specs commit in ``SPECS_COMMIT`` and the
+copy's fingerprint in ``SCENARIOS_SHA256``; the specs' checker validates them
+against their schema there. A
 scenario this implementation is known to fail is listed in
 ``KNOWN_FAILURES`` with what it breaks; it is expected to fail, and passes
 the suite only while it does, so a fix shows.
@@ -10,6 +11,7 @@ the suite only while it does, so a fix shows.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,7 @@ from typing import Any
 import pytest
 
 from tests.conformance._harness import Harness
+from tests.conformance._shape import unknown_members
 
 HERE = Path(__file__).parent
 SCENARIOS = HERE / "scenarios"
@@ -29,9 +32,12 @@ KNOWN_FAILURES: dict[str, str] = {
         "collected (BroadcastResult.metadata_updates) and never applied to the room"
     ),
     "injection/an-injection-from-an-unregistered-channel-raises": (
-        "RFC §10.5: send_event() from a channel no one registered raises "
-        "ChannelNotFoundError, as for a channel the room does not bind, not "
-        "ChannelNotRegisteredError"
+        "RFC §10.5, RMK-977: send_event() from a channel no one registered raises "
+        "ChannelNotFoundError, as for a channel the room does not bind"
+    ),
+    "injection/an-injection-from-a-bound-unregistered-channel-raises": (
+        "RFC §10.5, RMK-977: send_event() from a channel the room binds but the kit "
+        "unregistered commits the event and delivers it"
     ),
 }
 
@@ -55,10 +61,32 @@ def _cases() -> list[Any]:
     return cases
 
 
-def test_the_suite_is_synced_with_its_specs_commit() -> None:
+def test_the_copy_is_the_one_synced_from_its_specs_commit() -> None:
+    """The fingerprint ``make conformance-sync`` recorded, ``sha256sum`` over
+    ``sha256sum`` of each file of ``scenarios/`` by path in byte order, is the
+    copy's."""
     commit = (HERE / "SPECS_COMMIT").read_text(encoding="utf-8").strip()
-    assert len(commit) == 40
-    assert _scenarios()
+    assert len(commit) == 40 and all(c in "0123456789abcdef" for c in commit)
+    files = sorted(
+        path.relative_to(HERE).as_posix() for path in SCENARIOS.rglob("*") if path.is_file()
+    )
+    lines = "".join(
+        f"{hashlib.sha256((HERE / name).read_bytes()).hexdigest()}  {name}\n"
+        for name in sorted(files, key=str.encode)
+    )
+    recorded = (HERE / "SCENARIOS_SHA256").read_text(encoding="utf-8").strip()
+    assert hashlib.sha256(lines.encode()).hexdigest() == recorded, (
+        "tests/conformance/scenarios differs from its sync: run make conformance-sync"
+    )
+
+
+def test_every_scenario_holds_only_members_the_runner_reads() -> None:
+    unknown = [
+        f"{path.name}: {member}"
+        for path in _scenarios()
+        for member in unknown_members(_load(path))
+    ]
+    assert not unknown, "\n".join(unknown)
 
 
 def test_every_known_failure_names_a_scenario() -> None:

@@ -24,6 +24,7 @@ def compare(expect: Mapping[str, Any], observed: Observed, checks: list[Check]) 
     for path, expected, outcome in checks:
         found.extend(outcome_mismatches(expected, outcome, normalizer, path))
     found.extend(_lifecycle_never_delivered(observed))
+    found.extend(_indexes_increase(observed))
     comparison = _Comparison(normalizer, observed, expect)
     comparison.records()
     comparison.hooks()
@@ -62,6 +63,12 @@ class _Comparison:
             for channel_id, expected in channels.items():
                 actual = held.get(channel_id, MISSING)
                 self._check(expected, actual, f"bindings.{alias}.{channel_id}")
+        for alias, expected in self.expect.get("lifecycle", {}).items():
+            events = self.observed.timelines.get(self._room(alias), [])
+            records = [event for event in events if is_lifecycle_record(event)]
+            # An implementation that writes no lifecycle record passes (§5.1).
+            if records:
+                self._check(expected, records, f"lifecycle.{alias}")
         grouped: dict[str, list[Any]] = {}
         for event in self.normalizer.value(self.observed.framework_events):
             grouped.setdefault(event.get("room_id", "*"), []).append(event)
@@ -143,6 +150,16 @@ def _outcomes_of(
             return [f"{path}: no outcome matches {want!r}"]
         remaining.remove(match)
     return []
+
+
+def _indexes_increase(observed: Observed) -> list[str]:
+    """A room's indexes are given out once each (§8.1)."""
+    found: list[str] = []
+    for room_id, events in observed.timelines.items():
+        indexes = [event["index"] for event in events]
+        if any(later <= earlier for earlier, later in zip(indexes, indexes[1:], strict=False)):
+            found.append(f"timeline.{room_id}: an index is held twice: {indexes}")
+    return found
 
 
 def _lifecycle_never_delivered(observed: Observed) -> list[str]:

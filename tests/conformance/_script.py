@@ -19,6 +19,7 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelDirection, ChannelType, EventDirection
 from roomkit.models.event import EventSource, RoomEvent
 from roomkit.models.hook import HookResult, InjectedEvent
+from roomkit.models.participant import Participant
 from roomkit.models.task import Observation, Task
 
 if TYPE_CHECKING:
@@ -125,6 +126,10 @@ def complete_event(
     data.update(template)
     data["source"] = {**source, **template.get("source", {})}
     return RoomEvent.model_validate(data)
+
+
+def complete_participant(template: Mapping[str, Any], room_id: str) -> Participant:
+    return Participant.model_validate({"room_id": room_id, "joined_at": _now(), **template})
 
 
 def complete_task(template: Mapping[str, Any], room_id: str) -> Task:

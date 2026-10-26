@@ -20,6 +20,8 @@ from roomkit.models.store_filter import EventFilter
 from tests.conformance._calls import (
     CALLS,
     UnmappedError,
+    UnreadableError,
+    add_participant,
     attach_channel,
     create_room,
     dump,
@@ -55,7 +57,8 @@ LEVEL_0_EVENTS = (
     "process_timeout",
 )
 
-# A call that has not returned by then fails the scenario instead of hanging it.
+# A call that has not returned by then fails the scenario instead of hanging
+# it; so does a kit that does not go idle.
 CALL_BOUND_S = 10.0
 _EVENT_ALIAS = re.compile(r"^(.+)#(\d+)$")
 _CREATED_ROOM = re.compile(r"^\$r(\d+)$")
@@ -142,6 +145,8 @@ class Harness:
                 await attach_channel(self.kit, room["id"], binding)
                 if binding.get("muted"):
                     await self.kit.mute(room["id"], binding["channel_id"])
+            for participant in room.get("participants", []):
+                await add_participant(self.kit, room["id"], participant)
             if room.get("status") in ("closed", "archived"):
                 await self.kit.close_room(room["id"])
             if room.get("status") == "archived":
@@ -204,6 +209,9 @@ class Harness:
         except TimeoutError:
             self._problems.append(f"{spec['call']} did not return within {CALL_BOUND_S} s")
             return {"result": None, "error": {"name": "<hung>"}}
+        except UnreadableError as error:
+            self._problems.append(f"{spec['call']}: the runner cannot read the call: {error}")
+            return {"result": None, "error": {"name": "<unreadable>"}}
         except Exception as error:
             try:
                 return {"result": None, "error": error_of(error)}
@@ -215,12 +223,20 @@ class Harness:
         return {"result": dump(result), "error": None}
 
     async def idle(self) -> None:
-        """Waits until the kit runs nothing more in the background."""
+        """Waits until the kit runs nothing more in the background.
+
+        It reads the kit's internals (its lanes, its observers, its held
+        tasks): the Python core offers no public wait for its background work.
+        """
         quiet = 0
-        while quiet < 3:
-            busy = await self._drain_once()
-            await asyncio.sleep(0)
-            quiet = 0 if busy else quiet + 1
+        try:
+            async with asyncio.timeout(CALL_BOUND_S):
+                while quiet < 3:
+                    busy = await self._drain_once()
+                    await asyncio.sleep(0)
+                    quiet = 0 if busy else quiet + 1
+        except TimeoutError:
+            self._problems.append(f"the kit did not go idle within {CALL_BOUND_S} s")
 
     async def _drain_once(self) -> bool:
         busy = False
@@ -263,33 +279,36 @@ class Harness:
             return self._labels[value[1:]] or value
         if match := _EVENT_ALIAS.match(value):
             room_id = await self._reference(match[1], scope)
-            kept = await self._kept_timeline(room_id)
-            rank = int(match[2])
-            return kept[rank]["id"] if rank < len(kept) else value
+            return await self._event_at(room_id, int(match[2])) or value
         return value
 
     def _created_room(self, number: int) -> str:
         created = [r for r in self.observed.created_rooms if r not in self.observed.literal_rooms]
         return created[number - 1] if number <= len(created) else f"$r{number}"
 
-    async def _kept_timeline(self, room_id: str) -> list[dict[str, Any]]:
+    async def _event_at(self, room_id: str, index: int) -> str | None:
+        """The id of the room's event at *index*, read without lifecycle records."""
+        timeline = await self._timeline(room_id)
+        lifecycle = 0
+        for event in timeline:
+            if is_lifecycle_record(event):
+                lifecycle += 1
+            elif event["index"] - lifecycle == index:
+                return event["id"]
+        return None
+
+    async def _timeline(self, room_id: str) -> list[dict[str, Any]]:
         events = await self.kit.store.list_events(
             room_id, limit=100_000, event_filter=EventFilter(include_blocked=True)
         )
-        dumped = sorted((e.model_dump(mode="json") for e in events), key=lambda e: e["index"])
-        return [event for event in dumped if not is_lifecycle_record(event)]
+        return sorted((e.model_dump(mode="json") for e in events), key=lambda e: e["index"])
 
     # -- observation and comparison ---------------------------------------
 
     async def _observe(self) -> None:
         store = self.kit.store
         for room in await store.list_rooms(limit=100_000):
-            events = await store.list_events(
-                room.id, limit=100_000, event_filter=EventFilter(include_blocked=True)
-            )
-            self.observed.timelines[room.id] = sorted(
-                (event.model_dump(mode="json") for event in events), key=lambda e: e["index"]
-            )
+            self.observed.timelines[room.id] = await self._timeline(room.id)
             self.observed.rooms[room.id] = room.model_dump(mode="json")
             self.observed.bindings[room.id] = {
                 binding.channel_id: binding.model_dump(mode="json")

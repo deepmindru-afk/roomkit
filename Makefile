@@ -118,19 +118,32 @@ llms-check:
 		|| { echo "$(DOCS_DIR)/docs/llms*.txt differ from roomkit's: run 'make llms-sync' and commit the copies"; exit 1; }
 
 # The shared conformance suite (roomkit-specs conformance/): its scenarios at
-# one roomkit-specs commit, copied into tests/conformance/scenarios with that
-# commit recorded in tests/conformance/SPECS_COMMIT, so CI needs no sibling
-# checkout. The copy is never edited here: change the scenarios in
-# roomkit-specs, commit them there, and sync again. SPECS_REF names the commit.
-SPECS_DIR ?= ../roomkit-specs
-SPECS_REF ?= HEAD
+# one commit of roomkit-specs' origin/main, copied into tests/conformance/scenarios
+# with that commit recorded in tests/conformance/SPECS_COMMIT and the copy's
+# fingerprint in tests/conformance/SCENARIOS_SHA256, which the suite checks.
+# The copy is never edited here: change the scenarios in roomkit-specs, push
+# them, fetch, and sync again. SPECS_DIR is the roomkit-specs checkout beside
+# this repository's main one, a worktree's included; SPECS_REF names the
+# commit. ALLOW_UNPUSHED=1 takes a commit origin/main does not hold yet, for a
+# copy synced again before it is pushed.
+SPECS_DIR ?= $(abspath $(dir $(shell git rev-parse --path-format=absolute --git-common-dir))../roomkit-specs)
+SPECS_REF ?= origin/main
 
 conformance-sync:
-	@commit=$$(git -C $(SPECS_DIR) rev-parse --verify "$(SPECS_REF)^{commit}") && \
-	rm -rf tests/conformance/scenarios && \
-	git -C $(SPECS_DIR) archive --format=tar "$$commit" conformance/scenarios \
+	@commit=$$(git -C "$(SPECS_DIR)" rev-parse --verify "$(SPECS_REF)^{commit}") && \
+	if ! git -C "$(SPECS_DIR)" merge-base --is-ancestor "$$commit" origin/main; then \
+		if [ "$(ALLOW_UNPUSHED)" = 1 ]; then \
+			echo "warning: roomkit-specs $$commit is not on origin/main: sync again once it is"; \
+		else \
+			echo "roomkit-specs $$commit is not on origin/main: push it and fetch first"; exit 1; \
+		fi; \
+	fi && \
+	rm -rf tests/conformance/scenarios && mkdir -p tests/conformance && \
+	git -C "$(SPECS_DIR)" archive --format=tar "$$commit" conformance/scenarios \
 		| tar -x --strip-components=1 -C tests/conformance && \
 	echo "$$commit" > tests/conformance/SPECS_COMMIT && \
+	(cd tests/conformance && find scenarios -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-64) \
+		> tests/conformance/SCENARIOS_SHA256 && \
 	echo "tests/conformance synced from roomkit-specs $$commit"
 
 # --- Website deployment ---

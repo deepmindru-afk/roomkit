@@ -2,11 +2,12 @@
 
 roomkit-specs ``conformance/README.md`` ("Normalization") defines it: a room
 the run created is named ``$r1``, ``$r2``... in the order of its
-``room_created``; an event of a timeline is named ``<room>#<rank>``, its rank
-among the room's events once the lifecycle records (§5.1, which an
-implementation MAY write) are left out, and its ``index`` is that rank; any
-other event id is ``$e1``, ``$e2``... by first appearance; a timestamp is
-``@1``, ``@2``... by its order among the run's instants.
+``room_created``; an index is read without the lifecycle records (§5.1, which
+an implementation MAY write) at or below it, an event's ``index`` and a room's
+``event_count``, ``latest_index`` and ``delivered_index`` alike; an event of a
+timeline is named ``<room>#<index>``; any other event id is ``$e1``,
+``$e2``... by first appearance; a timestamp is ``@1``, ``@2``... by its order
+among the run's instants.
 """
 
 from __future__ import annotations
@@ -64,12 +65,13 @@ class Normalizer:
                     f"$r{sum(a.startswith('$r') for a in self._rooms.values()) + 1}"
                 )
         self._events: dict[str, str] = {}
-        self._kept: dict[str, list[int]] = {}
+        self._lifecycle: dict[str, list[int]] = {}
         for room_id, events in observed.timelines.items():
-            kept = [event for event in events if not is_lifecycle_record(event)]
-            self._kept[room_id] = [event["index"] for event in kept]
-            for rank, event in enumerate(kept):
-                self._events[event["id"]] = f"{self.room(room_id)}#{rank}"
+            self._lifecycle[room_id] = [e["index"] for e in events if is_lifecycle_record(e)]
+            for event in events:
+                if not is_lifecycle_record(event):
+                    index = self.index(room_id, event["index"])
+                    self._events[event["id"]] = f"{self.room(room_id)}#{index}"
         self._others: dict[str, str] = {}
         self._instants = sorted(set(_instants(observed)))
         # The ids of no timeline are named in the order the step outcomes,
@@ -81,10 +83,13 @@ class Normalizer:
         """The alias of a room."""
         return self._rooms.get(room_id, room_id)
 
-    def rank(self, room_id: str, index: int) -> int:
-        """How many of the room's kept events come before *index*."""
-        kept = self._kept.get(room_id)
-        return index if kept is None else bisect.bisect_left(kept, index)
+    def index(self, room_id: str, index: int) -> int:
+        """*index* without the room's lifecycle records at or below it."""
+        return index - bisect.bisect_right(self._lifecycle.get(room_id, []), index)
+
+    def count(self, room_id: str, count: int) -> int:
+        """A count of indexes given out, without the lifecycle records'."""
+        return count - bisect.bisect_left(self._lifecycle.get(room_id, []), count)
 
     def value(self, value: Any, key: str | None = None) -> Any:
         """*value* with its ids, indexes and instants normalized."""
@@ -97,15 +102,33 @@ class Normalizer:
         return value
 
     def _object(self, value: dict[str, Any]) -> dict[str, Any]:
-        room_id = value.get("room_id")
-        is_event = isinstance(room_id, str) and "source" in value and "index" in value
+        indexes = self._indexes_of(value)
         result: dict[str, Any] = {}
         for key, item in value.items():
-            if is_event and key == "index" and isinstance(item, int):
-                result[key] = self.rank(room_id, item)
+            if key in indexes and isinstance(item, int) and not isinstance(item, bool):
+                result[key] = indexes[key](item)
             else:
                 result[key] = self.value(item, key)
         return result
+
+    def _indexes_of(self, value: dict[str, Any]) -> dict[str, Any]:
+        """How the members of *value* that hold an index of its room are read."""
+        room_id = value.get("room_id")
+        if isinstance(room_id, str) and "source" in value and "index" in value:
+            return {"index": lambda raw: self.index(room_id, raw)}
+        room = value.get("id")
+        if isinstance(room, str) and "event_count" in value and "status" in value:
+
+            def latest(raw: int) -> int | None:
+                index = self.index(room, raw)
+                return index if index >= 0 else None
+
+            return {
+                "event_count": lambda raw: self.count(room, raw),
+                "latest_index": latest,
+                "delivered_index": lambda raw: max(self.index(room, raw), -1),
+            }
+        return {}
 
     def _string(self, value: str, key: str | None) -> str:
         if value in self._rooms:
