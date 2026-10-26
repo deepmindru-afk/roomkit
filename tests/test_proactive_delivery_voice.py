@@ -10,6 +10,7 @@ import pytest
 
 from roomkit import Access, HookResult, HookTrigger, Immediate, Queued, RoomKit, WaitForIdle
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.core._reentrance import within_turn
 from roomkit.delivery.base import DeliveryItem
 from roomkit.delivery.worker import execute_delivery
 from roomkit.store.base import ConversationStore
@@ -149,6 +150,19 @@ async def test_voice_refusal_permissions_and_muting() -> None:
         refused = await kit.deliver("r", "refused", channel_id="voice")
         assert refused.status == "blocked"
         assert len(provider.injected_texts) == 1
+
+
+async def test_a_delivery_keeps_the_depth_it_was_made_at_wherever_it_runs() -> None:
+    """RMK-983: a delivery's depth is taken as ``deliver()`` is called. Run
+    later in someone else's context (the worker, or a shared queue's drain
+    inside work 4 deep), it is not raised to that context's depth, which
+    would leave the model silent at the default max_chain_depth of 5."""
+    async with voice_room(1) as (kit, _, provider, _):
+        item = DeliveryItem(room_id="r", content="result", channel_id="voice", chain_depth=0)
+        spy = patch.object(provider, "inject_text", wraps=provider.inject_text)
+        with spy as inject, within_turn(4):
+            outcome = await execute_delivery(kit, item)
+        assert (outcome.status, inject.call_args.kwargs["silent"]) == ("sent", False)
 
 
 @pytest.mark.parametrize(("depth", "silent"), [(3, False), (4, True)])

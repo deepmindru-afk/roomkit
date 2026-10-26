@@ -12,6 +12,7 @@ import pytest
 
 from roomkit import ConferenceRealtimeConfig, HookExecution, HookTrigger, RoomKit
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.voice.base import VoiceSessionState
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conference.test_conference_realtime import ROOM, realtime_kit
 
@@ -115,7 +116,10 @@ class _TranscribingProvider(MockRealtimeProvider):
             raise ConnectionError("handshake refused")
 
 
-@pytest.mark.parametrize("when", ["after its session ended", "during a start that failed"])
+@pytest.mark.parametrize(
+    "when",
+    ["after its session ended", "while its task waited for the end", "during a start that failed"],
+)
 async def test_a_transcription_its_session_outlives_leaves_no_state(when: str) -> None:
     """A transcription that arrives once its session ended, or while a start
     that then fails runs, is not the room's to record, and keeps nothing of
@@ -131,6 +135,11 @@ async def test_a_transcription_its_session_outlives_leaves_no_state(when: str) -
         session = await channel.start_session("r1", "u", "ws")
         await channel.end_session(session)
         await provider.simulate_transcription(session, "late words", "assistant", True)
+    elif when == "while its task waited for the end":
+        session = await channel.start_session("r1", "u", "ws")
+        # Arrives while the session is live; its task starts once it ended.
+        await provider.simulate_transcription(session, "late words", "assistant", True)
+        await channel.end_session(session)
     else:
         with pytest.raises(ConnectionError):
             await channel.start_session("r1", "u", "ws")
@@ -144,6 +153,30 @@ async def test_a_transcription_its_session_outlives_leaves_no_state(when: str) -
         channel._last_assistant_text,  # noqa: SLF001
     )
     assert state == ({}, {}, {})
+
+
+async def test_the_last_words_before_the_connection_drops_are_recorded() -> None:
+    """A provider that loses its connection marks the session ended before
+    it reports the loss, the last transcription already handed on: its room
+    still holds the session, and records the words (RMK-983)."""
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel("rt", provider=provider, transport=MockRealtimeTransport())
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "rt")
+    session = await channel.start_session("r1", "u", "ws")
+
+    await provider.simulate_transcription(session, "last words", "assistant", True)
+    session.state = VoiceSessionState.ENDED
+    await provider.simulate_error(session, "connection_closed", "socket closed")
+    async with asyncio.timeout(2):
+        while not any(
+            getattr(e.content, "body", None) == "last words"
+            for e in await kit.store.list_events("r1")
+        ):
+            await asyncio.sleep(0.005)
+    await kit.close()
 
 
 class _LateCallProvider(MockRealtimeProvider):

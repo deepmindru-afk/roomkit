@@ -111,8 +111,7 @@ class RealtimeTranscriptionMixin:
         self, session: VoiceSession, text: str, role: str, is_final: bool
     ) -> Any:
         """Handle transcription from provider."""
-        if session.state == VoiceSessionState.ENDED:
-            # Its room no longer records it, and its state is gone: keep none.
+        if self._session_let_go(session):
             return
         if transcript_starts_answer(self._provider.full_duplex, role, text, is_final):
             self._note_provider_output(session.id)
@@ -149,8 +148,8 @@ class RealtimeTranscriptionMixin:
         an already-finalised utterance downstream (duplicate chat bubbles).
         The per-session lock is FIFO, so processing keeps arrival order.
         """
-        if not self._framework or session.state == VoiceSessionState.ENDED:
-            # A session that ended while the task waited keeps no lock.
+        if not self._framework or self._session_let_go(session):
+            # A session its room let go of while the task waited keeps no lock.
             return
 
         with self._state_lock:
@@ -335,6 +334,16 @@ class RealtimeTranscriptionMixin:
         """What the session's model heard last (RFC §12.4)."""
         with self._state_lock:
             return self._answer_depth.setdefault(session_id, AnswerDepth())
+
+    def _session_let_go(self, session: VoiceSession) -> bool:
+        """Whether *session* ended and its room let go of it: what it
+        transcribes is no one's to record, and keeps no state (RMK-983). A
+        session its provider marked ended as the connection dropped is still
+        its room's until the channel ends it, and its last words count."""
+        with self._state_lock:
+            return (
+                session.state == VoiceSessionState.ENDED and session.id not in self._session_rooms
+            )
 
     def _session_answer(self, session_id: str) -> int:
         """The depth of the session's model's next answer, read without

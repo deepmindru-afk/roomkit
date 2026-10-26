@@ -184,41 +184,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_chain_depth=2` an agent no longer answers the follow-up an observer
   posts on a person's message. Migration: raise `max_chain_depth`.
 
-- **A speech-to-speech model's tool-call loop ends at `max_chain_depth`**
-  (RFC §8.3, §9.5.1, §12.4, RMK-983). An ASYNC `ON_TOOL_CALL` or
-  `BEFORE_TOOL_USE` hook that posted into the room at each call of a
-  realtime model (a `RealtimeVoiceChannel`, a conference's realtime
-  configuration) made it answer and call again without end: the hooks fired
-  outside the call's context, so each post started at depth 0, and the
-  channel injected a text into its model at any depth. A realtime or
-  conference tool call's gate, handler and reports, the observers they fire
-  included (a call the session's end cuts, one a reasoning backend's own
-  provider serves), now make their calls into a room at least as deep as
-  the model's answer that issued the call, read as the call arrives; and a
-  text whose answer would be past the limit (its depth plus one reaching
-  `max_chain_depth`) enters the model's session silently, whatever brings
-  it: a broadcast, `deliver()`, a pipeline's handoff greeting, or
-  `inject_text()`, whose text is at least as deep as the work it is called
-  from (a turn, a tool call, a hook's body), as `deliver()`'s is, whatever
-  `chain_depth` it names, so a hook that injects at each call ends too. The
-  model takes it into its
-  context and answers nothing, as an agent past the limit is not asked, and
-  the log says why. With `max_chain_depth=4` the loop ends after three
-  posts. Behaviour change: in a room with a realtime model and an agent,
-  their exchange ends at the limit one turn sooner, as between two agents,
-  and a handoff greeting at the limit no longer makes the new agent speak.
-  Migration: raise `max_chain_depth`. Example:
-  `examples/realtime_tool_observer_depth.py`.
+- **A speech-to-speech model's tool-call loop ends at `max_chain_depth`** (RFC
+  §8.3, §9.5.1, §12.4, RMK-983). An ASYNC `ON_TOOL_CALL` or `BEFORE_TOOL_USE`
+  hook that posted into the room at each call of a realtime model (a
+  `RealtimeVoiceChannel`, a conference's realtime configuration) made it
+  answer and call again without end: the hooks fired outside the call's
+  context, so each post started at depth 0, and the channel injected a text
+  into its model at any depth. A realtime or conference tool call's gate,
+  handler and reports, the observers they fire included (a call the session's
+  end cuts, one a reasoning backend's own provider serves), now make their
+  calls into a room at least as deep as the model's answer that issued the
+  call, read as the call arrives; and a text whose answer would be past the
+  limit (its depth plus one reaching `max_chain_depth`) enters the model's
+  session silently, whatever brings it: a broadcast, `deliver()`, a pipeline's
+  handoff greeting, or `inject_text()`, whose text is at least as deep as the
+  work it is called from (a turn, a tool call, a hook's body), as
+  `deliver()`'s is, whatever `chain_depth` it names, so a hook that injects at
+  each call ends too. The model takes it into its context and answers nothing,
+  as an agent past the limit is not asked, and the log says why. With
+  `max_chain_depth=4` the loop ends after three posts. Behaviour change: in a
+  room with a realtime model and an agent, their exchange ends at the limit
+  one turn sooner, as between two agents, and a handoff greeting at the limit
+  no longer makes the new agent speak. Migration: raise `max_chain_depth`.
+  Example: `examples/realtime_tool_observer_depth.py`.
 
 ### Fixed
 
 - **A realtime session that ended keeps no transcription state** (RMK-983).
-  A transcription the provider handed on once its session ended, or while a
-  start that then failed was running, left the session's answer depth and
-  its ordering lock behind for good, one of each per call that ended so: a
-  slow leak on a server that takes many calls. The transcription itself was
-  already dropped, its room gone; now nothing of it is kept, and a start
-  that fails forgets what was transcribed, as a session's end does.
+  A transcription the provider handed on once the channel ended its session,
+  or while a start that then failed was running, left the session's answer
+  depth and its ordering lock behind for good, one of each per call that
+  ended so: a slow leak on a server that takes many calls. Such a
+  transcription was already dropped, its room gone; now nothing of it is
+  kept, and a start that fails forgets what was transcribed, as a session's
+  end does. The last words a provider hands on as its connection drops are
+  still recorded: the session is its room's until the channel ends it.
 
 - **A channel's `metadata_updates` are written on the room** (RFC §10.1 step
   15, RMK-976). The core collected them in `BroadcastResult.metadata_updates`

@@ -1177,11 +1177,12 @@ class TestACallFromAnAsyncHook:
         calls, the third one's text silent."""
         model = _AnsweringModel(rounds=4 * BUDGET)
         kit, room_id, poster, channel, session = await _MODEL_HOSTS[door](model)
+        posted: list[RoomEvent] = []
 
         @kit.hook(trigger, execution=HookExecution.ASYNC, name="audit")
         async def audit(event: Any, ctx: RoomContext) -> None:
             if tells == "a post":
-                await kit.send_event(room_id, poster, TextContent(body="called"))
+                posted.append(await kit.send_event(room_id, poster, TextContent(body="called")))
             else:
                 await channel.inject_text(session, "called")
 
@@ -1189,6 +1190,8 @@ class TestACallFromAnAsyncHook:
             model.answer(session)
             await asyncio.wait_for(_until_the_model_rests(kit, model, room_id), 5)
             assert (len(model.answers), model.silences) == (3, [False, False, True])
+            depths = [e.chain_depth for e in sorted(posted, key=lambda e: e.index)]
+            assert depths == ([1, 2, 3] if tells == "a post" else [])
         finally:
             await kit.close()
 

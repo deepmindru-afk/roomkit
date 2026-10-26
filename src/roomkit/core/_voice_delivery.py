@@ -35,6 +35,12 @@ _INJECTED_DELIVERY: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 """Whether the current task delivers a hook-injected event (RFC §9.4)."""
 
+_DEPTH_TAKEN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "roomkit_voice_depth_taken", default=False
+)
+"""Whether the text the current task injects carries a depth already taken
+where it was decided: a delivery's, as ``deliver()`` was called (RFC §8.3)."""
+
 
 @contextmanager
 def delivering_injected() -> Generator[None]:
@@ -63,7 +69,11 @@ def injection_depth(chain_depth: int) -> int:
     *chain_depth*, or the depth of the work it is injected from (a turn, a
     tool call, a hook's body) when that is deeper, whatever the caller
     passed, as a delivery's (RFC §8.3). An observer that tells the model
-    something at each of its tool calls then ends at the limit too."""
+    something at each of its tool calls then ends at the limit too. A
+    delivery's depth was taken as ``deliver()`` was called, and stays: a
+    worker or a shared queue's drain may run it in another caller's work."""
+    if _DEPTH_TAKEN.get():
+        return chain_depth
     return max(chain_depth, chain_floor())
 
 
@@ -231,13 +241,17 @@ async def _submit(
         started = True
         # An instruction directs the model; content is what someone said (§12.4).
         role = "system" if ctx.instruction else "user"
-        result = (
-            await channel.inject_text(session, ctx.content, role=role, silent=True)
-            if silent
-            else await channel.inject_text(
-                session, ctx.content, role=role, chain_depth=ctx.chain_depth
+        token = _DEPTH_TAKEN.set(True)
+        try:
+            result = (
+                await channel.inject_text(session, ctx.content, role=role, silent=True)
+                if silent
+                else await channel.inject_text(
+                    session, ctx.content, role=role, chain_depth=ctx.chain_depth
+                )
             )
-        )
+        finally:
+            _DEPTH_TAKEN.reset(token)
         outcome = _reported(result, session.id)
         if outcome.status == "sent" and not any(
             session is active for active in active_sessions(channel, ctx.room_id)
