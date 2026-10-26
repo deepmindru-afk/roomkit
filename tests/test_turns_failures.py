@@ -195,17 +195,22 @@ async def test_a_record_value_json_has_no_form_for_crosses_as_its_text() -> None
 
 
 class _ReadsTheRoom(ScriptedChannel):
-    """Keeps what its turn read of the event and the room."""
+    """Keeps what its turn read of the event and the room, and changes the
+    room and the binding it was given."""
 
     async def on_event(self, event: RoomEvent, binding: Any, context: Any) -> ChannelOutput:
         self.read = (event, context)
+        context.room.metadata["changed"] = True
+        binding.metadata["changed"] = True
         return await super().on_event(event, binding, context)
 
 
 async def test_a_request_value_json_has_no_form_for_crosses_as_its_text() -> None:
     """An application in the owner's process keeps an object in a room's
-    metadata or an event's: the request carries it as its text, as the
-    record does, and the turn runs."""
+    metadata: the request carries it as its text, as the record does, and
+    the turn runs. Its committed events, the event it answers and the
+    room's history, cross in memory as the store holds them, frozen records
+    it shares with every reader (RFC §14.4, RMK-985)."""
     channel = _ReadsTheRoom()
     event = _event().model_copy(update={"metadata": {"handle": _Opaque()}})
     room = Room(id="room", metadata={"session": _Opaque()})
@@ -215,9 +220,23 @@ async def test_a_request_value_json_has_no_form_for_crosses_as_its_text() -> Non
 
     assert output.responded
     read_event, read_context = channel.read
-    assert read_event.metadata["handle"].startswith("<")
     assert read_context.room.metadata["session"].startswith("<")
-    assert read_context.recent_events[0].metadata["handle"].startswith("<")
+    assert read_event is event
+    assert read_context.recent_events == [event]
+    assert read_context.recent_events[0] is event
+
+
+async def test_the_executor_changes_its_own_copy_of_the_room_and_binding() -> None:
+    """RMK-985: what crosses as JSON is the executor's own: a channel that
+    changes the room or the binding its turn read changes nothing of the
+    owner's."""
+    channel = _ReadsTheRoom()
+    binding = _binding()
+    context = RoomContext(room=Room(id="room"), bindings=[binding])
+
+    await _client(channel).run(_event(), binding, context)
+
+    assert (context.room.metadata, binding.metadata) == ({}, {})
 
 
 async def test_an_agent_answers_in_a_room_whose_metadata_json_has_no_form_for() -> None:

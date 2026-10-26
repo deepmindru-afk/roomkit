@@ -2,7 +2,9 @@
 
 Every message is serialized to JSON and parsed on the other side, as any
 backend carries it, so the in-memory path is the distributed one on another
-transport. What it alone carries is the owner's execution context: a turn's
+transport; a request's committed events alone cross as the store holds them,
+frozen records it shares with every reader (:class:`CarriedRequest`). What
+it alone carries besides is the owner's execution context: a turn's
 work runs in a copy of the context of the task that submitted it, and its
 stream advances in a copy of the context of the task that first read it, so
 host code that calls the kit from a turn finds the reentrancy guards it finds
@@ -18,7 +20,7 @@ from collections.abc import Coroutine, Sequence
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.exceptions import TurnLinkError
-from roomkit.turns._codec import control_json, request_json
+from roomkit.turns._codec import CarriedRequest, control_json
 from roomkit.turns._error_codec import error_record
 from roomkit.turns._rooms import RoomRecords
 from roomkit.turns.base import (
@@ -102,10 +104,10 @@ class _Pipe:
 
 class _MemoryTurn:
     """What both sides of one in-memory turn share: its two pipes, the
-    request as JSON, and the owner's execution contexts."""
+    request as it is carried, and the owner's execution contexts."""
 
     def __init__(self, request: TurnRequest) -> None:
-        self.request_json = request_json(request)
+        self.request = CarriedRequest.of(request)
         self.channel_id = request.channel_id
         self.frames = _Pipe(request.turn_id, FrameEnvelope)
         self.controls = _Pipe(request.turn_id, ControlEnvelope)
@@ -146,7 +148,7 @@ class _OwnerLink(TurnLink):
 class _ExecutorLink(ExecutorLink):
     def __init__(self, turn: _MemoryTurn) -> None:
         self._turn = turn
-        self.request = TurnRequest.model_validate_json(turn.request_json)
+        self.request = turn.request.request()
 
     async def receive(self) -> Control:
         _, message = await self._turn.controls.get()

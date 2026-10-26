@@ -44,6 +44,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behind the write interface's back: copy it first. SQLiteStore and
   PostgresStore return a new object per read and are unchanged.
 
+- **The in-memory turn backend hands a request's committed events over as
+  they are** (RFC §10.6.1, §14.4, RMK-985). Each turn of an agent in the
+  owner's process wrote its `TurnRequest` as JSON and parsed it back, 383 µs
+  for a request carrying 51 events of history, 87 % of it the history. The
+  event the turn answers and the room's history are frozen records the store
+  already shares with every reader, and now cross by reference; the rest of
+  the request (the room, the bindings, the binding, the notes) still crosses
+  as JSON, so the executor changes its own copy of them. A message to an echo
+  agent takes 1.75 ms instead of 2.19. A value JSON has no form for, kept in
+  an event's metadata, reaches an in-memory executor as the object itself,
+  where it read its text; across Redis it still reads its text, and the
+  room's such values read their text on both. The Redis backend is
+  unchanged.
+
 ### Security
 
 - **BREAKING — an agent's answer text is published only for a delegated
