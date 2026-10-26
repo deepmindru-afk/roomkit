@@ -1077,7 +1077,10 @@ event and a `commit_event()` record included, roots its `parent_event_id` to
 the thread's root), and the edits and deletes of every event it removes (an
 edit holds the corrected text),
 returns their ids, and fires `ON_EVENT_DELETED` once per removed event.
-`kit.update_event()` rewrites an event's content, source or metadata. Neither
+`kit.update_event()` rewrites an event's content, source or metadata, but for
+the record of its author (`metadata["author"]`), which the room fixed at the
+commit: the update keeps it, and writes none on an event committed with none,
+whatever the metadata it is given holds. Neither
 runs the checks above: the host owns their authorization. Neither fails once
 its change is stored: when the room cannot be read after the lock is
 released, a warning is logged and the trigger fires with the context the call
@@ -1371,6 +1374,11 @@ the event it runs for. The call is part of that event's work (RFC §9.5.1):
   and commits ahead of the event being processed. What its own hooks inject
   joins the queue of the section holding the lock, committed once that
   section has released it, after the event being processed.
+- A task a locked hook starts acts for the hook while the hook runs, awaited
+  or not: its call is nested too. Once the hook has returned, the task holds
+  nothing of the lock, though the event's pass still holds it for its next
+  hook: its calls are new arrivals, which wait for the lock and commit after
+  the event.
 - From an off-lock hook's body (`needs_lock=False`), or a `hook_error`
   handler reporting that check's failure, it is **adopted beside** the event:
   no ticket, every hook under the lock, its own section for its commit,
@@ -6862,7 +6870,9 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   room's deletion takes its private state. The keys are the
   implementation's, and each reserves the same key in the room's metadata:
   the base class keeps the value there, and `set` removes the copy there, so
-  an application must not write its own metadata under one. A register the
+  only the runtime writes one there: the kit's `create_room()` and
+  `update_room_metadata()` raise `ValueError` on `author_register` or
+  `_speak_queue_results`, as on a `roomkit:channel_state:` key. A register the
   metadata holds (a room stored before, or a process from an older RoomKit
   writing there) is merged into the store's at the room's next turn that
   names its sender (a BLOCKED turn does not): a register only adds, so the
@@ -7346,7 +7356,7 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 |--------|-------------|
 | `ChannelBinding` | Binding of a channel to a room |
 | `ChannelCapabilities` | Declared capabilities of a channel |
-| `ChannelOutput` | Output of a channel delivery |
+| `ChannelOutput` | Output of a channel delivery; its `metadata_updates` are written on the room once the delivery set has run, a `roomkit:` key or a key of the room's private state dropped with a warning |
 | `EventSource` | Source attribution for an event |
 | `FrameworkEvent` | Lightweight framework lifecycle event |
 | `HookResult` | Result from sync hooks: `.allow()`, `.block(reason)`, `.modify(event)` |
@@ -7497,7 +7507,7 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 | `IdempotencyKeyTakenError` | A store's `commit_event()` of an event under a key its source channel holds in the room for another event; nothing written (RFC §13.4, §14.3) |
 | `RoomNotAttachedError` | Channel acted on a room it is no longer attached to |
 | `ChannelNotFoundError` | Channel not attached to room |
-| `ChannelNotRegisteredError` | Channel not registered with framework |
+| `ChannelNotRegisteredError` | Channel not registered with framework (`send_event()` from it, whether or not the room still binds it) |
 | `ParticipantNotFoundError` | Participant not found in room |
 | `ParticipantNotAdmittedError` | Participant barred from what was asked for them |
 | `IdentityNotFoundError` | Identity not found |
@@ -7553,11 +7563,11 @@ kit = RoomKit(
 
 | Method | Description |
 |--------|-------------|
-| `create_room(room_id?, metadata?, orchestration?)` | Create a room |
+| `create_room(room_id?, metadata?, orchestration?)` | Create a room; *metadata* takes neither a `roomkit:channel_state:` key nor a key of the room's private state (`author_register`, `_speak_queue_results`), `ValueError` |
 | `get_room(room_id)` | Get room by ID |
 | `close_room(room_id)` | Close a room; a CLOSED room is returned as stored, an ARCHIVED one raises `TransitionRefusedError` |
 | `archive_room(room_id)` | Archive a room, the terminal status; an ARCHIVED room is returned as stored |
-| `update_room_metadata(room_id, metadata)` | Update room metadata; a `roomkit:channel_state:` key raises `ValueError` (written by `channel_call` alone), and a turn's `TurnHost.update_room_metadata` refuses every `roomkit:` key |
+| `update_room_metadata(room_id, metadata)` | Update room metadata; a `roomkit:channel_state:` key raises `ValueError` (written by `channel_call` alone), and so does a key of the room's private state (`author_register`, `_speak_queue_results`), written by the runtime alone; a turn's `TurnHost.update_room_metadata` refuses those and every `roomkit:` key |
 | `check_room_timers(room_id)` | Apply one room's due timer transitions, each at the instant it fell due (RFC §5.1) |
 | `check_all_timers()` | Check every ACTIVE and PAUSED room; returns those that transitioned |
 
@@ -7630,7 +7640,7 @@ kit = RoomKit(
 | `setup_task_tools(agent)` | Give an agent (or the id of one the kit holds) `task_status` and `cancel_task`, served by the room's owner: the room's own tasks only (RFC §23.4) |
 | `await start_task(room_id, agent_id, task, hand_back?, organization_id?)` | Start an agent's background task from the host, for any agent of the room |
 | `send_greeting(room_id, channel_id?, greeting?, ..., organization_id=None)` | Send greeting |
-| `send_event(room_id, channel_id, content, ...)` | Send event directly: `INBOUND` from a transport, `OUTBOUND` from an intelligence channel; from the room's own work (a hook, a parse, a delivery, a turn) it draws on that work's reentry budget (RFC §10.5, §9.5.1) |
+| `send_event(room_id, channel_id, content, ...)` | Send event directly: `INBOUND` from a transport, `OUTBOUND` from an intelligence channel; from the room's own work (a hook, a parse, a delivery, a turn) it draws on that work's reentry budget (RFC §10.5, §9.5.1). A channel the kit does not register raises `ChannelNotRegisteredError` before anything is read, one the room still binds included; one the room does not bind, `ChannelNotFoundError` |
 | `await post(room_id, content, *, participant_id?, addressed_to=(), metadata?, channel_id?, organization_id?, idempotency_key?, chain_depth=0)` | Write to the room's people in the host's own name, from a `HostChannel` attached on a room's first post (refused for a room it was detached from, or closed); solicits no agent unless addressed; speaks as a participant the host channel reaches (`ParticipantNotFoundError` for any other id); a key the channel holds returns the original, sending nothing again (RFC §10.5) |
 | `await steer(directive, channel_id, *, room_id=None, turn_id=None, organization_id=None)` | Steer the running turns of an intelligence channel the kit started, wherever they run; answers the loops reached (RFC §21.3, §10.6.8) |
 | `await channel_call(channel_id, room_id, verb, *, organization_id=None, **arguments)` | Run a per-room verb of a channel attached to the room, on the executor holding the room's state (an ACP agent's `set_config_option`, `close_session`, `session_config`, `config_options`); what the room keeps for the channel is stored in its metadata, written by this call alone (RFC §10.6.3, §6.4) |
