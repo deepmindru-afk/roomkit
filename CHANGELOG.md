@@ -254,6 +254,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `playback_timeout` delivers the batch anyway, as `WaitForIdle`'s does, where
   it failed `strategy_failed`.
 
+- **`find_tools` finds a tool asked for by its name** (RMK-993). A query
+  that is a tool's name returns that tool first, compared without case;
+  until now it was scored among the tools sharing its words, and an untagged
+  tool came after every tagged tool of a source that carried the same words
+  in its name and again in its tags (15th of 686 in one catalogue, behind
+  the search and send tools of two mail sources). A query word now counts
+  once per tool, from the strongest field that carries it: the name (×3),
+  else the tags (×2, was ×3), plus the description (×1); a word in both the
+  name and the tags counted twice. A tag stays above the description, as
+  the cross-lingual bridge, and below the name, since a source tags every
+  tool it serves with the same words.
+
 - **A realtime session that ended keeps no transcription state** (RMK-983). A
   transcription the provider handed on once the channel ended its session, or
   while a start that then failed was running, left the session's answer depth
