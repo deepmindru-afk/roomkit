@@ -13,7 +13,7 @@ from roomkit.channels.base import Channel
 from roomkit.core._changes import for_channels
 from roomkit.core._failure_log import log_failure
 from roomkit.core._instructions import response_metadata
-from roomkit.core._reentrance import within_turn
+from roomkit.core._reentrance import answers_past_limit, within_turn
 from roomkit.core._room_metadata import without_framework_keys
 from roomkit.core._turn_runners import TurnRunner
 from roomkit.core._voice_delivery import delivering_injected
@@ -931,7 +931,7 @@ class EventRouter:
             if binding.channel_id != plan.turn_for:
                 return _TargetResult(channel_id=binding.channel_id)
             limit = plan.max_chain_depth or self._max_chain_depth
-            if event.chain_depth + 1 >= limit:
+            if answers_past_limit(event.chain_depth, limit):
                 return self._depth_limit_record(event, binding, limit)
             return None
         if plan is not None and plan.defers_solicitation:
@@ -945,7 +945,7 @@ class EventRouter:
         )
         if not asked:
             return _TargetResult(channel_id=binding.channel_id)
-        if event.chain_depth + 1 >= self._max_chain_depth:
+        if answers_past_limit(event.chain_depth, self._max_chain_depth):
             return self._depth_limit_record(event, binding, self._max_chain_depth)
         return None
 

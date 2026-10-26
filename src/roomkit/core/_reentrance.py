@@ -319,6 +319,12 @@ def within_turn(response_depth: int) -> Generator[None, None, None]:
         _turns.reset(token)
 
 
+def answers_past_limit(chain_depth: int, max_chain_depth: int) -> bool:
+    """Whether an answer to an event *chain_depth* deep would reach
+    *max_chain_depth*, so that no agent is asked to make it (RFC §8.3)."""
+    return chain_depth + 1 >= max_chain_depth
+
+
 def chain_floor() -> int:
     """The least chain depth of a call made in this context, into whatever
     room: the response depth of the deepest turn it runs within that still

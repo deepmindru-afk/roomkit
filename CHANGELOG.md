@@ -178,15 +178,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outside the call's context, so each post started at depth 0, and the
   channel injected a text into its model at any depth. A realtime or
   conference tool call's gate, handler and reports, the observers they fire
-  included, now make their calls into a room at least as deep as the model's
-  answer that issued the call; and a text whose answer would be past the
-  limit (its depth plus one reaching `max_chain_depth`) enters the model's
-  session silently, through a broadcast, a conference or `deliver()`: the
-  model takes it into its context and answers nothing, as an agent past the
-  limit is not asked. With `max_chain_depth=4` the loop ends after three
+  included (a call the session's end cuts, one a reasoning backend's own
+  provider serves), now make their calls into a room at least as deep as
+  the model's answer that issued the call, read as the call arrives; and a
+  text whose answer would be past the limit (its depth plus one reaching
+  `max_chain_depth`) enters the model's session silently, whatever brings
+  it: a broadcast, `deliver()`, a pipeline's handoff greeting, or
+  `inject_text()` with that `chain_depth`. The model takes it into its
+  context and answers nothing, as an agent past the limit is not asked, and
+  the log says why. With `max_chain_depth=4` the loop ends after three
   posts. Behaviour change: in a room with a realtime model and an agent,
-  their exchange ends at the limit one turn sooner, as between two agents.
-  Example: `examples/realtime_tool_observer_depth.py`.
+  their exchange ends at the limit one turn sooner, as between two agents,
+  and a handoff greeting at the limit no longer makes the new agent speak.
+  Migration: raise `max_chain_depth`. Example:
+  `examples/realtime_tool_observer_depth.py`.
 
 ### Fixed
 

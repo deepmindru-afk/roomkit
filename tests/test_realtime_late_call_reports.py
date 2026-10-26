@@ -76,6 +76,30 @@ async def test_a_call_the_session_s_end_cuts_before_its_task_ran_is_reported(doo
     assert seen == [("lookup", True)] and ran == []
 
 
+async def test_a_call_after_its_session_ended_is_reported_and_leaves_no_state() -> None:
+    """A provider call that arrives once its session ended is reported,
+    cancelled, and keeps nothing of the session's: no depth of the model's
+    answers is recorded for a session gone (RMK-983)."""
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rt", provider=provider, transport=MockRealtimeTransport(), tools=TOOLS
+    )
+    kit = RoomKit()
+    kit.register_channel(channel)
+    seen = _audit(kit)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "rt")
+    session = await channel.start_session("r1", "u", "ws")
+    await channel.end_session(session)
+
+    await provider.simulate_tool_call(session, "late", "lookup", {})
+    await _reported(seen)
+    await kit.close()
+
+    assert seen == [("lookup", True)]
+    assert session.id not in channel._answer_depth  # noqa: SLF001
+
+
 class _LateCallProvider(MockRealtimeProvider):
     """Hands on a call its receive loop had in flight when disconnect runs."""
 

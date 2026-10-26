@@ -10,6 +10,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core._reentrance import answers_past_limit
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.delivery import DeliveryError, DeliveryOutcome
 from roomkit.models.enums import Access, RoomStatus
@@ -46,20 +47,32 @@ def delivering_injected() -> Generator[None]:
         _INJECTED_DELIVERY.reset(token)
 
 
-def injection_silent(binding: ChannelBinding, chain_depth: int, kit: RoomKit | None) -> bool:
-    """Whether text *chain_depth* deep, injected into a realtime host's model
-    under *binding*, asks no answer: a muted, output-muted or unwritable
-    binding withholds the model's response, its context still taking the
-    text (RFC §7.2, §7.5); so does the delivery of an event a hook injected,
-    which asks no agent (§9.4), and text whose answer would be past *kit*'s
-    ``max_chain_depth``, as an agent past it is not asked (§8.3)."""
+def injection_silent(binding: ChannelBinding) -> bool:
+    """Whether text injected into a realtime host's model under *binding* asks
+    no answer: a muted, output-muted or unwritable binding withholds the
+    model's response, its context still taking the text (RFC §7.2, §7.5),
+    and so does the delivery of an event a hook injected, which asks no
+    agent (§9.4)."""
     return (
-        binding.muted
-        or binding.output_muted
-        or not binding.can_write
-        or _INJECTED_DELIVERY.get()
-        or (kit is not None and chain_depth + 1 >= kit._max_chain_depth)
+        binding.muted or binding.output_muted or not binding.can_write or _INJECTED_DELIVERY.get()
     )
+
+
+def held_at_the_limit(kit: RoomKit | None, chain_depth: int) -> bool:
+    """Whether text *chain_depth* deep enters a realtime host's model
+    silently because the model's answer would reach *kit*'s
+    ``max_chain_depth``: past it the model is not asked, as an agent is not
+    (RFC §8.3), whatever brings the text. Logged, since nothing else says
+    why the model kept quiet."""
+    if kit is None or not answers_past_limit(chain_depth, kit._max_chain_depth):
+        return False
+    logger.info(
+        "A text %d deep enters the model's session silently: its answer would reach "
+        "max_chain_depth (%d)",
+        chain_depth,
+        kit._max_chain_depth,
+    )
+    return True
 
 
 def _record(ctx: DeliveryContext, channel_id: str, session_id: str) -> VoiceDeliveryRecord:
@@ -158,7 +171,7 @@ async def _validate(
             reason="voice_session_replaced",
             error=DeliveryError(code="voice_session_replaced", message="Pinned session changed"),
         )
-    return injection_silent(binding, ctx.chain_depth, ctx.kit), None
+    return injection_silent(binding), None
 
 
 _INJECTION_OUTCOMES: dict[str, Callable[[VoiceInjectionResult, str], DeliveryOutcome]] = {

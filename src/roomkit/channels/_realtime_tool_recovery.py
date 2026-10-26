@@ -92,6 +92,7 @@ class RealtimeToolRecoveryMixin:
     _track_task: Any  # cross-mixin
     _open_tool_call: Any  # cross-mixin (RealtimeToolsMixin)
     _close_tool_call: Any  # cross-mixin (RealtimeToolsMixin)
+    _session_answer: Any  # cross-mixin (RealtimeTranscriptionMixin)
     _tool_call_span: Any  # cross-mixin (RealtimeToolsMixin)
     _session_catalogue: Any  # cross-mixin (RealtimeToolsMixin)
     inject_text: Any  # cross-mixin (RealtimeVoiceChannel)
@@ -213,7 +214,13 @@ class RealtimeToolRecoveryMixin:
         self, session: VoiceSession, tool_name: str, arguments: dict[str, Any]
     ) -> RealtimeToolCall:
         """A call recovered from speech, on the books under an id of its own."""
-        call = RealtimeToolCall(session, f"recovered-{uuid4().hex[:12]}", tool_name, arguments)
+        call = RealtimeToolCall(
+            session,
+            f"recovered-{uuid4().hex[:12]}",
+            tool_name,
+            arguments,
+            chain_depth=self._session_answer(session.id),
+        )
         self._open_tool_call(call)
         return call
 

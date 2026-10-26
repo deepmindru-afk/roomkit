@@ -20,7 +20,6 @@ from roomkit.channels._realtime_tool_executor import (
     ABANDONED_BY_PROVIDER,
     SESSION_ENDED,
     ToolCallDoor,
-    answer_depth,
     deliver_once,
     ended_outcome,
     judge_tool_call,
@@ -244,7 +243,7 @@ class RealtimeToolsMixin:
     _telemetry_provider: Any
 
     _track_task: Any  # see RealtimeToolsHost — cross-mixin
-    _session_answer_depth: Any  # RealtimeTranscriptionMixin — cross-mixin
+    _session_answer: Any  # RealtimeTranscriptionMixin — cross-mixin
     _expect_provider_output: Any
     _withdraw_provider_output: Any
     _update_idle_event: Any
@@ -305,8 +304,14 @@ class RealtimeToolsMixin:
         """The call a provider issued, unwrapped first, so the books, the span
         and every report, a refusal at entry included, name the tool a
         fixed-declaration call_tool carries, not the transport."""
+        # The call belongs to the model's answer, as deep as its transcript.
         call = RealtimeToolCall.from_provider(
-            session, call_id, name, arguments, mutes=self._mute_on_tool_call
+            session,
+            call_id,
+            name,
+            arguments,
+            mutes=self._mute_on_tool_call,
+            chain_depth=self._session_answer(session.id),
         )
         if call.unreadable is None:
             call.unreadable = self._unwrap_call_tool(call)
@@ -547,10 +552,6 @@ class RealtimeToolsMixin:
     def _call_ended(self, call: RealtimeToolCall) -> bool:
         return call.session.state == VoiceSessionState.ENDED
 
-    def _call_depth(self, call: RealtimeToolCall) -> int:
-        # The call belongs to the model's answer, as deep as its transcript.
-        return self._session_answer_depth(call.session.id).answer
-
     async def _serve_channel_tool(
         self, call: RealtimeToolCall, door: ToolCallDoor, carrying: RoomContext | None
     ) -> ToolOutcome | None:
@@ -653,7 +654,7 @@ class RealtimeToolsMixin:
             self._framework,
             call.room_id or session.room_id,
             actor_id=session.participant_id,
-            chain_depth=answer_depth(self, call),
+            chain_depth=call.chain_depth,
             room=gate_context.room if gate_context is not None else None,
         )
         # What the session declares is the call's resolved toolset, which

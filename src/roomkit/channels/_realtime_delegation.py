@@ -121,6 +121,7 @@ class RealtimeDelegationMixin:
     _session_rooms: dict[str, str]
     _session_tools: dict[str, list[dict[str, Any]]]
     _session_catalogue: Any  # cross-mixin (RealtimeToolsMixin)
+    _session_answer: Any  # cross-mixin (RealtimeTranscriptionMixin)
     _framework: RoomKit | None
     _provider: RealtimeVoiceProvider
     _reasoning_backend: ReasoningBackend | None
@@ -463,7 +464,9 @@ class RealtimeDelegationMixin:
         # (RFC §9.3). Read as a provider's call is: one naming no tool is
         # refused before the gate (RFC §12.4).
         call_id = _backend_call_id(delegation_id, model_call_id())
-        call = RealtimeToolCall.from_provider(session, call_id, name, arguments)
+        call = RealtimeToolCall.from_provider(
+            session, call_id, name, arguments, chain_depth=self._session_answer(session.id)
+        )
         # The task serving the call, and the delegation's that holds it: a
         # call that ends its own session is not taken for one the session's
         # end interrupted, nor cut with its delegation (RFC §12.4).
@@ -528,7 +531,11 @@ class RealtimeDelegationMixin:
         """A call a backend reports outside the gate, under an id of its
         delegation, in the session's room."""
         call = RealtimeToolCall(
-            session, _backend_call_id(delegation_id, tool_call_id), name, arguments
+            session,
+            _backend_call_id(delegation_id, tool_call_id),
+            name,
+            arguments,
+            chain_depth=self._session_answer(session.id),
         )
         call.room_id = self._session_rooms.get(session.id) or session.room_id
         return call

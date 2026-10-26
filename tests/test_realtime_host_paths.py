@@ -13,6 +13,7 @@ context (``get_current_voice_session()``), the conference's included.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -211,20 +212,25 @@ async def test_a_pipelines_handoff_greeting_is_announced() -> None:
     assert roles == ["system"]
 
 
-async def test_a_pipelines_handoff_greeting_continues_the_chain() -> None:
-    """The handoff call answers at depth 4 here; the new agent's greeting
-    goes in at that depth, so its answer is 5, never a chain restarted at 1
-    (RFC §8.3)."""
+@pytest.mark.parametrize(("heard", "silent", "answer"), [(2, False, 4), (3, True, 4)])
+async def test_a_pipelines_handoff_greeting_continues_the_chain(
+    heard: int, silent: bool, answer: int
+) -> None:
+    """The handoff call answers one deeper than what the model heard; the
+    new agent's greeting goes in at that depth, never a chain restarted at 1
+    (RFC §8.3). At 4, its answer would reach the default max_chain_depth of
+    5: the greeting enters silently and asks the model nothing (RMK-983)."""
     kit, channel, provider = await _voice()
     session = await _handing_off(kit, channel, provider)
-    channel._session_answer_depth(session.id).injected(3)
+    channel._session_answer_depth(session.id).injected(heard)
 
-    await _hand_off(provider, session)
-    await until(lambda: bool(_injected(provider)))
-    answer = channel._session_answer_depth(session.id).answer
+    with patch.object(provider, "inject_text", wraps=provider.inject_text) as inject:
+        await _hand_off(provider, session)
+        await until(lambda: inject.called)
+    after = channel._session_answer_depth(session.id).answer
     await kit.close()
 
-    assert answer == 5
+    assert (inject.call_args.kwargs["silent"], after) == (silent, answer)
 
 
 # -- the issuing session in the handler's context, on every door -------------

@@ -330,3 +330,11 @@ class RealtimeTranscriptionMixin:
         """What the session's model heard last (RFC §12.4)."""
         with self._state_lock:
             return self._answer_depth.setdefault(session_id, AnswerDepth())
+
+    def _session_answer(self, session_id: str) -> int:
+        """The depth of the session's model's next answer, read without
+        keeping state for a session that holds none: a call that arrives
+        once its session ended leaves nothing behind (RFC §12.4)."""
+        with self._state_lock:
+            depth = self._answer_depth.get(session_id)
+        return (depth or AnswerDepth()).answer

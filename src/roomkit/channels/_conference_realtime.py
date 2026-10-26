@@ -62,7 +62,6 @@ from roomkit.channels._realtime_tool_executor import (
     ABANDONED_BY_PROVIDER,
     SESSION_ENDED,
     ToolCallDoor,
-    answer_depth,
     report_cancelled_call,
     report_interrupted_calls,
     run_tool_call,
@@ -73,6 +72,7 @@ from roomkit.channels._realtime_tool_executor import (
 )
 from roomkit.channels._served_tools import CollisionLog, dict_tool_name, warn_tools_uncallable
 from roomkit.channels._tool_registry import schema_tool
+from roomkit.core._voice_delivery import held_at_the_limit
 from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.core.task_utils import held_runs, log_task_exception, start_named
 from roomkit.models.enums import ChannelType
@@ -555,6 +555,7 @@ class ConferenceRealtime:
         room = self._rooms.get(session.room_id)
         if config is None or not serves(room.session if room else None, session):
             return VoiceInjectionResult(status="not_sent", reason="realtime_session_gone")
+        silent = silent or held_at_the_limit(self._framework, chain_depth)
         with self._operations.use(
             ConferenceResource.REALTIME, what=f"text injection for room {session.room_id}"
         ):
@@ -780,8 +781,11 @@ class ConferenceRealtime:
     async def _on_tool_call(
         self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any] | str
     ) -> None:
+        room = self._rooms.get(session.room_id or "")
+        # The call belongs to the model's answer, as deep as its transcript.
+        depth = (room.answer_depth if room is not None else AnswerDepth()).answer
         call = RealtimeToolCall.from_provider(
-            session, call_id, name, arguments, room_id=session.room_id
+            session, call_id, name, arguments, room_id=session.room_id, chain_depth=depth
         )
         if not self._held_for_start(call):
             self._take_call(call)
@@ -991,10 +995,6 @@ class ConferenceRealtime:
         room = self._rooms.get(call.room_id or "")
         return room is None or room.session is not call.session
 
-    def _call_depth(self, call: RealtimeToolCall) -> int:
-        room = self._rooms.get(call.room_id or "")
-        return room.answer_depth.answer if room is not None else 0
-
     async def _serve_channel_tool(
         self, call: RealtimeToolCall, door: ToolCallDoor, carrying: RoomContext | None
     ) -> ToolOutcome | None:
@@ -1011,7 +1011,7 @@ class ConferenceRealtime:
             # as on every channel (RFC §9.3, §21.4).
             raise UnservedToolCallError(call.name)
         serve, asks = server
-        loop_ctx = await self._call_context(config, str(call.room_id), answer_depth(self, call))
+        loop_ctx = await self._call_context(config, str(call.room_id), call.chain_depth)
         with serving_tool_call(call, self._channel_id, loop_ctx):
             bound = config.tool_bound(call.name, waits=asks)
             answered = await answer_within(bound, call.name, serve())

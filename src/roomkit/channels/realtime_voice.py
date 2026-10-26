@@ -86,7 +86,7 @@ from roomkit.channels.base import (
     _check_room_scope,
 )
 from roomkit.core._participant_channels import record_reached
-from roomkit.core._voice_delivery import injection_silent
+from roomkit.core._voice_delivery import held_at_the_limit, injection_silent
 from roomkit.core.task_utils import CLOSE_WAIT_S, _finish_cleanup, close_unstarted
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
@@ -1038,6 +1038,7 @@ class RealtimeVoiceChannel(
             return VoiceInjectionResult(status="not_sent", reason="realtime_session_gone")
         if start_audio_stream:
             await self._provider.start_audio_stream(session)
+        silent = silent or held_at_the_limit(self._framework, chain_depth)
         result = await self._provider.inject_text(session, text, role=role, silent=silent)
         if result is not None and result.status == "sent":
             if not silent:
@@ -2129,10 +2130,9 @@ class RealtimeVoiceChannel(
             return ChannelOutput.empty()
 
         # Into every live session of the room, as any injection goes: silent
-        # under a muted binding, for an event a hook injected, which asks no
-        # agent (RFC §9.4), and past the depth limit (§8.3); one deeper than
-        # the event, announced once.
-        silent = injection_silent(binding, event.chain_depth, self._framework)
+        # under a muted binding and for an event a hook injected, which asks
+        # no agent (RFC §9.4), one deeper than the event, announced once.
+        silent = injection_silent(binding)
         for session in self.get_room_sessions(event.room_id):
             try:
                 await self._inject(

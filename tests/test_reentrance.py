@@ -28,6 +28,7 @@ from roomkit import (
     ReentryLoopCapError,
     RoomKit,
 )
+from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.base import Channel
 from roomkit.channels.conference import ConferenceChannel
@@ -50,12 +51,13 @@ from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.models.streaming import SegmentBreakMarker
 from roomkit.orchestration.strategies.discussion import Discussion
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall, ServedCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.mock import MockTelemetryProvider
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.realtime.reasoning import AgentReasoningBackend
 from tests.conference.test_conference_realtime import ROOM, _Source, realtime_kit, until
 from tests.conference.test_conference_tool_calls import LOOKUP
 from tests.test_framework import AILikeChannel, SimpleChannel
@@ -947,6 +949,50 @@ async def _conference_model_host(model: _AnsweringModel) -> tuple[RoomKit, str, 
     return kit, ROOM, "src", session
 
 
+def _realtime_reported_outside(
+    report: str,
+) -> tuple[RealtimeVoiceChannel, MockRealtimeProvider, asyncio.Event]:
+    """A realtime channel whose call is reported outside its run: its handler
+    never returns, so the session's end cuts it; or a reasoning backend whose
+    own provider serves the call it makes."""
+    entered = asyncio.Event()
+
+    async def lookup(name: str, arguments: dict[str, Any]) -> str:
+        entered.set()
+        await asyncio.Event().wait()
+        return "never"
+
+    if report == "the session's end":
+        provider = MockRealtimeProvider()
+        channel = RealtimeVoiceChannel(
+            "rt",
+            provider=provider,
+            transport=MockRealtimeTransport(),
+            tools=[LOOKUP],
+            tool_handler=lookup,
+        )
+        return channel, provider, entered
+    served = AIToolCall(
+        id="p1", name="web_search", arguments={"q": "x"}, served=ServedCall(result="3 hits")
+    )
+    ai = MockAIProvider(
+        ai_responses=[
+            AIResponse(content="", finish_reason="tool_calls", tool_calls=[served]),
+            AIResponse(content="done"),
+        ]
+    )
+    provider = MockRealtimeProvider(full_duplex=True)
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[LOOKUP],
+        tool_handler=lookup,
+        reasoning_backend=AgentReasoningBackend(Agent("reasoner", provider=ai)),
+    )
+    return channel, provider, entered
+
+
 _MODEL_HOSTS: dict[str, Callable[[_AnsweringModel], Awaitable[tuple[RoomKit, str, str, Any]]]] = {
     "realtime": _realtime_model_host,
     "conference": _conference_model_host,
@@ -1133,6 +1179,38 @@ class TestACallFromAnAsyncHook:
             model.answer(session)
             await asyncio.wait_for(_until_the_model_rests(kit, model, room_id), 5)
             assert [e.chain_depth for e in sorted(posted, key=lambda e: e.index)] == [1, 2, 3]
+        finally:
+            await kit.close()
+
+    @pytest.mark.parametrize("report", ["the session's end", "the backend's provider"])
+    async def test_an_observer_of_a_realtime_call_reported_outside_its_run_posts_at_its_depth(
+        self, report: str
+    ) -> None:
+        """RMK-983: a realtime call reported outside its run, the session's
+        end cutting it or the reasoning backend's own provider serving it,
+        fires its observers at the depth of the answer that issued it: 3,
+        the model having heard an event 2 deep (RFC §8.3, §9.5.1)."""
+        kit = await _room(RoomKit(max_chain_depth=10))
+        channel, provider, entered = _realtime_reported_outside(report)
+        kit.register_channel(channel)
+        await kit.attach_channel("r1", "rt")
+        posted: list[RoomEvent] = []
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+        async def audit(event: Any, ctx: RoomContext) -> None:
+            posted.append(await kit.send_event("r1", "sms", TextContent(body="reported")))
+
+        try:
+            session = await channel.start_session("r1", "u", object())
+            channel._session_answer_depth(session.id).injected(2)  # noqa: SLF001
+            if report == "the session's end":
+                await provider.simulate_tool_call(session, "c1", "lookup", {})
+                await asyncio.wait_for(entered.wait(), 2)
+                await channel.end_session(session)
+            else:
+                await provider.simulate_delegation(session, "d1", "integrator")
+            await until(lambda: bool(posted))
+            assert [e.chain_depth for e in posted] == [3]
         finally:
             await kit.close()
 

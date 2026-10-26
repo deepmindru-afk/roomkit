@@ -100,11 +100,6 @@ class ToolCallHost(Protocol):
         """Whether whoever issued *call* is gone (its session ended)."""
         ...
 
-    def _call_depth(self, call: RealtimeToolCall) -> int:
-        """The chain depth of the model's answer *call* belongs to, as the
-        model's last hearing gives it now (RFC §8.3, §12.4)."""
-        ...
-
     async def _serve_channel_tool(
         self, call: RealtimeToolCall, door: ToolCallDoor, carrying: RoomContext | None
     ) -> ToolOutcome | None:
@@ -141,26 +136,18 @@ async def run_tool_call(
     hooks call into a room is at least as deep as the answer that issued it
     (:func:`at_answer_depth`).
     """
-    with serving_call(call), at_answer_depth(host, call):
+    with serving_call(call), at_answer_depth(call):
         return await _run_tool_call(host, call, door)
 
 
-def answer_depth(host: ToolCallHost, call: RealtimeToolCall) -> int:
-    """The chain depth of the answer that issued *call*: read from *host* the
-    first time the call's work needs it, the same for the rest of it."""
-    if call.chain_depth is None:
-        call.chain_depth = host._call_depth(call)
-    return call.chain_depth
-
-
 @contextlib.contextmanager
-def at_answer_depth(host: ToolCallHost, call: RealtimeToolCall) -> Generator[None, None, None]:
+def at_answer_depth(call: RealtimeToolCall) -> Generator[None, None, None]:
     """*call*'s work, every call it makes into a room at least as deep as the
     answer that issued it while it runs, as a turn's is (RFC §8.3): its gate,
     its handler, its reports, and the observers they fire, which keep that
     floor once it is over (§9.5.1). A loop of observer post, the model's
     answer, its call and the next post then deepens at each round."""
-    with within_turn(answer_depth(host, call)):
+    with within_turn(call.chain_depth):
         yield
 
 
@@ -414,7 +401,7 @@ async def report_failed_call(
         error_detail=outcome.detail,
     )
     try:
-        with at_answer_depth(host, call):
+        with at_answer_depth(call):
             await framework._observe_failed_tool_call(
                 event, host.channel_id, claim=call.claim_report
             )
@@ -434,7 +421,7 @@ async def report_served_elsewhere(
         return
     event = replace(host._tool_event(call, result), is_error=is_error, error_detail=detail)
     try:
-        with at_answer_depth(host, call):
+        with at_answer_depth(call):
             await framework._report_tool_call(event, host.channel_id, claim=call.claim_report)
     except Exception:
         logger.warning("ON_TOOL_CALL report failed for tool %s", call.name, exc_info=True)
