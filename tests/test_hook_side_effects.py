@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from roomkit.channels.agent import Agent
 from roomkit.channels.base import Channel
 from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -18,9 +19,10 @@ from roomkit.models.enums import (
     HookExecution,
     HookTrigger,
 )
-from roomkit.models.event import RoomEvent, TextContent
-from roomkit.models.hook import HookResult
+from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.task import Observation, Task
+from roomkit.providers.ai.mock import MockAIProvider
 from tests.test_framework import SimpleChannel
 
 
@@ -100,6 +102,18 @@ class UpdatingChannel(Channel):
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
         return ChannelOutput(metadata_updates=dict(self._updates))
+
+
+class _NotesSources(UpdatingChannel):
+    """A transport whose delivery notes, on the room, whose event it delivered."""
+
+    def __init__(self, channel_id: str) -> None:
+        super().__init__(channel_id, {})
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        return ChannelOutput(metadata_updates={f"seen_{event.source.channel_id}": True})
 
 
 @pytest.fixture
@@ -310,3 +324,42 @@ class TestBroadcastMetadataUpdatesApplied:
         assert len(dropped) == 2
         assert "ai1" in dropped[0] and "'roomkit:forged'" in dropped[0]
         assert "crm" in dropped[1] and "'author_register'" in dropped[1]
+
+    @pytest.mark.parametrize("delivery", ["a hook's injection", "a task's child room"])
+    async def test_a_transport_s_updates_are_written_whatever_it_delivered(
+        self, kit: RoomKit, delivery: str
+    ) -> None:
+        """RMK-976: a transport's updates are written on the room it delivered
+        in, whatever it delivered there: an event a hook injected, or a
+        delegated task's answer in its child room, which shares the
+        transport."""
+        kit.register_channel(_NotesSources("crm"))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "crm")
+        if delivery == "a task's child room":
+            kit.register_channel(Agent("worker", provider=MockAIProvider(responses=["done"])))
+            task = await kit.delegate("r1", "worker", "go", share_channels=["crm"], wait=True)
+            await task.wait()
+            room = await kit.get_room(task.child_room_id)
+            assert room.metadata.get("seen_worker") is True
+            return
+
+        kit.register_channel(SimpleChannel("sms1"))
+        await kit.attach_channel("r1", "sms1")
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST)
+        async def inject(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if event.source.channel_id != "sms1":
+                return HookResult.allow()
+            note = RoomEvent(
+                room_id="r1",
+                source=EventSource(channel_id="hooknote", channel_type=ChannelType.SYSTEM),
+                content=TextContent(body="note"),
+            )
+            return HookResult.allow([InjectedEvent(event=note, target_channel_ids=["crm"])])
+
+        await kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="user1", content=TextContent(body="hi"))
+        )
+        room = await kit.get_room("r1")
+        assert room.metadata.get("seen_hooknote") is True
