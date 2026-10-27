@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.110.0] — 2026-10-27
+
 ### Added
 
 - `AIChannel(serialize_room_turns=True)` (and `Agent`): the agent's turns in a
@@ -22,12 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message the running turn sends into its own room (a tool's
   `process_inbound`, `send_event` or `post`) that asks the same agent is
   answered after that turn: the call returns without waiting for the answer.
-  A muted agent still reads each message as it comes, its answer withheld.
-  The order is the room owner's, per process, as an ACP agent's is; a strategy
-  that takes the agent's turns (`Loop`, `Supervisor`) orders them itself. The
-  owner reads it from `Channel.serializes_room_turns`, which
-  `ChannelDeclaration` carries for an agent built on an executor elsewhere. `examples/agent_turns_in_order.py`
-  runs it.
+  A muted agent still reads each message as it comes, its answer withheld;
+  one muted while its turn waits is withheld too, since a turn that waited is
+  delivered on the room it starts in: a streaming client sees it begin once
+  the turn before it has ended, and a hook judges its answer with the answer
+  before it. Two such agents that ask each other from their running turns
+  wait on each other until the tool's timeout (`tool_timeout_seconds`), and
+  neither question is answered: only a message to the same agent is answered
+  after its turn. The order is the room owner's, per process, as an ACP
+  agent's is; a strategy that takes the agent's turns (`Loop`, `Supervisor`)
+  orders them itself. The owner reads it from `Channel.serializes_room_turns`,
+  which `ChannelDeclaration` carries for an agent built on an executor
+  elsewhere. `examples/agent_turns_in_order.py` runs it.
 
 - `LocalAudioBackend(output_latency_ms=...)`: the output latency the speaker
   asks PortAudio for, in milliseconds (RMK-554). The default (`None`) is
@@ -91,6 +99,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event or a history event in place (`event.metadata["x"] = ...`) now changes
   the owner's object, and on `InMemoryStore` the stored record: copy it first
   (`event.model_copy(update=...)`), as RFC §14.4 always asked.
+
+### Fixed
+
+- **A queued delivery is made by the caller that queued it** (RFC §8.3, §22.2,
+  RMK-983). A `Queued` strategy shared by several callers (the kit's
+  `delivery_strategy="queued"`) delivered every caller's request from the
+  first caller's drain, inside that caller's work: an application's message at
+  depth 0, queued while a hook delivered from work 3 deep, was stored 3 deep,
+  and at the limit no agent was asked; a voice text queued behind a
+  hook-injected one entered silently. The caller that drains now delivers the
+  batch its own request heads, then hands the drain to the caller whose
+  request heads the queue, which delivers that batch in its own task, with its
+  own depth, frames and room lock: a locked hook that drains no longer leaves
+  the callers behind it waiting on the lock it holds. A caller cancelled while
+  it waits withdraws its request, and hands on a drain it was handed; a caller
+  cancelled while it drains hands the drain on too, where every caller behind
+  it was cancelled; a caller whose request its batch carried, cut while it
+  was sent, receives `unknown` (`strategy_outcome_unknown`), where it
+  received `CancelledError`: the batch may or may not have reached the
+  channel. A wait for idle longer than
+  `playback_timeout` delivers the batch anyway, as `WaitForIdle`'s does, where
+  it failed `strategy_failed`.
+
+- **A caller holding a room's lock delivers past a queue another caller
+  drains** (RFC §9.5.1, §22.2, RMK-997). A locked hook (a SYNC
+  `BEFORE_BROADCAST`) that delivered, into its room or another one, through
+  a shared `Queued` strategy while another caller drained it waited behind a
+  batch whose delivery needed the lock the hook held: both ended at
+  `process_timeout`, the hook's message refused, nothing written. So did a
+  hook delivering from the very message the kit-wide strategy
+  (`delivery_strategy="queued"`, one queue for every room) was delivering.
+  Such a caller now delivers at once, unbatched, as `Immediate` does: it is
+  nested in the section that holds the lock, which a batch cannot wait on. A
+  caller holding a lock that finds no drain under way drains as before.
+
+- **`find_tools` finds a tool asked for by its name** (RMK-993). A query
+  that is a tool's name returns that tool first, compared without case;
+  until now it was scored among the tools sharing its words, and an untagged
+  tool came after every tagged tool of a source that carried the same words
+  in its name and again in its tags (15th of 686 in one catalogue, behind
+  the search and send tools of two mail sources). A query word now counts
+  once per tool, from the strongest field that carries it: the name (×3),
+  else the tags (×2, was ×3), plus the description (×1); a word in both the
+  name and the tags counted twice. A tag stays above the description, as
+  the cross-lingual bridge, and below the name, since a source tags every
+  tool it serves with the same words.
+
+- **A realtime session that ended keeps no transcription state** (RMK-983). A
+  transcription the provider handed on once the channel ended its session, or
+  while a start that then failed was running, left the session's answer depth
+  and its ordering lock behind for good, one of each per call that ended so: a
+  slow leak on a server that takes many calls. Such a transcription was
+  already dropped, its room gone; now nothing of it is kept, and a start that
+  fails forgets what was transcribed and when the user's turn began, as a
+  session's end does. An `ON_TRANSCRIPTION` hook still running as the session
+  ends, and an injection the provider still held, no longer write the
+  session's last text or its depth back after it; on a conference, whose room
+  outlives its session, an injection held across a reconnect no longer moves
+  the new session's next answer. A start that fails also forgets its barge-in
+  state. The last words a provider hands on as its connection drops are still
+  recorded: the session is its room's until the channel ends it.
+
+- **A channel's `metadata_updates` are written on the room** (RFC §10.1 step
+  15, RMK-976). The core collected them in `BroadcastResult.metadata_updates`
+  and never wrote them, and dropped a transport's `deliver()` ones: a
+  transport returning `{"crm_contact": "c_42"}` left the room's metadata
+  without it, on every store. The updates of `on_event()` and `deliver()`
+  are now merged key by key in the order the targets answered and written
+  once per delivery set, a partial update under the room lock, before
+  `AFTER_BROADCAST`. A key only the framework writes, under `roomkit:` or of
+  the room's private state (`author_register`, `_speak_queue_results`), is
+  dropped with a warning naming the channel, the rest applied.
+
+- **BREAKING — `send_event()` refuses a channel the kit does not register**
+  (RFC §10.5, RMK-977). A channel never registered raised
+  `ChannelNotFoundError`, as a channel the room does not bind does, and one
+  the room still bound after `unregister_channel()` wrote and delivered the
+  event. Both now raise `ChannelNotRegisteredError` before anything is read,
+  nothing written. `post()` already refused an unregistered host channel so,
+  and `commit_event()`, whose record reaches no one, takes any source as
+  before. A task's posted result, the agent's message, is still committed
+  from a process that does not register the agent (RFC §19.7.5 rule 19).
+  Migration: a caller that caught `ChannelNotFoundError` for an unknown
+  channel catches `ChannelNotRegisteredError` too, or `RoomKitError`.
 
 ### Security
 
@@ -166,11 +258,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   held for it, and ran its hooks there. A hook's body now has the room locks
   lent to it only while it runs: a task it starts acts for it until it
   returns, awaited or not, and its later calls wait for the lock and commit
-  after the event, as roomkit-rs does since its step3-m2 18c7b94. Such a
-  call is an ordinary arrival, neither refused nor adopted: a later hook of
-  the same pass that awaits the task waits for the lock its pass holds, until
-  its own timeout, which cancels the task it awaited unless it shields it.
-  Await work in the hook that starts it. An
+  after the event. Such a call is an ordinary arrival, neither refused nor
+  adopted: a later hook of the same pass that awaits the task waits for the
+  lock its pass holds, until its own timeout, which cancels the task it
+  awaited unless it shields it. Await work in the hook that starts it. An
   off-lock hook's body is held to the same rule: a task it starts stands in
   the event's admission order only while the body runs, and its call once
   the body has returned, while the check's next hook runs, takes a ticket and
@@ -279,90 +370,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answers one made at the limit. Migration: raise `max_chain_depth`.
   Examples: `examples/hook_observer_depth.py`,
   `examples/realtime_tool_observer_depth.py`.
-
-### Fixed
-
-- **A queued delivery is made by the caller that queued it** (RFC §8.3, §22.2,
-  RMK-983). A `Queued` strategy shared by several callers (the kit's
-  `delivery_strategy="queued"`) delivered every caller's request from the
-  first caller's drain, inside that caller's work: an application's message at
-  depth 0, queued while a hook delivered from work 3 deep, was stored 3 deep,
-  and at the limit no agent was asked; a voice text queued behind a
-  hook-injected one entered silently. The caller that drains now delivers the
-  batch its own request heads, then hands the drain to the caller whose
-  request heads the queue, which delivers that batch in its own task, with its
-  own depth, frames and room lock: a locked hook that drains no longer leaves
-  the callers behind it waiting on the lock it holds. A caller cancelled while
-  it waits withdraws its request, and hands on a drain it was handed; a caller
-  cancelled while it drains hands the drain on too, where every caller behind
-  it was cancelled; a caller whose request its batch carried, cut while it
-  was sent, receives `unknown` (`strategy_outcome_unknown`), where it
-  received `CancelledError`: the batch may or may not have reached the
-  channel. A wait for idle longer than
-  `playback_timeout` delivers the batch anyway, as `WaitForIdle`'s does, where
-  it failed `strategy_failed`.
-
-- **A caller holding a room's lock delivers past a queue another caller
-  drains** (RFC §9.5.1, §22.2, RMK-997). A locked hook (a SYNC
-  `BEFORE_BROADCAST`) that delivered, into its room or another one, through
-  a shared `Queued` strategy while another caller drained it waited behind a
-  batch whose delivery needed the lock the hook held: both ended at
-  `process_timeout`, the hook's message refused, nothing written. So did a
-  hook delivering from the very message the kit-wide strategy
-  (`delivery_strategy="queued"`, one queue for every room) was delivering.
-  Such a caller now delivers at once, unbatched, as `Immediate` does: it is
-  nested in the section that holds the lock, which a batch cannot wait on. A
-  caller holding a lock that finds no drain under way drains as before.
-
-- **`find_tools` finds a tool asked for by its name** (RMK-993). A query
-  that is a tool's name returns that tool first, compared without case;
-  until now it was scored among the tools sharing its words, and an untagged
-  tool came after every tagged tool of a source that carried the same words
-  in its name and again in its tags (15th of 686 in one catalogue, behind
-  the search and send tools of two mail sources). A query word now counts
-  once per tool, from the strongest field that carries it: the name (×3),
-  else the tags (×2, was ×3), plus the description (×1); a word in both the
-  name and the tags counted twice. A tag stays above the description, as
-  the cross-lingual bridge, and below the name, since a source tags every
-  tool it serves with the same words.
-
-- **A realtime session that ended keeps no transcription state** (RMK-983). A
-  transcription the provider handed on once the channel ended its session, or
-  while a start that then failed was running, left the session's answer depth
-  and its ordering lock behind for good, one of each per call that ended so: a
-  slow leak on a server that takes many calls. Such a transcription was
-  already dropped, its room gone; now nothing of it is kept, and a start that
-  fails forgets what was transcribed and when the user's turn began, as a
-  session's end does. An `ON_TRANSCRIPTION` hook still running as the session
-  ends, and an injection the provider still held, no longer write the
-  session's last text or its depth back after it; on a conference, whose room
-  outlives its session, an injection held across a reconnect no longer moves
-  the new session's next answer. A start that fails also forgets its barge-in
-  state. The last words a provider hands on as its connection drops are still
-  recorded: the session is its room's until the channel ends it.
-
-- **A channel's `metadata_updates` are written on the room** (RFC §10.1 step
-  15, RMK-976). The core collected them in `BroadcastResult.metadata_updates`
-  and never wrote them, and dropped a transport's `deliver()` ones: a
-  transport returning `{"crm_contact": "c_42"}` left the room's metadata
-  without it, on every store. The updates of `on_event()` and `deliver()`
-  are now merged key by key in the order the targets answered and written
-  once per delivery set, a partial update under the room lock, before
-  `AFTER_BROADCAST`. A key only the framework writes, under `roomkit:` or of
-  the room's private state (`author_register`, `_speak_queue_results`), is
-  dropped with a warning naming the channel, the rest applied.
-
-- **BREAKING — `send_event()` refuses a channel the kit does not register**
-  (RFC §10.5, RMK-977). A channel never registered raised
-  `ChannelNotFoundError`, as a channel the room does not bind does, and one
-  the room still bound after `unregister_channel()` wrote and delivered the
-  event. Both now raise `ChannelNotRegisteredError` before anything is read,
-  nothing written. `post()` already refused an unregistered host channel so,
-  and `commit_event()`, whose record reaches no one, takes any source as
-  before. A task's posted result, the agent's message, is still committed
-  from a process that does not register the agent (RFC §19.7.5 rule 19).
-  Migration: a caller that caught `ChannelNotFoundError` for an unknown
-  channel catches `ChannelNotRegisteredError` too, or `RoomKitError`.
 
 ## [0.109.0] — 2026-10-25
 
@@ -19247,7 +19254,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.109.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.110.0...HEAD
+[0.110.0]: https://github.com/roomkit-live/roomkit/compare/v0.109.0...v0.110.0
 [0.109.0]: https://github.com/roomkit-live/roomkit/compare/v0.108.0...v0.109.0
 [0.108.0]: https://github.com/roomkit-live/roomkit/compare/v0.107.0...v0.108.0
 [0.107.0]: https://github.com/roomkit-live/roomkit/compare/v0.106.0...v0.107.0
