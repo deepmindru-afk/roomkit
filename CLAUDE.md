@@ -45,7 +45,7 @@ uv sync --extra dev              # Install dependencies
 make all                         # Lint + typecheck + security + test (run before committing)
 make test                        # Whole suite, one worker per core (pytest-xdist)
 make test-changed                # Only the tests whose code changed (pytest-testmon)
-make api-snapshot                # Rewrite tests/public_api_signatures.json (commit that breaks a public signature on purpose)
+make api-snapshot                # Rewrite the public API snapshot (any commit that changes the public surface; a break also carries its BREAKING entry)
 uv run pytest tests/test_X.py -v # Run specific test file
 uv run ruff check src/ tests/    # Lint
 uv run ruff check --fix          # Lint with auto-fix

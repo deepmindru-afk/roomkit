@@ -13,21 +13,24 @@ markers. A member's first item says what it is: ``def``, ``async def``,
 ``test_public_api.py`` compares the code with the snapshot. A change that can
 break a caller fails: a name, member or parameter removed or renamed, a
 parameter made required or moved, a default changed, a method made async, an
-enum member's value changed. An addition a caller cannot notice passes and
-needs no entry. The commit that breaks on purpose rewrites the snapshot with
-``make api-snapshot`` and carries its BREAKING entry.
+enum member's value changed. An addition, or a change no caller notices,
+fails too until the snapshot holds it: the files are the exact public
+surface, which roomkit-rs pins and mirrors. The commit that changes the
+surface rewrites the snapshot with ``make api-snapshot``; one that breaks a
+caller on purpose also carries its BREAKING entry.
 
 ``tests/public_api_names.json`` holds every name each package exports in its
 ``__all__``, constants and re-exports included: ``test_public_api.py`` fails
 on one dropped from its package, which a name the signatures resolve by
 import alone would not show. ``make api-snapshot`` rewrites both files in an
-environment of its own installed with ``--extra all``, so a name only an
-extra of that set resolves (``roomkit.webrtc``, which needs fastapi) is
-pinned too; the extras outside it (livekit, docs, pynacl, webtransport, the
-local model runtimes neutts, qwen-*, pocket-tts, phonon and vui, and a few
-others) are not installed there. Written elsewhere, a package or a name whose
-optional dependency the environment lacks keeps what the files hold for it,
-and the guard leaves it out; a roomkit module that is gone drops its names.
+environment of its own installed with ``--extra all`` and ``--extra dev``, so
+every name the dev environment resolves is pinned, and so is a name only an
+extra of ``all`` resolves (``roomkit.webrtc``, which needs fastapi); the
+extras outside both (webtransport, the local model runtimes neutts, qwen-*,
+pocket-tts, phonon and vui, and a few others) are not installed there.
+Written elsewhere, a package or a name whose optional dependency the
+environment lacks keeps what the files hold for it, and the guard leaves it
+out; a roomkit module that is gone drops its names.
 
 A hook pydantic calls on a model (``model_post_init``,
 ``model_parametrized_name``) is left out too: no caller calls it, so an
@@ -111,6 +114,35 @@ def breaks_since_snapshot() -> list[str]:
         if obj is not _OPTIONAL:
             found += object_breaks(path, old, None if obj is _ABSENT else describe(obj))
     return found
+
+
+def drift_since_snapshot() -> list[str]:
+    """Where the code's signatures differ from the snapshot's: a name, member or
+    parameter added, or a change, compatible or not. What breaks a caller is
+    :func:`breaks_since_snapshot`'s to name."""
+    held = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+    found: list[str] = []
+    for path, members in build().items():
+        before = held.get(path)
+        if before is None:
+            found.append(f"{path}: not in the snapshot")
+            continue
+        for member, spec in members.items():
+            if before.get(member) != spec:
+                where = path if member == "__call__" else f"{path}.{member}"
+                found.append(f"{where}: {before.get(member)} in the snapshot, {spec} in the code")
+    return found
+
+
+def names_since_snapshot() -> list[str]:
+    """The names a package exports that :data:`NAMES` does not hold."""
+    held = {package: set(names) for package, names in json.loads(NAMES.read_text()).items()}
+    return [
+        f"{package}.{name}"
+        for package, names in exported_names().items()
+        for name in names
+        if name not in held.get(package, ())
+    ]
 
 
 def describe(obj: Any) -> dict[str, Spec]:

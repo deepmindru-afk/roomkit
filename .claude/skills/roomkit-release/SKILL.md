@@ -246,20 +246,19 @@ two footer links, and say so.
 ```bash
 make llms-full                 # rebuilds llms-full.txt from docs/c7/
 git status --porcelain llms-full.txt
-make api-snapshot              # pins the public signatures the cycle added
+make api-snapshot              # must leave both snapshot files as they are
 git diff --stat tests/public_api_signatures.json
 make docs                      # strict MkDocs build of ../roomkit-docs
 ```
 
 - A dirty `llms-full.txt` means `docs/c7/` drifted — commit the regenerated file
   with the release prep in step 6.
-- A dirty `tests/public_api_signatures.json` pins the names, members and
-  parameters added since the last snapshot: `test_no_signature_change_breaks_a_caller`
-  checks only what the file holds, so an addition stays unguarded until it is
-  written there. Commit it with the release prep in step 6. The test passed before
-  the rewrite, so the diff holds no break; a line it removes is a compatible change
-  (a parameter that gained a default, a keyword-only one made positional). Read
-  it, and raise anything else as a finding.
+- `tests/public_api_signatures.json` and `tests/public_api_names.json` are the
+  exact public surface, which roomkit-rs pins: `test_public_api.py` fails on any
+  difference, so the commit that changed the surface rewrote them. A dirty file
+  after the rewrite means a name resolves in the snapshot's environment and not
+  in CI's, or the reverse. Read the diff, and raise it as a finding; commit the
+  rewrite with the release prep in step 6 only once it is explained.
 - `make docs` builds `../roomkit-docs/mkdocs.yml` from roomkit's own env (its
   `mkdocstrings` directives import the real package). Broken internal links report
   as INFO and do **not** fail `--strict` — grep the output for

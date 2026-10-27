@@ -53,17 +53,19 @@ test-changed:
 	uv run pytest $(PARALLEL) --testmon --testmon-forceselect
 
 # Rewrite tests/public_api_signatures.json and tests/public_api_names.json
-# from the code. A public signature change that can break a caller, or a name
-# dropped from a package's __all__, fails test_public_api.py until this runs:
-# the commit that breaks on purpose runs it and carries its BREAKING entry.
-# It runs in an environment of its own installed with --extra all (made on
-# first use), so a name only an extra of that set resolves, roomkit.webrtc's,
-# is pinned too; extras outside it (livekit, docs, pynacl, webtransport, the
-# local model runtimes neutts, qwen-*, pocket-tts, phonon, vui...) are not.
+# from the code. The files are the exact public surface, which roomkit-rs
+# pins: a public name, member or parameter added, changed or dropped fails
+# test_public_api.py until this runs. The commit that changes the surface
+# runs it; one that breaks a caller on purpose also carries its BREAKING entry.
+# It runs in an environment of its own installed with --extra all and
+# --extra dev (made on first use), so every name the dev environment resolves
+# is pinned, and so is one only an extra of `all` resolves, roomkit.webrtc's;
+# extras outside both (webtransport, the local model runtimes neutts, qwen-*,
+# pocket-tts, phonon, vui...) are not.
 # The dev environment's guard leaves out what its missing extras resolve.
 API_SNAPSHOT_ENV ?= .venv-api-snapshot
 api-snapshot:
-	UV_PROJECT_ENVIRONMENT=$(API_SNAPSHOT_ENV) uv run --frozen --extra all python -m tests.api_signatures
+	UV_PROJECT_ENVIRONMENT=$(API_SNAPSHOT_ENV) uv run --frozen --extra all --extra dev python -m tests.api_signatures
 
 coverage:
 	uv run pytest $(PARALLEL) --cov=roomkit --cov-report=term-missing

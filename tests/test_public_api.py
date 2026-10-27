@@ -18,7 +18,13 @@ import roomkit
 from roomkit.voice import realtime as voice_realtime
 from roomkit.voice import tts as voice_tts
 from tests import api_signatures
-from tests.api_signatures import breaks_since_snapshot, call_breaks, object_breaks
+from tests.api_signatures import (
+    breaks_since_snapshot,
+    call_breaks,
+    drift_since_snapshot,
+    names_since_snapshot,
+    object_breaks,
+)
 
 _PACKAGE_ROOT = Path(roomkit.__file__).parent
 _EXPORTED = Path(__file__).with_name("public_api_names.json")
@@ -63,7 +69,7 @@ class TestPublicAPI:
         """Every name a package exported stays exported: an application imports
         it from there. tests/public_api_names.json lists them, written by
         `make api-snapshot` with the signatures; the commit that breaks an
-        import on purpose runs it, and a new export needs no entry until then.
+        import on purpose runs it.
 
         A package whose optional dependency the environment lacks is left out,
         as test_every_name_a_package_exports_resolves leaves it out.
@@ -85,10 +91,21 @@ class TestPublicAPI:
         """A call that worked on a public class or function still works:
         tests/public_api_signatures.json holds their signatures, read as
         tests/api_signatures.py says. The commit that breaks a call on purpose
-        runs `make api-snapshot` and carries its BREAKING entry; an addition
-        needs no entry.
+        runs `make api-snapshot` and carries its BREAKING entry.
         """
         assert breaks_since_snapshot() == []
+
+    def test_the_snapshot_holds_the_whole_public_surface(self) -> None:
+        """roomkit-rs pins both files as Python's public API and mirrors what
+        they hold, so a name, member or parameter the code adds, or a change no
+        caller notices, is written there by the commit that makes it: `make
+        api-snapshot`. Only a break carries a BREAKING entry.
+
+        A name whose optional dependency the environment lacks is left out, as
+        the two tests above leave it out.
+        """
+        assert drift_since_snapshot() == []
+        assert names_since_snapshot() == []
 
     def test_channels_importable_from_channels_package(self) -> None:
         """Every channel resolves from ``roomkit.channels``, factories included.
