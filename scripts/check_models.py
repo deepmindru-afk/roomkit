@@ -233,6 +233,9 @@ MIRROR_ONLY: dict[str, str] = {
     "openai/gpt-5.4-image-2": "mirror-side slug; not an OpenAI API image model id",
     "openai/gpt-5.6-terra-pro": "no -pro id in OpenAI's 5.6 tier (pricing page, 2026-08-05)",
     "openai/gpt-5.6-luna-pro": "no -pro id in OpenAI's 5.6 tier (pricing page, 2026-08-05)",
+    "openai/gpt-6.1-terra-pro": (
+        "no -pro id in OpenAI's 6.1 tier (pricing page; its model page answers 404, 2026-10-27)"
+    ),
     # The images mirror routes Muse Image under a product slug; the Meta Model
     # API answers only to muse-image-1.0 (GET /v1/models, 2026-09-27).
     "meta/muse-image": "mirror-side slug; Meta's API id is muse-image-1.0",

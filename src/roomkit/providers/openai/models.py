@@ -75,6 +75,10 @@ _VERIFIED = date(2026, 8, 5)
 # GPT-6.1 Sol added 2026-09-30 from its model page and the pricing page, same
 # long-context rule; its cached input is half GPT-6 Sol's:
 # https://developers.openai.com/api/docs/models/gpt-6.1-sol
+# GPT-6.1 Terra added 2026-10-27 from its model page and the pricing page, same
+# long-context rule. It carries no capability tag: what Chat Completions does
+# with its function tools and its effort is not checked on the wire yet.
+# https://developers.openai.com/api/docs/models/gpt-6.1-terra
 MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-6.1-sol",
@@ -91,6 +95,22 @@ MODELS: list[ModelInfo] = [
             long_context_input_multiplier=2.0,
             long_context_output_multiplier=1.5,
             verified=date(2026, 9, 30),
+        ),
+    ),
+    ModelInfo(
+        id="gpt-6.1-terra",
+        display_name="GPT-6.1 Terra",
+        context_window=_CTX_1M,
+        supports_vision=True,
+        pricing=ModelPricing(
+            input_per_million=1.0,
+            output_per_million=5.0,
+            cache_read_per_million=0.05,
+            cache_write_per_million=1.25,
+            long_context_threshold_tokens=272_000,
+            long_context_input_multiplier=2.0,
+            long_context_output_multiplier=1.5,
+            verified=date(2026, 10, 27),
         ),
     ),
     ModelInfo(

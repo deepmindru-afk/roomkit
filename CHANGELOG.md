@@ -54,6 +54,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`latency=100ms`), and an echo delay past WebRTC's 500 ms, which the
   backend tells the AEC as 500, is now logged as a warning once per session.
 
+- `gpt-6.1-terra` joins the OpenAI catalog: $1 / $5 per million, cached
+  input $0.05, a $1.25 cache write, the 1.05M window and long-context rule
+  (2x input and 1.5x output above 272k input tokens), and image input (its
+  model and pricing pages, 2026-10-27). What Chat Completions does with its
+  function tools is not checked on the wire yet: a turn with tools sends it no
+  `reasoning_effort`, and nothing is refused before the request. The mirror's
+  `gpt-6.1-terra-pro` is recorded in `check_models.py` as a route OpenAI does
+  not document.
+
 ### Changed
 
 - **BREAKING — `InMemoryStore` shares the rooms, bindings and participants it
