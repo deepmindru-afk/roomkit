@@ -60,6 +60,10 @@ class _Place:
         self._reached = asyncio.Event()
         self._left = False
 
+    async def until_reached(self) -> None:
+        """Wait until the place is reached, or given up."""
+        await self._reached.wait()
+
     async def hold(self) -> None:
         """Wait until the place is reached, then hold it in the current
         task, which the work of its turn sees (:data:`_HELD`)."""
@@ -74,9 +78,11 @@ class _Place:
         )
 
     def leave(self) -> None:
-        """Give the place up, once however often it is called."""
+        """Give the place up, once however often it is called; a reader
+        still waiting for it goes on, to a turn that is closed."""
         self._left = True
         self._turns._leave(self._key, self)
+        self._reached.set()
 
 
 class RoomTurns:
@@ -238,6 +244,17 @@ class QueuedTurn:
     def __aiter__(self) -> QueuedTurn:
         return self
 
+    async def until_reached(self) -> None:
+        """Wait until the place is reached, as the first read does: a reader
+        waiting here is reading the turn, so :meth:`drop` leaves it to it."""
+        if self._closed or self._stream is not None:
+            return
+        self._reading = True
+        try:
+            await self._place.until_reached()
+        finally:
+            self._reading = False
+
     async def __anext__(self) -> Any:
         if self._closed:
             raise StopAsyncIteration
@@ -321,6 +338,13 @@ class QueuedTurn:
         self._as_trace = True
         if self._stream is not None:
             read_as_trace(self._stream)
+
+
+async def until_turn_starts(stream: Any) -> None:
+    """Wait until the turn *stream* carries may start: a turn that waits its
+    place, until it is reached; any other stream starts when read."""
+    if isinstance(stream, QueuedTurn):
+        await stream.until_reached()
 
 
 async def stop_turn(stream: Any) -> None:

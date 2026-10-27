@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from roomkit.core._failure_log import log_failure
 from roomkit.core._reentrance import delivering
-from roomkit.core._room_turns import stop_turn
+from roomkit.core._room_turns import stop_turn, until_turn_starts
 from roomkit.core.event_router import stream_turn_entry, unanswered
 from roomkit.core.exceptions import error_type_name
 from roomkit.core.lanes import DeliveryCascade
@@ -596,7 +596,15 @@ class InboundStreamingMixin(HelpersMixin):
         Closed once read, not with the cascade's other streams: a turn that
         waited its place in the room gives it up when what it said is written,
         and the next stream may be the same channel's next turn (RFC §6.4).
+        A turn that waits its place is read on the room it starts in: its
+        mute, its streaming targets and the history its answer is judged
+        with are the room's then, not when it was asked.
         """
+        try:
+            await until_turn_starts(sr.stream)
+        except asyncio.CancelledError:
+            _record_cancelled_read(cascade, record, sr)
+            raise
         context = await self._build_context(room_id)
         try:
             result = await self._handle_streaming_response(

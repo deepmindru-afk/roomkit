@@ -188,6 +188,49 @@ async def test_a_message_removed_while_a_turn_waits_is_not_read(room: Room) -> N
     assert room.agent.read["task B"] == ["answer to my pin is 4242", "task B"]
 
 
+async def test_a_turn_muted_while_it_waits_is_not_delivered(room: Room) -> None:
+    # The turn was asked unmuted and starts after the mute: its answer is
+    # withheld as a muted channel's is (RFC §7.2), read with the room it
+    # starts in.
+    a = await room.send("task A")
+    await room.agent.until_started("task A")
+    b = await room.send("task B")
+    await room.until_waiting(2)
+
+    await room.kit.mute("r", "agent")
+    room.agent.answer("task A")
+    room.agent.answer("task B")
+    assert a.delivery is not None and b.delivery is not None
+    await asyncio.wait_for(a.delivery.wait(), WAIT)
+    await asyncio.wait_for(b.delivery.wait(), WAIT)
+
+    assert "task B" in room.agent.read
+    assert await _said(room.kit, "agent") == ["answer to task A"]
+
+
+async def test_a_waiting_turn_s_answer_is_judged_with_the_answers_before_it(room: Room) -> None:
+    # A hook judges the answer with the room the turn started in, its
+    # previous answer included, as the model read it.
+    judged: list[str] = []
+
+    @room.kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def judge(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if event.source.channel_id == "agent" and event.content.body == "answer to task B":
+            judged.extend(e.content.body for e in ctx.recent_events if e.type == "message")
+        return HookResult.allow()
+
+    await room.send("task A")
+    await room.agent.until_started("task A")
+    b = await room.send("task B")
+    await room.until_waiting(2)
+    room.agent.answer("task A")
+    room.agent.answer("task B")
+    assert b.delivery is not None
+    await asyncio.wait_for(b.delivery.wait(), WAIT)
+
+    assert judged == ["task A", "task B", "answer to task A"]
+
+
 class _AnswersA(AILikeChannel):
     """An agent that answers task A at once, its answer delivered with A."""
 
