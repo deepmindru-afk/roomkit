@@ -1105,6 +1105,19 @@ _MODEL_HOSTS: dict[
 }
 
 
+class _SilenceRecorder(MockRealtimeProvider):
+    """A speech-to-speech model that notes whether each text it took was
+    silent: one past the depth limit asks it nothing."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.silent: dict[str, bool] = {}
+
+    async def inject_text(self, session: Any, text: str, **kwargs: Any) -> Any:
+        self.silent[text.rsplit(" ", 1)[-1]] = bool(kwargs.get("silent"))
+        return await super().inject_text(session, text, **kwargs)
+
+
 class TestACallFromAnAsyncHook:
     """RFC §10.1 step 16, §10.3, §9.5.1: while the body of an ASYNC hook its
     cascade fires runs (``AFTER_BROADCAST`` once an event's delivery set has
@@ -1351,6 +1364,46 @@ class TestACallFromAnAsyncHook:
             await asyncio.gather(*model.answers)
             await _observed(kit)
             assert (len(model.answers), model.silences) == (3, [False, False, True])
+        finally:
+            await kit.close()
+
+    @pytest.mark.parametrize("brings", ["inject_text()", "deliver()"])
+    async def test_a_hook_on_an_injection_injects_at_its_body_s_depth(self, brings: str) -> None:
+        """RMK-983: an observer's body two deep brings a note to the
+        speech-to-speech model, straight or through ``kit.deliver()``, and an
+        ``ON_REALTIME_TEXT_INJECTED`` hook answers the note by injecting a
+        reminder: the reminder is as deep as that body, three, so past the
+        limit it enters silently. A delivery's injection took its own depth
+        and did not lend that to the hooks it fired."""
+        model = _SilenceRecorder()
+        kit = await _room(RoomKit(max_chain_depth=4))
+        channel = RealtimeVoiceChannel("rt", provider=model, transport=MockRealtimeTransport())
+        kit.register_channel(channel)
+        await kit.attach_channel("r1", "rt")
+        session = await channel.start_session("r1", "u", object())
+        reminded = asyncio.Event()
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="bring")
+        async def bring(event: RoomEvent, ctx: RoomContext) -> None:
+            if getattr(event.content, "body", None) != "deep":
+                return
+            if brings == "deliver()":
+                await kit.deliver("r1", "note", channel_id="rt", instruction=False)
+            else:
+                await channel.inject_text(session, "note", chain_depth=3)
+
+        @kit.hook(HookTrigger.ON_REALTIME_TEXT_INJECTED, execution=HookExecution.ASYNC)
+        async def remind(event: Any, ctx: Any) -> None:
+            if event.content.body.endswith("note"):
+                await channel.inject_text(session, "reminder")
+                reminded.set()
+
+        try:
+            await kit.send_event(
+                "r1", "sms", TextContent(body="deep"), chain_depth=2, addressed_to=[]
+            )
+            await asyncio.wait_for(reminded.wait(), 5)
+            assert model.silent["reminder"] is True
         finally:
             await kit.close()
 

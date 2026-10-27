@@ -71,8 +71,12 @@ def injection_depth(chain_depth: int) -> int:
     passed, as a delivery's (RFC §8.3). An observer that tells the model
     something at each of its tool calls then ends at the limit too. A
     delivery's depth was taken as ``deliver()`` was called, and stays: a
-    worker or a shared queue's drain may run it in another caller's work."""
+    worker or a shared queue's drain may run it in another caller's work.
+    That depth is the delivery's own injection's, read once: a hook the
+    injection fires copies the context, and its own injection takes its
+    body's depth."""
     if _DEPTH_TAKEN.get():
+        _DEPTH_TAKEN.set(False)
         return chain_depth
     return max(chain_depth, chain_floor())
 
