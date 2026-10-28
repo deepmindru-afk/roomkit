@@ -87,8 +87,9 @@ class TurnFootprint:
     Attributes:
         input_tokens: The system prompt, the tools declared (Tool Search's
             collapse and the re-read tool included) and the notes the channel
-            adds to the turn's input (the room's plan, the digest of the tools
-            already used, the speaker attribution).
+            adds to the turn's input (the room's plan, the speaker
+            attribution), and the earlier rounds of tool calls the history
+            replays.
         reply_tokens: The reply budget the turn requests; 0 when the channel
             sets none and the provider applies its own.
     """

@@ -241,9 +241,9 @@ class AIContextMixin(_AIChannelContract):
 
         # A standalone instruction reads nothing of the room (RFC §10.1.1 step
         # 7): no history below, and none of the room's working memories either
-        # — active skill bodies, the plan, the tool-usage digest (which quotes
-        # earlier tool results) and sticky tools are the room's past in
-        # another form. The channel's own prompt, tools and catalogue stay.
+        # — active skill bodies, the plan, the earlier rounds of tool calls
+        # and sticky tools are the room's past in another form. The channel's
+        # own prompt, tools and catalogue stay.
         standalone = is_standalone(event)
         loop_ctx.standalone = standalone
 
@@ -379,8 +379,8 @@ class AIContextMixin(_AIChannelContract):
             retrieved=memory_result.notes,
         )
         messages = with_turn_notes(messages, notes)
-        # The latest images the room's tools returned, after the notes: the
-        # digest only says what they showed in their tool's words.
+        # The latest images the room's tools returned, after the notes: a
+        # replayed result only says what they showed in its tool's words.
         return with_turn_images(messages, self._turn_images(loop_ctx))
 
     async def _author_images(self, event: RoomEvent, memory_result: MemoryResult) -> AuthorImages:
@@ -545,9 +545,8 @@ class AIContextMixin(_AIChannelContract):
             _turn_message(role, content, label if attribute_speakers else None)
             for role, content, label in past_turns
         ]
-        # Index 0 is an event the store never numbered: nothing came before it.
         past, past_indexes = with_tool_rounds(
-            past, past_indexes, rounds, before=event.index or None
+            past, past_indexes, rounds, before=_rounds_before(event)
         )
         messages: list[AIMessage] = [*memory, *past]
 
@@ -1040,7 +1039,7 @@ class AIContextMixin(_AIChannelContract):
         ``TOOL_CALL_END`` history — and each keeps its own one-shot flag, so a
         memory already hydrated is never re-seeded from stale history.
 
-        Each memory is keyed the way its own writer keys it: the usage digest
+        Each memory is keyed the way its own writer keys it: the tool usage
         on the event's room, the activation record on the tool loop's. The two
         are the same room in production — the ``RoomContext`` is built for the
         event — so this is one fetch, not two.
@@ -1155,6 +1154,16 @@ def _without_former_vision(binding: ChannelBinding) -> ChannelBinding:
     metadata = {k: v for k, v in binding.metadata.items() if k != _FORMER_VISION_BASE}
     metadata["system_prompt"] = binding.metadata[_FORMER_VISION_BASE] or None
     return binding.model_copy(update={"metadata": metadata})
+
+
+def _rounds_before(event: RoomEvent) -> int | None:
+    """Where the earlier rounds the turn replays end: before its event, which
+    reads last. A discussion's turn reads its event at its place, before the
+    turns that followed it, rounds of tool calls included (§19.7.5). Index 0
+    is an event the store never numbered: nothing came before it."""
+    if discussion_turn(event) is not None:
+        return None
+    return event.index or None
 
 
 def _answered_position(event: RoomEvent, past_indexes: list[int | None]) -> int | None:

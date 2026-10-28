@@ -8,14 +8,15 @@ event others followed reads it at its place, with the discussion's notes.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, issue_mark, retire_mark
 from roomkit.channels.ai import AIChannel
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
 from roomkit.core.framework import RoomKit
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, EventStatus
-from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.enums import ChannelCategory, ChannelType, EventStatus, EventType
+from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.test_framework import SimpleChannel
@@ -158,6 +159,51 @@ async def test_a_turn_reads_the_answered_event_at_its_place_with_the_notes() -> 
     second = next(i for i, t in enumerate(texts) if "second: and since" in t)
     assert first < second
     assert "ROOM NOTES" in texts[-1]
+    await kit.close()
+
+
+async def test_a_turn_replays_the_tool_calls_made_after_the_answered_event() -> None:
+    """The history after the answered event is the room's, the agent's own
+    earlier rounds of tool calls in it included, at their place (RFC §6.4)."""
+    a = _provider("my answer")
+    kit = RoomKit()
+    await _room(kit, a=a, b=_provider())
+    kit._discussions["r1"] = _Held()
+    asked = (await _say(kit, "first: what is the error rate?")).event
+    later = (await _say(kit, "second: and since when?")).event
+    rows = [
+        RoomEvent(
+            room_id="r1",
+            type=kind,
+            index=later.index + offset,
+            correlation_id="t-later",
+            status=EventStatus.DELIVERED,
+            source=EventSource(channel_id="a", channel_type=ChannelType.AI),
+            content=ToolCallContent(
+                tool_name="error_rate",
+                tool_id="c1",
+                result="4% since Monday" if kind == EventType.TOOL_CALL_END else None,
+                status="completed" if kind == EventType.TOOL_CALL_END else "pending",
+            ),
+        )
+        for offset, kind in ((1, EventType.TOOL_CALL_START), (2, EventType.TOOL_CALL_END))
+    ]
+    agent = kit.channels["a"]
+    agent._tool_history_loader = AsyncMock(return_value=rows)  # type: ignore[attr-defined]
+    context = await kit._build_context("r1")
+    binding = context.get_binding("a")
+    assert binding is not None
+    mark = issue_mark([])
+    trigger = asked.model_copy(update={"metadata": {**asked.metadata, DISCUSSION_TURN: mark}})
+
+    await _answer(agent, trigger, binding, context)
+    retire_mark(mark)
+
+    sent = a.calls[0].messages
+    texts = [str(m.content) for m in sent]
+    second = next(i for i, t in enumerate(texts) if "second: and since" in t)
+    assert [m.role for m in sent[second + 1 :]] == ["assistant", "tool"]
+    assert "4% since Monday" in texts[second + 2]
     await kit.close()
 
 

@@ -1,8 +1,8 @@
 """Per-room record of which skills the model activated — and where their bodies live.
 
 A skill body reaching the model as a *tool result* only survives the turn that
-fetched it: the rebuilt AI context drops tool events (``get_conversation`` returns
-MESSAGE events only) and the tool-usage digest excludes skill infra tools. So from
+fetched it: the history replays no call of the channel's own housekeeping
+tools, ``activate_skill`` among them (``_tool_history``). So from
 one turn to the next the model loses both the instructions and any trace that it
 ever activated the skill — and, obeying the skills preamble, it re-activates and
 re-pays the whole body on every turn.
@@ -141,7 +141,7 @@ class SkillActivationMemory:
     ) -> None:
         """Seed the room from persisted tool-call history (oldest → newest).
 
-        Reads the same ``TOOL_CALL_END`` rows the tool-usage digest hydrates from,
+        Reads the same ``TOOL_CALL_END`` rows the tool-usage memory hydrates from,
         keeping the ``activate_skill`` calls that SUCCEEDED: served, as the row's
         outcome states (RFC §6.4), and answered with the skill. A call a hook
         withheld, or one that errored (unknown or unavailable skill), never put

@@ -55,8 +55,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger("roomkit.turns")
 
 TOOL_MEMORY_CALLS = 30
-"""Calls a channel's tool memory is refilled with (digest 8 + reveal 12,
-after the infra rows are filtered out)."""
+"""Calls a channel's stored tool rows are read for (the 8 the history replays,
+the 12 tools re-revealed), after the infra rows are filtered out."""
 
 
 def _standing_decision(event: SpeakDecisionEvent, result: SyncPipelineResult) -> SpeakDecision:

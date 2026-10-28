@@ -4,7 +4,7 @@ One channel object serves every room it is attached to. The tools it serves
 itself and the ones orchestration sets up on it are kept here, one entry per
 tool: the definition the model reads, the function that serves a call, who set
 it up, and the traits the channel's rules read (exempt from the policy, never
-deferred by Tool Search, left out of the usage digest, pure within a turn).
+deferred by Tool Search, left out of the tool memory, pure within a turn).
 An entry is the channel's for every room, or one room's: a strategy sets up a
 room's tools, with that room's configuration, beside the other rooms' and
 without touching them. A name is served by one tool in a room, so a second one

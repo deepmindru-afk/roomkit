@@ -1298,14 +1298,14 @@ class AIToolsMixin(_AIChannelContract):
     ) -> None:
         """Remember a call (the tool's own answer, success or error, never the
         eviction placeholder an oversized one became for the model) so later
-        turns show "tools you've already used" and re-reveal it under Tool
-        Search. Which calls are kept is :func:`kept_in_tool_memory`'s.
+        turns re-reveal it under Tool Search and replay the images it
+        returned. Which calls are kept is :func:`kept_in_tool_memory`'s.
 
-        With the model's own arguments, never a BEFORE_TOOL_USE rewrite: the
-        digest goes back into the next turn's prompt, and a hook that
-        de-tokenises (``<EMAIL_1>`` to the real address) would put there the
-        very value it kept from the model. Infra/discovery tools are filtered
-        inside ``record()``.
+        With the model's own arguments, never a BEFORE_TOOL_USE rewrite: an
+        image's label quotes the call in the next turn's input, and a hook
+        that de-tokenises (``<EMAIL_1>`` to the real address) would put there
+        the very value it kept from the model. Infra/discovery tools are
+        filtered inside ``record()``.
         """
         self._tool_usage.record(room_id, name, call_arguments, result)
 
