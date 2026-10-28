@@ -60,6 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`JevClassifier` sends its `model` with a client handed in** (RMK-1025).
+  The model was used only when the classifier made its own client. A client
+  passed in answered on its own default, so through a LiteLLM proxy the call
+  named `jev-latest` and failed with a 400. The model now goes with every
+  call.
+
 - **The tools-already-used notes no longer send the model looking for
   `find_tools` when Tool Search is off** (RFC 6.4, RMK-1022). After a turn
   that called a tool, `AIChannel` adds a "Tools you've already used here"

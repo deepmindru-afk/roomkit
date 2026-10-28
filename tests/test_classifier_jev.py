@@ -59,10 +59,12 @@ class FakeClient:
         self.delay = delay
         self.error = error
         self.calls: list[tuple[Any, dict[str, Any]]] = []
+        self.options: list[dict[str, Any]] = []
         self.closed = False
 
-    async def system_one(self, state: Any, questions: Mapping[str, Any]) -> Any:
+    async def system_one(self, state: Any, questions: Mapping[str, Any], **options: Any) -> Any:
         self.calls.append((state, dict(questions)))
+        self.options.append(options)
         await asyncio.sleep(self.delay)
         if self.error is not None:
             raise self.error
@@ -108,6 +110,16 @@ async def test_a_missing_answer_an_sdk_error_or_the_wait_is_a_classifier_error()
         await JevClassifier(client=failing).classify("x", QUESTIONS)
     with pytest.raises(ClassifierError, match="within 0.05 s"):
         await JevClassifier(client=FakeClient(delay=1), timeout=0.05).classify("x", QUESTIONS)
+
+
+async def test_a_client_handed_in_is_asked_for_the_model_given() -> None:
+    """The model goes with each call: a client handed in, made for another
+    model or for none, does not drop it."""
+    client = FakeClient()
+    await JevClassifier(client=client, model="jev-1").classify("x", QUESTIONS)
+    await JevClassifier(client=client).classify("x", QUESTIONS)
+
+    assert client.options == [{"model": "jev-1"}, {}]
 
 
 async def test_close_closes_only_the_client_it_made(monkeypatch: pytest.MonkeyPatch) -> None:

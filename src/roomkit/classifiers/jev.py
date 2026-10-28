@@ -49,7 +49,8 @@ class JevClassifier(Classifier):
 
     Args:
         api_key: The TypeSafe key; the SDK reads ``TYPESAFE_API_KEY`` when None.
-        model: A Jev model id; the SDK's default when None.
+        model: A Jev model id, sent with every call, a ``client``'s too; the
+            SDK's default when None.
         timeout: Seconds the whole call may take, retries included, before
             ``ClassifierError``.
         client: An ``AsyncTypeSafeClient`` to use instead of one made here (it
@@ -65,6 +66,7 @@ class JevClassifier(Classifier):
         client: Any | None = None,
     ) -> None:
         self._sdk = _import_sdk()
+        self._model = model
         self._timeout = timeout
         self._owns_client = client is None
         self._client = client or self._sdk.AsyncTypeSafeClient(
@@ -74,7 +76,8 @@ class JevClassifier(Classifier):
     async def classify(self, state: State, questions: Mapping[str, Question]) -> Answers:
         asked = {name: self._question(question) for name, question in questions.items()}
         try:
-            response = await asyncio.wait_for(self._client.system_one(state, asked), self._timeout)
+            call = self._client.system_one(state, asked, **self._options())
+            response = await asyncio.wait_for(call, self._timeout)
         except TimeoutError as exc:
             raise ClassifierError(f"no answer within {self._timeout} s") from exc
         except self._sdk.TypeSafeError as exc:
@@ -85,6 +88,11 @@ class JevClassifier(Classifier):
             if answer is not None:
                 answers[name] = _answer(question, answer)
         return check_answers(questions, answers)
+
+    def _options(self) -> dict[str, Any]:
+        """What each call names besides its questions: the model, when one was
+        given, so a client handed in does not answer on its own default."""
+        return {"model": self._model} if self._model else {}
 
     async def close(self) -> None:
         if self._owns_client:
