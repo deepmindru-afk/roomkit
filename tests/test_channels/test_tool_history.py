@@ -1,0 +1,406 @@
+"""An AI channel's earlier tool calls ride its history as tool messages (RFC §6.4).
+
+Each round of an earlier turn reads, at its place in the conversation, as the
+assistant's calls then their results, the way the turn itself sent them: a
+model answers a follow-up from the result, and never takes a recall for
+something the participant asked.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
+from typing import Any
+
+import pytest
+
+from roomkit import HookResult, ToolCallEvent
+from roomkit.channels._tool_history import (
+    REPLAYED_CALLS,
+    WHOLE_RESULTS,
+    ToolRound,
+    tool_rounds,
+    with_tool_rounds,
+)
+from roomkit.channels.ai import AIChannel
+from roomkit.core.framework import RoomKit
+from roomkit.models.context import RoomContext
+from roomkit.models.delivery import InboundMessage
+from roomkit.models.enums import ChannelCategory, ChannelType, EventType, HookTrigger
+from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIMessage,
+    AIResponse,
+    AITool,
+    AIToolCall,
+    AIToolCallPart,
+    AIToolResultPart,
+)
+from roomkit.providers.ai.mock import MockAIProvider
+from tests.test_framework import SimpleChannel
+
+_TOOLS = [
+    AITool(name=name, description=name, parameters={"type": "object", "properties": {}})
+    for name in ("lookup", "fail", "big")
+]
+
+_BOARDS = " ".join(f"Board {i} holds the cards of its team." for i in range(1, 161))
+
+
+def _round(*calls: tuple[str, str, dict[str, Any]]) -> AIResponse:
+    return AIResponse(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[AIToolCall(id=i, name=n, arguments=a) for i, n, a in calls],
+    )
+
+
+def _answer(text: str) -> AIResponse:
+    return AIResponse(content=text, finish_reason="stop")
+
+
+async def _handler(name: str, arguments: dict[str, Any]) -> str:
+    if name == "fail":
+        raise RuntimeError("broken")
+    if name == "big":
+        return _BOARDS
+    return f"{name} found {arguments.get('q')}"
+
+
+_Hook = Callable[[ToolCallEvent, RoomContext], Awaitable[HookResult]]
+
+
+async def _turns(
+    provider: MockAIProvider,
+    *texts: str,
+    rooms: tuple[str, ...] = ("r1",),
+    hooks: list[tuple[HookTrigger, _Hook]] = (),  # type: ignore[assignment]
+    **channel: Any,
+) -> list[AIContext]:
+    """*texts* sent one after the other into a room with an AI channel (the
+    nth into the nth of *rooms*, the last one for the rest); what the provider
+    received, round by round."""
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(
+        AIChannel("ai1", provider=provider, tools=_TOOLS, tool_handler=_handler, **channel)
+    )
+    for n, (trigger, fn) in enumerate(hooks):
+        kit.hook(trigger, name=f"hook{n}")(fn)
+    for room in rooms:
+        await kit.create_room(room_id=room)
+        await kit.attach_channel(room, "sms1")
+        await kit.attach_channel(room, "ai1", category=ChannelCategory.INTELLIGENCE)
+    try:
+        for n, text in enumerate(texts):
+            await kit.process_inbound(
+                InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body=text)),
+                room_id=rooms[min(n, len(rooms) - 1)],
+            )
+    finally:
+        await kit.close()
+    return provider.calls
+
+
+def _shape(messages: list[AIMessage]) -> list[tuple[str, Any]]:
+    """Each message as (role, what it says): a text, or its calls / results."""
+    shaped: list[tuple[str, Any]] = []
+    for message in messages:
+        content = message.content
+        if isinstance(content, str):
+            shaped.append((message.role, content.split("\n\n[Notes kept")[0]))
+            continue
+        shaped.append(
+            (
+                message.role,
+                [
+                    (p.id, p.name, p.arguments)
+                    if isinstance(p, AIToolCallPart)
+                    else (p.tool_call_id, p.name, p.result, p.is_error)
+                    if isinstance(p, AIToolResultPart)
+                    else getattr(p, "text", type(p).__name__)
+                    for p in content
+                ],
+            )
+        )
+    return shaped
+
+
+async def test_an_earlier_round_reads_as_its_calls_then_their_results(streaming: bool) -> None:
+    provider = MockAIProvider(
+        ai_responses=[
+            _round(("c1", "lookup", {"q": "a"}), ("c2", "fail", {})),
+            _round(("c3", "lookup", {"q": "b"})),
+            _answer("Answer one."),
+            _answer("Answer two."),
+        ],
+        streaming=streaming,
+    )
+
+    calls = await _turns(provider, "first question", "second question")
+
+    first_turn_last_round, second_turn = calls[2], calls[3]
+    failed = '{"error": "Tool \'fail\' failed (RuntimeError)"}'
+    assert _shape(second_turn.messages) == [
+        ("user", "first question"),
+        ("assistant", [("c1", "lookup", {"q": "a"}), ("c2", "fail", {})]),
+        ("tool", [("c1", "lookup", "lookup found a", False), ("c2", "fail", failed, True)]),
+        ("assistant", [("c3", "lookup", {"q": "b"})]),
+        ("tool", [("c3", "lookup", "lookup found b", False)]),
+        ("assistant", "Answer one."),
+        ("user", "second question"),
+    ]
+    # What the turn itself sent of its rounds, word for word.
+    assert _shape(second_turn.messages)[:5] == _shape(first_turn_last_round.messages)
+    assert "Tools you've already used here" not in str(second_turn.messages[-1].content)
+
+
+async def test_a_turn_in_another_room_replays_nothing_of_this_one(streaming: bool) -> None:
+    provider = MockAIProvider(
+        ai_responses=[_round(("c1", "lookup", {"q": "a"})), _answer("One."), _answer("Two.")],
+        streaming=streaming,
+    )
+
+    calls = await _turns(provider, "first question", "second question", rooms=("r1", "r2"))
+
+    assert [m.role for m in calls[-1].messages] == ["user"]
+
+
+# -- What a round replays ---------------------------------------------------------
+
+
+def _row(
+    kind: EventType,
+    index: int,
+    tool_id: str,
+    name: str = "lookup",
+    *,
+    turn: str = "t1",
+    arguments: dict[str, Any] | None = None,
+    result: Any = None,
+    outcome: str | None = "served",
+) -> RoomEvent:
+    end = kind == EventType.TOOL_CALL_END
+    return RoomEvent(
+        room_id="r1",
+        type=kind,
+        index=index,
+        correlation_id=turn,
+        source=EventSource(channel_id="ai1", channel_type=ChannelType.AI),
+        content=ToolCallContent(
+            tool_name=name,
+            tool_id=tool_id,
+            arguments=arguments or {},
+            result=result if end else None,
+            status=("failed" if outcome == "failed" else "completed") if end else "pending",
+            outcome=outcome if end else None,
+        ),
+    )
+
+
+def _call_rows(index: int, tool_id: str, result: Any, **kwargs: Any) -> list[RoomEvent]:
+    """A one-call round: its start at *index*, its end right after."""
+    return [
+        _row(EventType.TOOL_CALL_START, index, tool_id, **kwargs),
+        _row(EventType.TOOL_CALL_END, index + 1, tool_id, result=result, **kwargs),
+    ]
+
+
+def _results(rounds: list[ToolRound]) -> list[Any]:
+    return [part.result for r in rounds for part in r.results.content]  # type: ignore[union-attr]
+
+
+def _rounds(rows: list[RoomEvent], *, resolves: bool = False, keep: int = 6000) -> list[ToolRound]:
+    return tool_rounds(
+        rows,
+        replayed=lambda name: name != "find_tools",
+        resolves=lambda _: resolves,
+        keep_chars=keep,
+    )
+
+
+def test_a_round_replays_the_arguments_the_model_wrote() -> None:
+    """The start row's, never the end's, which a BEFORE_TOOL_USE hook may have
+    de-tokenised: the history goes back into the model's prompt."""
+    rows = [
+        _row(EventType.TOOL_CALL_START, 1, "c1", arguments={"to": "<EMAIL_1>"}),
+        _row(EventType.TOOL_CALL_END, 2, "c1", arguments={"to": "a@b.c"}, result="sent"),
+    ]
+
+    [r] = _rounds(rows)
+
+    assert r.calls.content == [
+        AIToolCallPart(id="c1", name="lookup", arguments={"to": "<EMAIL_1>"})
+    ]
+
+
+def test_only_the_answers_a_tool_gave_are_replayed() -> None:
+    """Served, failed or blocked; never a refusal, a call nothing served or one
+    cancelled, nor a discovery tool of the channel's own."""
+    rows = [
+        *_call_rows(1, "c1", "ok"),
+        *_call_rows(3, "c2", "boom", outcome="failed"),
+        *_call_rows(5, "c3", "withheld", outcome="blocked"),
+        *_call_rows(7, "c4", "no", outcome="refused"),
+        *_call_rows(9, "c5", "", outcome="unserved"),
+        *_call_rows(11, "c6", "", outcome="cancelled"),
+        *_call_rows(13, "c7", "found", name="find_tools"),
+    ]
+
+    rounds = _rounds(rows)
+
+    assert [p.tool_call_id for r in rounds for p in r.results.content] == ["c1", "c2", "c3"]  # type: ignore[union-attr]
+    assert [p.is_error for r in rounds for p in r.results.content] == [False, True, False]  # type: ignore[union-attr]
+
+
+def test_a_call_with_no_end_row_is_not_replayed() -> None:
+    rows = [_row(EventType.TOOL_CALL_START, 1, "c1"), *_call_rows(2, "c2", "ok")]
+
+    assert _results(_rounds(rows)) == ["ok"]
+
+
+def test_calls_started_together_are_one_round_and_turns_their_own() -> None:
+    rows = [
+        _row(EventType.TOOL_CALL_START, 1, "c1"),
+        _row(EventType.TOOL_CALL_START, 2, "c2"),
+        _row(EventType.TOOL_CALL_END, 3, "c1", result="a"),
+        _row(EventType.TOOL_CALL_END, 4, "c2", result="b"),
+        *_call_rows(5, "c3", "c"),
+        *_call_rows(7, "c1", "d", turn="t2"),
+    ]
+
+    rounds = _rounds(rows)
+
+    assert [[p.id for p in r.calls.content] for r in rounds] == [["c1", "c2"], ["c3"], ["c1_7"]]  # type: ignore[union-attr]
+    assert [r.index for r in rounds] == [1, 5, 7]
+    assert _results(rounds) == ["a", "b", "c", "d"]
+
+
+def test_the_last_calls_are_replayed_the_most_recent_whole() -> None:
+    long = "x" * 200
+    rows = [row for i in range(REPLAYED_CALLS + 2) for row in _call_rows(2 * i + 1, f"c{i}", long)]
+
+    results = _results(_rounds(rows))
+
+    assert len(results) == REPLAYED_CALLS
+    older, recent = results[:-WHOLE_RESULTS], results[-WHOLE_RESULTS:]
+    assert recent == [long] * WHOLE_RESULTS
+    assert all(r.startswith("x" * 120 + "… [the rest is not shown here") for r in older)
+
+
+@pytest.mark.parametrize("keep", [800, 6000])
+def test_a_long_result_is_cut_at_the_kept_size_and_says_so(keep: int) -> None:
+    rows = _call_rows(1, "c1", "y" * (keep + 500))
+
+    [result] = _results(_rounds(rows, keep=keep))
+
+    assert result.startswith("y" * keep + "\n")
+    assert f"[first {keep} of {keep + 500} characters; the rest is not shown here" in result
+
+
+_PLACEHOLDER = (
+    "Result too large (2001 tokens). Full output saved as 'evicted_c1'. "
+    "Use read_stored_result to read it with pagination.\n\nPreview:\nhead"
+)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [_PLACEHOLDER, [{"type": "image", "url": "x"}, {"type": "text", "text": _PLACEHOLDER}]],
+    ids=["text", "behind-an-image"],
+)
+def test_a_placeholder_the_room_no_longer_stores_offers_no_stored_id(result: Any) -> None:
+    [shown] = _results(_rounds(_call_rows(1, "c1", result), resolves=False))
+
+    assert shown == (
+        "Result too large (2001 tokens), the rest is not shown here: call the tool again for it."
+    )
+
+
+def test_a_placeholder_the_room_still_stores_reads_as_the_turn_read_it() -> None:
+    assert _results(_rounds(_call_rows(1, "c1", _PLACEHOLDER), resolves=True)) == [_PLACEHOLDER]
+
+
+def test_a_result_of_parts_reads_as_its_texts() -> None:
+    parts = [{"type": "text", "text": "a caption"}, {"type": "image", "url": "x"}]
+
+    assert _results(_rounds(_call_rows(1, "c1", parts))) == ["a caption [non-text part]"]
+
+
+# -- Where a round goes -------------------------------------------------------------
+
+
+def _history(*turns: tuple[int, str]) -> tuple[list[AIMessage], list[int | None]]:
+    roles = ["user", "assistant"]
+    messages = [AIMessage(role=roles[i % 2], content=text) for i, (_, text) in enumerate(turns)]
+    return messages, [index for index, _ in turns]
+
+
+def test_a_round_reads_after_the_turns_before_it() -> None:
+    messages, indexes = _history((5, "q1"), (9, "a1"), (10, "q2"), (14, "a2"))
+    rounds = _rounds([*_call_rows(6, "c1", "r1"), *_call_rows(11, "c2", "r2")])
+
+    placed, placed_indexes = with_tool_rounds(messages, indexes, rounds, before=15)
+
+    assert [(m.role, str(m.content)[:2]) for m in placed] == [
+        ("user", "q1"),
+        ("assistant", "[A"),
+        ("tool", "[A"),
+        ("assistant", "a1"),
+        ("user", "q2"),
+        ("assistant", "[A"),
+        ("tool", "[A"),
+        ("assistant", "a2"),
+    ]
+    assert placed_indexes == [5, 6, 6, 9, 10, 11, 11, 14]
+
+
+def test_a_round_outside_the_window_or_of_the_turn_itself_is_left_out() -> None:
+    messages, indexes = _history((5, "q1"), (9, "a1"))
+    rounds = _rounds(
+        [*_call_rows(1, "c0", "old"), *_call_rows(6, "c1", "r1"), *_call_rows(12, "c2", "own")]
+    )
+
+    placed, _ = with_tool_rounds(messages, indexes, rounds, before=11)
+
+    assert _results([r for r in rounds if r.calls in placed]) == ["r1"]
+
+
+# -- Through the room -----------------------------------------------------------------
+
+
+async def test_a_hooks_rewrite_is_what_is_replayed(streaming: bool) -> None:
+    """What the model read in the turn: an ON_TOOL_CALL's rewrite, never the
+    data the handler returned."""
+    provider = MockAIProvider(
+        ai_responses=[_round(("c1", "lookup", {"q": "a"})), _answer("One."), _answer("Two.")],
+        streaming=streaming,
+    )
+
+    async def rewrite(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.modify(replace(event, result="as the hook rewrote it"))
+
+    calls = await _turns(provider, "first", "second", hooks=[(HookTrigger.ON_TOOL_CALL, rewrite)])
+
+    read_in_turn, replayed = (
+        [p.result for m in c.messages if m.role == "tool" for p in m.content]  # type: ignore[union-attr]
+        for c in (calls[1], calls[2])
+    )
+    assert read_in_turn == replayed == ["as the hook rewrote it"]
+
+
+async def test_an_evicted_result_is_replayed_as_the_turn_read_it(streaming: bool) -> None:
+    """The placeholder an oversized result became, with the re-read tool
+    declared: the next turn reads it back as the turn itself could."""
+    provider = MockAIProvider(
+        ai_responses=[_round(("c1", "big", {})), _answer("Twenty boards."), _answer("Done.")],
+        streaming=streaming,
+    )
+
+    calls = await _turns(provider, "my boards?", "and the fifteenth?", evict_threshold_tokens=1000)
+
+    second = calls[-1]
+    [replayed] = [p.result for m in second.messages if m.role == "tool" for p in m.content]  # type: ignore[union-attr]
+    assert replayed.startswith("Result too large (")
+    assert "read_stored_result" in {t.name for t in second.tools}

@@ -77,7 +77,7 @@ class TestScopes:
         registry.register(orchestration_tool(_tool("delegate"), _serve), room_id="A", owner="s")
 
         find = registry.traits("find_tools")
-        assert find is not None and find.exempt and find.pure and not find.in_digest
+        assert find is not None and find.exempt and find.pure and not find.in_tool_memory
         assert registry.names("A", lambda traits: traits.always_declared) == {"delegate"}
         assert registry.names("A", lambda traits: not traits.deferrable) == {
             "find_tools",

@@ -23,10 +23,15 @@ from roomkit import (
     RoomKit,
     TextContent,
 )
-from roomkit.channels._tool_usage import ToolUsageMemory
 from roomkit.models.context import RoomContext
 from roomkit.models.tool_call import ToolCallEvent
-from roomkit.providers.ai.base import AIContext, AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIResponse,
+    AITool,
+    AIToolCall,
+    AIToolCallPart,
+)
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools.external import PolicyExternalToolHandler
 from roomkit.voice.realtime.mock import MockRealtimeProvider
@@ -211,7 +216,9 @@ async def test_observers_fire_after_a_fail_closed_hook_fails(streaming: bool) ->
 
 async def test_the_next_prompt_keeps_the_model_s_arguments(streaming: bool) -> None:
     """A de-tokenising BEFORE_TOOL_USE hook hands the tool the real address;
-    the usage digest of the next turn must quote the token, not the address."""
+    the next turn's history replays the call with the token, never the
+    address. It reads the stored rows, whose start carries the model's
+    request: the same after a restart, with nothing in the channel's memory."""
     kit, provider = await _kit(
         streaming,
         AIResponse(content="done", finish_reason="stop"),
@@ -225,33 +232,16 @@ async def test_the_next_prompt_keeps_the_model_s_arguments(streaming: bool) -> N
     await _say(kit)
     await _say(kit, "and then?")
 
-    prompt = str(provider.calls[-1].messages[-1].content)  # the turn's notes
-    assert "<EMAIL_1>" in prompt  # the digest quotes the model's arguments...
-    assert "alice@real.example" not in prompt  # ...never the real address
-    await kit.close()
-
-
-async def test_a_cold_digest_keeps_the_model_s_arguments_too(streaming: bool) -> None:
-    """After a restart the digest is rebuilt from the stored tool-call events;
-    the end carries the arguments that ran, the start the model's request."""
-    kit, provider = await _kit(
-        streaming,
-        AIResponse(content="done", finish_reason="stop"),
-        AIResponse(content="again", finish_reason="stop"),
-    )
-
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="detokenize")
-    async def detokenize(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
-        return HookResult(action="allow", metadata={"arguments": {"email": "alice@real.example"}})
-
-    await _say(kit)
-    agent = kit.channels["ai1"]
-    agent._tool_usage = ToolUsageMemory()  # the process restarted: nothing in memory
-    await _say(kit, "and then?")
-
-    prompt = str(provider.calls[-1].messages[-1].content)  # the turn's notes
-    assert "<EMAIL_1>" in prompt
-    assert "alice@real.example" not in prompt
+    messages = provider.calls[-1].messages
+    replayed = [
+        part.arguments
+        for message in messages
+        if isinstance(message.content, list)
+        for part in message.content
+        if isinstance(part, AIToolCallPart)
+    ]
+    assert replayed == [{"email": "<EMAIL_1>"}]
+    assert "alice@real.example" not in str([message.content for message in messages])
     await kit.close()
 
 

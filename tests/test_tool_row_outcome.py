@@ -1,9 +1,6 @@
-"""A stored tool row states how its call ended, and the memory rebuilt from the
-rows keeps the calls the live one keeps (RFC §6.4, RMK-308).
-
-The live memory keeps an oversized answer's data where the row holds its
-eviction placeholder (RMK-217); a memory rebuilt after a restart, when the
-evicted copy is gone, cannot.
+"""A stored tool row states how its call ended; the history a later turn
+replays from the rows, and the memory rebuilt from them, keep the calls the
+live one keeps (RFC §6.4, RMK-308).
 
 Every case runs against a provider that streams and one read through its
 ``generate()``.
@@ -15,6 +12,7 @@ import asyncio
 from typing import Any, get_args
 
 from roomkit import ToolCallOutcome, ToolFailedError, ToolRefusedError
+from roomkit.channels._tool_history import tool_rounds
 from roomkit.channels._tool_usage import ToolUsageMemory
 from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
@@ -88,11 +86,13 @@ async def _outcomes(kit: RoomKit) -> dict[str, str | None]:
     }
 
 
-async def _digests(kit: RoomKit, ai: AIChannel) -> tuple[str, str]:
-    """The live digest, and the one rebuilt from the stored rows."""
-    reseeded = ToolUsageMemory(result_keep_chars=800, recorded=ai._in_usage_digest)
-    reseeded.seed("r1", await kit._build_tool_usage_loader(ai.channel_id)("r1"))
-    return ai._tool_usage.render_digest("r1") or "", reseeded.render_digest("r1") or ""
+async def _replayed(kit: RoomKit, ai: AIChannel) -> list[str]:
+    """The calls a later turn's history replays, read from the stored rows."""
+    rows = await kit.turn_executor.wiring.build_tool_history_loader(ai.channel_id)("r1")
+    rounds = tool_rounds(
+        rows, replayed=ai._in_tool_memory, resolves=lambda _: False, keep_chars=800
+    )
+    return [part.name for r in rounds for part in r.calls.content]  # type: ignore[union-attr]
 
 
 def test_the_stored_vocabulary_is_the_outcome_kinds() -> None:
@@ -118,8 +118,10 @@ async def test_each_end_row_states_how_its_call_ended(streaming: bool) -> None:
     }
 
 
-async def test_the_rebuilt_memory_reads_like_the_live_one(streaming: bool) -> None:
-    """Refusals stay out of both, served and failed calls are in both."""
+async def test_the_history_and_the_rebuilt_memory_keep_what_the_live_one_keeps(
+    streaming: bool,
+) -> None:
+    """Refusals stay out, served and failed calls are in."""
     kit, ai = await _turn(
         streaming,
         _call("c1", "ok"),
@@ -129,8 +131,8 @@ async def test_the_rebuilt_memory_reads_like_the_live_one(streaming: bool) -> No
         _call("c5", "fails"),
     )
 
-    live, rebuilt = await _digests(kit, ai)
+    rebuilt = ToolUsageMemory(recorded=ai._in_tool_memory)
+    rebuilt.seed("r1", await kit._build_tool_usage_loader(ai.channel_id)("r1"))
 
-    assert live == rebuilt
-    assert "ok(q=“c1”)" in live and "boom(q=“c2”)" in live and "fails(q=“c5”)" in live
-    assert "refuse" not in live and "ghost" not in live
+    assert await _replayed(kit, ai) == ["ok", "boom", "fails"]
+    assert rebuilt.tool_names("r1") == ai._tool_usage.tool_names("r1") == {"ok", "boom", "fails"}

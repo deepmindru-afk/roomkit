@@ -1,9 +1,9 @@
 """A tool's image stays in view on later turns (RFC §6.4, RMK-708).
 
-From one turn to the next the conversation keeps only a text digest of the
-tools used: an image a tool returned (a drawing, a screenshot) was seen on its
-own turn and gone after, and "set the lights to that picture's colours" was
-answered blind. The latest images ride each later turn's input, after its
+From one turn to the next the history replays what a tool returned as text:
+an image a tool returned (a drawing, a screenshot) was seen on its own turn
+and gone after, and "set the lights to that picture's colours" was answered
+blind. The latest images ride each later turn's input, after its
 notes, for a model that sees, as agent frameworks keep the last few.
 """
 
@@ -101,7 +101,6 @@ async def test_a_tools_image_rides_the_next_turns_input(streaming: bool) -> None
     content = turn_input.content
     assert isinstance(content, list)
     assert _text(content).startswith("set my lights to its colours")
-    assert "Tools you've already used here" in _text(content)  # the notes come first
     assert "## Images your tools returned here" in _text(content)
     assert "generate_image(" in _text(content) and "returned:" in _text(content)
     assert [p.url for p in content if isinstance(p, AIImagePart)] == [_PNG]
@@ -248,7 +247,7 @@ async def test_the_replayed_images_count_in_the_turns_measure() -> None:
         await read_reply(await ch.on_event(event, binding, RoomContext(room=Room(id="r1"))))
 
     first, second = footprints[0].input_tokens, footprints[-1].input_tokens
-    assert second - first >= 1000  # the digest alone is a few hundred
+    assert second - first >= 1000  # the image alone is over a thousand
 
 
 def test_the_images_labels_quote_no_runtime_mark() -> None:

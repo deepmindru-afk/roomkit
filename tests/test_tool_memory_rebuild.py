@@ -14,13 +14,18 @@ from typing import Any
 
 import pytest
 
-from roomkit.channels._tool_usage import ToolUsageMemory
 from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType, EventStatus, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.base import (
+    AIResponse,
+    AITool,
+    AIToolCall,
+    AIToolCallPart,
+    AIToolResultPart,
+)
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.skills.registry import SkillRegistry
 from roomkit.turns._wiring import remembered_calls
@@ -109,7 +114,7 @@ async def test_a_joining_agent_does_not_rebuild_another_agents_calls(
 
 
 @pytest.mark.parametrize("streaming", [True, False])
-async def test_a_call_id_repeated_across_turns_rebuilds_both_calls(streaming: bool) -> None:
+async def test_a_call_id_repeated_across_turns_replays_both_calls(streaming: bool) -> None:
     provider = MockAIProvider(
         streaming=streaming,
         ai_responses=[
@@ -117,6 +122,7 @@ async def test_a_call_id_repeated_across_turns_rebuilds_both_calls(streaming: bo
             AIResponse(content="Paris done."),
             _call("c1", "lookup", {"q": "rome"}),
             AIResponse(content="Rome done."),
+            AIResponse(content="Both done."),
         ],
     )
     ai = AIChannel(
@@ -130,14 +136,22 @@ async def test_a_call_id_repeated_across_turns_rebuilds_both_calls(streaming: bo
     await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
     await _say(kit, "paris")
     await _say(kit, "rome")
+    await _say(kit, "both?")
 
-    rebuilt = ToolUsageMemory(result_keep_chars=800, recorded=ai._in_usage_digest)
-    rebuilt.seed("r1", await kit._build_tool_usage_loader("ai1")("r1"))
-
-    digest = rebuilt.render_digest("r1") or ""
-    assert "lookup(q=“paris”)" in digest
-    assert "lookup(q=“rome”)" in digest
-    assert digest == (ai._tool_usage.render_digest("r1") or "")
+    replayed = [
+        part
+        for message in provider.calls[-1].messages
+        if message.role in ("assistant", "tool") and isinstance(message.content, list)
+        for part in message.content
+    ]
+    calls = [(p.id, p.arguments) for p in replayed if isinstance(p, AIToolCallPart)]
+    results = [(p.tool_call_id, p.result) for p in replayed if isinstance(p, AIToolResultPart)]
+    assert [arguments for _, arguments in calls] == [{"q": "paris"}, {"q": "rome"}]
+    assert len({call_id for call_id, _ in calls}) == 2  # one id per call, as a chat API pairs them
+    assert results == [
+        (calls[0][0], "secret-of-ai1:paris"),
+        (calls[1][0], "secret-of-ai1:rome"),
+    ]
     await kit.close()
 
 

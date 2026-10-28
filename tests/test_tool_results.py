@@ -281,23 +281,6 @@ async def test_the_channels_own_outcomes_are_refusals_no_sync_hook_serves(
     assert [c.failed for c in round_.last_run.calls] == [False, False, True, True]
 
 
-async def test_a_repeat_the_guard_stops_leaves_the_rooms_memory_its_real_result(
-    streaming: bool,
-) -> None:
-    async def handler(name: str, arguments: dict[str, Any]) -> str:
-        return '{"balance": 42}'
-
-    same = [_call(f"c{i}", x=1) for i in range(3)]
-    round_ = _Round(*same, streaming=streaming)
-    channel = round_.channel(tools=[T], tool_handler=handler)
-
-    await round_.run(channel)
-
-    digest = channel._tool_usage.render_digest(round_.room_id) or ""
-    assert '{"balance": 42}' in digest
-    assert "already called" not in digest
-
-
 async def test_a_human_input_timeout_is_a_refusal_through_the_loop(streaming: bool) -> None:
     ask = AITool(name="ask", description="Ask the user", parameters=SCHEMA)
     human = HumanInputToolHandler(tool_names={"ask"}, timeout=0.01, tool_definitions=[ask])

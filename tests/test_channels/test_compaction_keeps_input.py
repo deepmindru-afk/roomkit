@@ -82,16 +82,14 @@ _DONE = AIResponse(content="done", finish_reason="stop")
 
 
 async def _lookup(name: str, arguments: dict[str, Any]) -> str:
-    if arguments.get("q") == "status":
-        return '{"status": "SHIPPED-7731"}'
     return f"quote {arguments.get('n')} {_LONG}"
 
 
 def _script() -> list[AIResponse]:
-    """Turn 1 looks a status up (the digest of turn 2 quotes it); turn 2 runs
-    six lookups, overflows, reads the first one back, and answers."""
+    """Turn 1 makes a plan (the notes of turn 2 carry it); turn 2 runs six
+    lookups, overflows, reads the first one back, and answers."""
     return [
-        _round("c0", q="status"),
+        _round("c0", "plan_tasks", tasks=[{"title": "Check SHIPPED-7731", "status": "pending"}]),
         _DONE,
         *(_round(f"c{n}", n=n) for n in range(1, _ROUNDS + 1)),
         _round("r1", "read_stored_result", result_id="evicted_c1"),
@@ -151,7 +149,7 @@ async def _compacted_turn(
     streaming: bool, history: list[RoomEvent], hook: Any = None
 ) -> tuple[_Overflowing, LoopRun]:
     provider = _Overflowing(_script(), streaming=streaming, at=_OVERFLOW_AT)
-    ch = AIChannel("ai1", provider=provider, tool_handler=_lookup)
+    ch = AIChannel("ai1", provider=provider, tool_handler=_lookup, enable_planning=True)
     await _turn(ch, "what is the status?")
     ch._before_generation_hook = hook
     run = await _turn(ch, _QUESTION, history)
@@ -166,7 +164,7 @@ async def test_a_long_loop_keeps_its_input_and_notes_and_stores_older_results(
     before, replay = provider.seen[_OVERFLOW_AT - 1], provider.seen[_OVERFLOW_AT]
     assert replay[0] == before[0]  # the input and its notes, as the first round built them
     assert str(replay[0].content).startswith(_QUESTION)
-    assert "SHIPPED-7731" in str(replay[0].content)  # the digest of turn 1
+    assert "SHIPPED-7731" in str(replay[0].content)  # the plan turn 1 made
     results = _results(replay)
     assert all("Full output saved as 'evicted_c" in results[f"c{n}"] for n in (1, 2, 3))
     assert all(results[f"c{n}"].endswith(_LONG) for n in (4, 5, 6))

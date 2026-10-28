@@ -156,10 +156,11 @@ def _thinker(text: str) -> str:
     return thinker_input(Thought(), messages)
 
 
-def _tools_digest(text: str) -> str:
+def _tool_image_label(text: str) -> str:
     memory = ToolUsageMemory()
-    memory.record("r1", "search", {text: "x", "query": text, "n": 3}, "found")
-    return memory.render_digest("r1") or ""
+    image = AIImagePart(url="data:image/png;base64,iVBORw0KGgo=")
+    memory.record("r1", "search", {text: "x", "query": text, "n": 3}, [image])
+    return "\n".join(p.text for p in memory.render_images("r1") if isinstance(p, AITextPart))
 
 
 def _compaction(text: str) -> str:
@@ -226,7 +227,7 @@ QUOTED: dict[str, Callable[[str], str]] = {
     "memory summarizer line": lambda text: SummaryLines(RoomContext(room=Room(id="r")))(
         [make_event(body=text)]
     )[0],
-    "tools digest": _tools_digest,
+    "tool image label": _tool_image_label,
     "realtime broadcast": _realtime_broadcast,
     "realtime assistant line": say_line_instruction,
     "people note": lambda text: people_note((text, "Bob")) or "",

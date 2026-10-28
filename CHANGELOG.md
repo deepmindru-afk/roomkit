@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An AI channel's earlier tool calls ride its history as tool messages**
+  (RFC 6.4, RMK-1023). From one turn to the next, the tools an agent called
+  were recalled in a "Tools you've already used here" block. That block was
+  added to the turn's notes, which ride the participant's last message.
+  Models answered that block as if the participant had asked for it: after a
+  booking, a "Hi there!" got the booking restated. That happened 7 times in
+  10 on gpt-6-luna and 10 in 10 on LFM3-1.7B.
+  - Each round of an earlier turn now reads, at its place in the history,
+    as the assistant's calls then their results, the way the turn itself
+    sent them. The same measure gives 0 in 10 on both models, with the same
+    recall of the results.
+  - The rounds are read from the store every turn, the channel's own calls
+    only. The bounds stay those of the block it replaces: the last 8 calls,
+    the 3 most recent with their result whole up to 6000 characters (less
+    under a low eviction threshold), the older ones as a preview.
+  - A refused call is still left out.
+  - A result evicted in its turn replays as the placeholder the model read
+    then, which the re-read tool serves while the room still stores it. The
+    block used to give the next turn the first 6000 characters of the
+    result itself. Once the stored copy is gone (a restart), the result
+    reads as its size alone, as before.
+  - The turn's notes no longer carry the block. Tool Search still re-reveals
+    the tools already used, and the latest images their results returned
+    still ride the input.
+
 - **BREAKING — a `kit.close()` after one that failed raises the same
   failure** (RFC 12.10.4, RMK-1015). A channel that fails to close makes
   `close()` raise an `ExceptionGroup`; a later `close()` used to return

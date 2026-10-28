@@ -99,8 +99,9 @@ class ToolTraits:
     """Declared at every round and in every session of its scope, outside the
     catalogue whose size decides Tool Search, reported ``always`` (RFC §21.1)."""
 
-    in_digest: bool = True
-    """Recorded in the room's usage digest and re-revealed as a tool in use."""
+    in_tool_memory: bool = True
+    """Work the agent did: replayed in the room's later turns and re-revealed
+    as a tool in use."""
 
     pure: bool = False
     """Reads what cannot change within a turn: an identical repeat says nothing new."""
@@ -111,15 +112,15 @@ class ToolTraits:
 
 
 CHANNEL_TOOL_TRAITS: dict[str, ToolTraits] = {
-    TOOL_ACTIVATE_SKILL: ToolTraits(exempt=True, deferrable=False, in_digest=False),
-    TOOL_READ_REFERENCE: ToolTraits(exempt=True, deferrable=False, in_digest=False),
-    TOOL_RUN_SCRIPT: ToolTraits(deferrable=False, in_digest=False),
-    TOOL_FIND_TOOLS: ToolTraits(exempt=True, deferrable=False, in_digest=False, pure=True),
-    TOOL_LIST_TOOLS: ToolTraits(exempt=True, deferrable=False, in_digest=False, pure=True),
+    TOOL_ACTIVATE_SKILL: ToolTraits(exempt=True, deferrable=False, in_tool_memory=False),
+    TOOL_READ_REFERENCE: ToolTraits(exempt=True, deferrable=False, in_tool_memory=False),
+    TOOL_RUN_SCRIPT: ToolTraits(deferrable=False, in_tool_memory=False),
+    TOOL_FIND_TOOLS: ToolTraits(exempt=True, deferrable=False, in_tool_memory=False, pure=True),
+    TOOL_LIST_TOOLS: ToolTraits(exempt=True, deferrable=False, in_tool_memory=False, pure=True),
     # Only carries a call to the tool it names: the policy judges that tool,
     # at the gate, once the call is unwrapped.
-    TOOL_CALL_TOOL: ToolTraits(exempt=True, deferrable=False, in_digest=False),
-    REREAD_TOOL: ToolTraits(exempt=True, deferrable=False, in_digest=False),
+    TOOL_CALL_TOOL: ToolTraits(exempt=True, deferrable=False, in_tool_memory=False),
+    REREAD_TOOL: ToolTraits(exempt=True, deferrable=False, in_tool_memory=False),
     "plan_tasks": ToolTraits(deferrable=False),
 }
 """The traits of each tool a channel serves itself, by its name."""

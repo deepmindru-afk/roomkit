@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
 from roomkit import AIChannel, HookResult, HookTrigger, RoomKit
-from roomkit.channels._turn_notes import TURN_NOTES_HEADER
 from roomkit.channels.base import Channel
 from roomkit.memory import BudgetAwareMemory, MemoryProvider, MemoryResult, SlidingWindowMemory
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -24,6 +24,7 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType, EventStatus, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.store_filter import EventFilter
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 
 ROOM = "r-instruction"
@@ -55,7 +56,11 @@ class Speaker(Channel):
 
 
 async def _kit(
-    *, streaming: bool = False, memory: MemoryProvider | None = None
+    *,
+    streaming: bool = False,
+    memory: MemoryProvider | None = None,
+    provider: MockAIProvider | None = None,
+    **agent: Any,
 ) -> tuple[RoomKit, Speaker, MockAIProvider]:
     """A room where the instruction enters on ``voice`` and ``speaker`` is another transport.
 
@@ -64,10 +69,10 @@ async def _kit(
     """
     kit = RoomKit()
     speaker = Speaker("speaker")
-    provider = MockAIProvider(["Bonjour, je suis Paul."], streaming=streaming)
+    provider = provider or MockAIProvider(["Bonjour, je suis Paul."], streaming=streaming)
     kit.register_channel(Speaker("voice"))
     kit.register_channel(speaker)
-    kit.register_channel(AIChannel("agent", provider=provider, memory=memory))
+    kit.register_channel(AIChannel("agent", provider=provider, memory=memory, **agent))
     await kit.create_room(room_id=ROOM)
     await kit.attach_channel(ROOM, "voice", category=ChannelCategory.TRANSPORT)
     await kit.attach_channel(ROOM, "speaker", category=ChannelCategory.TRANSPORT)
@@ -335,12 +340,26 @@ class _CountingMemory(BudgetAwareMemory):
 async def _talking_room(
     *, streaming: bool = False
 ) -> tuple[RoomKit, MockAIProvider, _CountingMemory]:
-    """A room where the caller and the agent already exchanged a line, and the
-    agent used a tool whose result its working memory quotes."""
+    """A room where the caller and the agent already exchanged a line, the
+    agent having used a tool to answer it."""
     memory = _CountingMemory()
-    kit, _speaker, provider = await _kit(streaming=streaming, memory=memory)
-    agent = kit.get_channel("agent")
-    agent._tool_usage.record(ROOM, "lookup_customer", {"id": 7}, "PREVIOUS-TOOL-RESULT")  # type: ignore[union-attr]
+    answer = AIResponse(content="Bonjour, je suis Paul.", finish_reason="stop")
+    lookup = AIToolCall(id="t1", name="lookup_customer", arguments={"id": 7})
+    provider = MockAIProvider(
+        ai_responses=[AIResponse(content="", tool_calls=[lookup]), answer, answer],
+        streaming=streaming,
+    )
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        return "PREVIOUS-TOOL-RESULT"
+
+    kit, _speaker, provider = await _kit(
+        streaming=streaming,
+        memory=memory,
+        provider=provider,
+        tools=[AITool(name="lookup_customer", description="Finds a customer", parameters={})],
+        tool_handler=handler,
+    )
     await kit.process_inbound(
         InboundMessage(channel_id="voice", sender_id="caller", content=TextContent(body="Allô")),
         room_id=ROOM,
@@ -367,7 +386,7 @@ async def _send_instruction(kit: RoomKit, via: str, **fields: object) -> None:
 @pytest.mark.parametrize("via", ["process_inbound", "send_event"])
 async def test_a_standalone_instruction_reads_nothing_of_the_room(via: str, streaming: bool):
     """RFC §10.1.1 step 7: no history, no memory provider call, and none of the
-    room's working memories (here the tool-usage digest), in the system prompt
+    room's working memories, nor its earlier tool calls, in the system prompt
     or with the input."""
     kit, provider, memory = await _talking_room(streaming=streaming)
 
@@ -394,12 +413,12 @@ async def test_an_instruction_without_standalone_reads_the_room(via: str, stream
     await _send_instruction(kit, via, metadata={"standalone": True})
 
     assert memory.retrieved == 2
-    contents = [str(m.content) for m in provider.calls[-1].messages]
+    messages = provider.calls[-1].messages
+    contents = [str(m.content) for m in messages]
     assert any("Allô" in c for c in contents) and INSTRUCTION in contents[-1]
-    # The room's working memories ride the turn's input (RFC §6.4), under a
-    # header that asks nothing of the instruction above it.
-    assert "PREVIOUS-TOOL-RESULT" in contents[-1]
-    assert contents[-1].index(INSTRUCTION) < contents[-1].index(TURN_NOTES_HEADER)
+    # The agent's earlier tool call rides the history, at its place (RFC §6.4).
+    assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant", "user"]
+    assert "PREVIOUS-TOOL-RESULT" in contents[2]
     assert "PREVIOUS-TOOL-RESULT" not in (provider.calls[-1].system_prompt or "")
     await kit.close()
 

@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         SpeakDecisionHook,
         ThinkingHook,
         ThoughtHook,
+        ToolHistoryLoader,
         ToolUsageLoader,
     )
     from roomkit.channels._task_planner import PlanUpdatedCallback
@@ -85,7 +86,7 @@ def remembered_calls(events: list[RoomEvent]) -> list[dict[str, Any]]:
     in the order they were written."""
     # The arguments the model sent, from the call's start: the end carries the
     # ones that ran, which a BEFORE_TOOL_USE hook may have de-tokenised, and
-    # the digest goes back into the model's prompt. An end pairs with the
+    # what the memory keeps may go back into the model's prompt. An end pairs with the
     # start of the same call in the same turn (its response's correlation
     # id): a provider may reuse an id from one turn to the next, and two turns
     # of a room may run at once.
@@ -202,6 +203,7 @@ class TurnWiring:
         channel._tool_report_hook = self.tools.build_tool_report_hook(channel_id)
         channel._before_tool_call_hook = self.tools.build_before_tool_call_hook(channel_id)
         channel._tool_usage_loader = self.build_tool_usage_loader(channel_id)
+        channel._tool_history_loader = self.build_tool_history_loader(channel_id)
         channel._room_tasks_loader = self.build_room_tasks_loader()
         channel._room_vision_loader = self.build_room_vision_loader()
         channel._media_resolver = self.env.media_resolver
@@ -246,7 +248,7 @@ class TurnWiring:
         """The tool-usage hydration loader for AI channel *channel_id*.
 
         Fetches the channel's most recent stored tool rows in a room so its
-        in-memory ToolUsageMemory (digest + re-reveal set) and its skill
+        in-memory ToolUsageMemory (the re-reveal set) and its skill
         activations survive channel-object lifetimes — the store dies with the
         object (process restart, cache expiry) while conversations outlive it.
         Only the channel's own rows: another agent's calls in the room are not
@@ -260,6 +262,23 @@ class TurnWiring:
             # A start and an end per call.
             rows = await env.tool_rows(room_id, channel_id, TOOL_MEMORY_CALLS * 2)
             return remembered_calls(rows)
+
+        return _load
+
+    def build_tool_history_loader(self, channel_id: str) -> ToolHistoryLoader:
+        """The reader of AI channel *channel_id*'s latest tool rows in a room,
+        for the turn's history (RFC §6.4).
+
+        Only the channel's own rows, for the reason the usage loader gives;
+        a deleted row is withheld, as from any history (RFC §7.5 rule 8).
+        Read every turn: the store, not the channel object, is what outlives
+        a restart.
+        """
+        env = self.env
+
+        async def _load(room_id: str) -> list[RoomEvent]:
+            # A start and an end per call, with room for calls never replayed.
+            return withheld(await env.tool_rows(room_id, channel_id, TOOL_MEMORY_CALLS * 2))
 
         return _load
 

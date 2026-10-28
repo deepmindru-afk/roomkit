@@ -13,11 +13,11 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
-from roomkit import split_turn_notes
 from roomkit.channels._ai_cuts import CUT_NOTE
 from roomkit.channels._speaker import SPEAKER_ATTRIBUTION_NOTE
 from roomkit.channels._turn_notes import turn_notes
 from roomkit.channels.agent import Agent
+from roomkit.core.framework import RoomKit
 from roomkit.memory import (
     BudgetAwareMemory,
     MemoryProvider,
@@ -26,11 +26,16 @@ from roomkit.memory import (
     TurnFootprint,
     current_turn_footprint,
 )
-from roomkit.memory.token_estimator import estimate_tokens, estimate_tool_tokens
+from roomkit.memory.token_estimator import (
+    estimate_message_tokens,
+    estimate_tokens,
+    estimate_tool_tokens,
+)
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
+from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType
-from roomkit.models.event import RoomEvent
+from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.room import Room
 from roomkit.orchestration.state import ConversationState, set_conversation_state
 from roomkit.providers.ai.base import AIContext, AIResponse, AITool, AIToolCall
@@ -39,6 +44,7 @@ from roomkit.skills import SkillRegistry
 from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 from roomkit.tools.policy import ToolPolicy
 from tests.conftest import make_event
+from tests.test_framework import SimpleChannel
 from tests.test_skills import _make_skill_dir_full
 from tests.test_skills_integration import MockScriptExecutor
 from tests.tool_loop_modes import respond
@@ -120,17 +126,24 @@ def _input_tokens(sent: AIContext, *, notes: list[str]) -> int:
     )
 
 
-async def test_a_later_turn_is_measured_again_with_the_digest_of_the_tools_used(
+async def test_a_later_turn_is_measured_again_with_the_rounds_it_replays(
     streaming: bool,
 ) -> None:
-    """The digest of the tools already used rides the next turn's input: the
-    footprint counts it, and a tool handler, whose loop is the call's own,
-    reads no footprint."""
+    """The tools already used ride the next turn's history: the footprint
+    counts the rounds it replays, and a tool handler, whose loop is the
+    call's own, reads no footprint."""
     seen_in_handler: list[TurnFootprint | None] = []
 
     async def lookup(name: str, arguments: dict[str, Any]) -> str:
         seen_in_handler.append(current_turn_footprint())
         return "result " * 1_000
+
+    class _MeasuredWindow(SlidingWindowMemory):
+        footprints: list[TurnFootprint | None] = []
+
+        async def retrieve(self, *args: Any, **kwargs: Any) -> MemoryResult:
+            self.footprints.append(current_turn_footprint())
+            return await super().retrieve(*args, **kwargs)
 
     call = AIToolCall(id="c1", name="lookup", arguments={"q": "a"})
     provider = MockAIProvider(
@@ -141,7 +154,7 @@ async def test_a_later_turn_is_measured_again_with_the_digest_of_the_tools_used(
         ],
         streaming=streaming,
     )
-    memory = _Measured()
+    memory = _MeasuredWindow()
     agent = Agent(
         "agent",
         provider=provider,
@@ -149,21 +162,23 @@ async def test_a_later_turn_is_measured_again_with_the_digest_of_the_tools_used(
         tool_handler=lookup,
         memory=memory,
     )
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("member"))
+    kit.register_channel(agent)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "member")
+    await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
     for body in ("first", "second"):
-        await respond(
-            agent,
-            make_event(body=body, channel_id="member", room_id="r1"),
-            _binding(),
-            RoomContext(room=Room(id="r1")),
+        await kit.process_inbound(
+            InboundMessage(channel_id="member", sender_id="u1", content=TextContent(body=body))
         )
+    await kit.close()
 
-    second = provider.calls[-1]
-    _input, sent_notes = split_turn_notes(str(second.messages[-1].content))
-    digest = sent_notes.split("\n\n", 1)[1]
-    assert "lookup" in digest
-    assert memory.footprints[-1] == TurnFootprint(
-        input_tokens=_input_tokens(second, notes=[digest]), reply_tokens=0
-    )
+    replayed = [m for m in provider.calls[-1].messages if isinstance(m.content, list)]
+    assert [m.role for m in replayed] == ["assistant", "tool"]
+    first, second = (f.input_tokens for f in (memory.footprints[0], memory.footprints[-1]))  # type: ignore[union-attr]
+    # The rest of the turn is the same as the first's: the difference is the round.
+    assert second - first == sum(estimate_message_tokens(m) for m in replayed)
     assert seen_in_handler == [None]
 
 

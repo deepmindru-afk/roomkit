@@ -15,7 +15,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from roomkit.channels._tool_eviction import ToolEviction
-from roomkit.channels._tool_usage import ToolUsageMemory
 from roomkit.core.exceptions import ChannelRefusalError
 from roomkit.tools import tool_turn_context
 
@@ -144,13 +143,16 @@ class TestIds:
         assert "error" in _read(ev, "room-a", old)
 
 
-def test_a_rebuilt_digest_offers_no_stored_id() -> None:
-    placeholder = ToolEviction(threshold_tokens=50).maybe_evict("row\n" * 2000, "toolu_1")
-    memory = ToolUsageMemory()
+def test_a_placeholder_holds_only_in_the_room_that_stored_its_result() -> None:
+    """A later turn replays a placeholder as its turn read it only where its
+    result is still stored; elsewhere, or once dropped, it offers no id."""
+    ev = ToolEviction(threshold_tokens=50)
+    with _room("room-a"):
+        placeholder = ev.maybe_evict("row\n" * 2000, "toolu_1")
+        assert ev.holds(placeholder)
 
-    memory.seed("r1", [{"name": "list_cards", "arguments": {"board": "x"}, "result": placeholder}])
-
-    digest = memory.render_digest("r1") or ""
-    assert "evicted_" not in digest
-    assert "read_stored_result" not in digest
-    assert "Result too large (2001 tokens), not kept" in digest
+    with _room("room-b"):
+        assert not ev.holds(placeholder)
+    with _room("room-a"):
+        assert not ToolEviction(threshold_tokens=50).holds(placeholder)  # another process
+        assert not ev.holds("Result too large (2001 tokens). Preview: no id")

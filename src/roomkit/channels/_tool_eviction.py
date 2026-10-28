@@ -180,6 +180,13 @@ class ToolEviction:
         room = self._room_scope()
         return any(key[0] == room for key in self._store)
 
+    def holds(self, placeholder: str) -> bool:
+        """Whether the room still stores the result *placeholder* points to:
+        a later turn may then read it back as the turn that got it could."""
+        _, saved, rest = placeholder.partition(" saved as '")
+        result_id = rest.split("'", 1)[0]
+        return bool(saved and result_id) and (self._room_scope(), result_id) in self._store
+
     def maybe_evict(self, result: str, tool_call_id: str = "") -> str:
         """Evict large results to the store, returning a preview.
 

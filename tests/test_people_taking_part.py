@@ -325,7 +325,7 @@ class TestTheAgentKnowsWhoIsThere:
         sizes = []
         for context in (one, two):
             loop_ctx = _ToolLoopContext()
-            channel._measure_turn(loop_ctx, context, None, [], None)
+            channel._measure_turn(loop_ctx, context, None, [], None, rounds=[])
             assert loop_ctx.turn_footprint is not None
             sizes.append(loop_ctx.turn_footprint.input_tokens)
 

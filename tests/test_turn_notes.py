@@ -1,9 +1,10 @@
 """The system prompt stays the same from turn to turn (RFC §6.4, RMK-318).
 
 What the room's working memories say changes from one turn to the next (the
-tools already used and what they returned, the plan): it rides the turn's
-input, after the participant's words, in the same message, never the system
-prompt, which a provider caches ahead of the whole history.
+plan): it rides the turn's input, after the participant's words, in the same
+message, never the system prompt, which a provider caches ahead of the whole
+history. The tools already used ride the history itself
+(``tests/test_channels/test_tool_history.py``).
 """
 
 from __future__ import annotations
@@ -72,7 +73,10 @@ def _input(context: AIContext) -> str:
     return str(context.messages[-1].content)
 
 
-async def test_the_system_prompt_holds_while_the_digest_rides_the_input(streaming: bool) -> None:
+async def test_the_system_prompt_holds_from_turn_to_turn(streaming: bool) -> None:
+    """A tool call changes nothing of the next turn's system prompt, nor of its
+    input: what the call returned rides the history
+    (``tests/test_channels/test_tool_history.py``)."""
     provider = MockAIProvider(
         ai_responses=[_round("c0", "lookup"), _DONE, _DONE], streaming=streaming
     )
@@ -83,31 +87,7 @@ async def test_the_system_prompt_holds_while_the_digest_rides_the_input(streamin
 
     first, second = provider.calls[0], provider.calls[2]
     assert first.system_prompt == second.system_prompt == "Be brief."
-    notes = _input(second)
-    assert notes.startswith("and its status?")
-    assert "Tools you've already used here" in notes
-    assert "SHIPPED-7731" in notes
-    assert "<tool_result>" in notes  # data set apart, not instructions
-
-
-@pytest.mark.parametrize("tool_search", [False, True], ids=["search-off", "search-on"])
-async def test_the_digest_names_find_tools_only_when_the_turn_has_it(
-    tool_search: bool, streaming: bool
-) -> None:
-    """With Tool Search off the turn declares no find_tools and refuses a call
-    to it (RFC §6.4): the digest does not send the model looking for it."""
-    provider = MockAIProvider(
-        ai_responses=[_round("c0", "lookup"), _DONE, _DONE], streaming=streaming
-    )
-    ch = AIChannel("ai1", provider=provider, tool_handler=_lookup, tool_search=tool_search)
-
-    await _turn(ch, "where is A-1042?")
-    await _turn(ch, "and its status?")
-
-    second = provider.calls[2]
-    assert "Tools you've already used here" in _input(second)
-    assert ("find_tools" in {t.name for t in second.tools}) is tool_search
-    assert ("find_tools" in _input(second)) is tool_search
+    assert _input(second) == "and its status?"
 
 
 async def test_the_plan_rides_the_input(streaming: bool) -> None:
@@ -127,10 +107,11 @@ async def test_the_plan_rides_the_input(streaming: bool) -> None:
 
 
 async def test_the_generation_hook_sees_the_notes_in_the_input(streaming: bool) -> None:
+    plan = {"tasks": [{"title": "Check stock", "status": "pending"}]}
     provider = MockAIProvider(
-        ai_responses=[_round("c0", "lookup"), _DONE, _DONE], streaming=streaming
+        ai_responses=[_round("c0", "plan_tasks", plan), _DONE, _DONE], streaming=streaming
     )
-    ch = AIChannel("ai1", provider=provider, tool_handler=_lookup)
+    ch = AIChannel("ai1", provider=provider, enable_planning=True, tool_handler=_lookup)
     seen: list[AIContext] = []
 
     async def hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
@@ -139,11 +120,11 @@ async def test_the_generation_hook_sees_the_notes_in_the_input(streaming: bool) 
 
     ch._before_generation_hook = hook
 
-    await _turn(ch, "where is A-1042?")
-    await _turn(ch, "and its status?")
+    await _turn(ch, "plan it")
+    await _turn(ch, "go on")
 
-    assert "SHIPPED-7731" in _input(seen[-1])
-    assert "SHIPPED-7731" not in (seen[-1].system_prompt or "")
+    assert "Check stock" in _input(seen[-1])
+    assert "Check stock" not in (seen[-1].system_prompt or "")
 
 
 def test_notes_follow_a_multimodal_input_as_its_last_part() -> None:

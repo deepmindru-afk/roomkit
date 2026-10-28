@@ -266,15 +266,13 @@ class AIChannel(
         self._sandbox = sandbox
         self._tool_policy = tool_policy
         self._eviction = ToolEviction(threshold_tokens=evict_threshold_tokens)
-        # Per-conversation record of tools the agent has called — feeds the
-        # "tools you've already used" digest and re-reveals used tools each turn
-        # so a tool used once stays callable under Tool Search. See _tool_usage.
-        # A result kept for later turns never exceeds what the eviction
+        # Per-conversation record of tools the agent has called: re-reveals
+        # used tools each turn so a tool used once stays callable under Tool
+        # Search, and replays the latest images they returned. See _tool_usage.
+        self._tool_usage = ToolUsageMemory(recorded=self._in_tool_memory)
+        # A result later turns replay whole never exceeds what the eviction
         # threshold lets the model see in the turn itself (~4 chars a token).
-        self._tool_usage = ToolUsageMemory(
-            result_keep_chars=min(_TOOL_MEMORY_RESULT_CHARS, 4 * evict_threshold_tokens),
-            recorded=self._in_usage_digest,
-        )
+        self._replayed_result_chars = min(_TOOL_MEMORY_RESULT_CHARS, 4 * evict_threshold_tokens)
         # Per-conversation record of the skills the model activated. Their bodies
         # ride the system prompt from the next turn on, so ``activate_skill``
         # answers with a short ACK instead of re-sending a multi-KB body every
@@ -453,11 +451,11 @@ class AIChannel(
         names.extend(self._human_input.declared_names)
         return names
 
-    def _in_usage_digest(self, name: str) -> bool:
-        """Whether a call to *name* is work the agent did, for the usage digest:
-        not a discovery or housekeeping tool of the channel's own."""
+    def _in_tool_memory(self, name: str) -> bool:
+        """Whether a call to *name* is work the agent did, which later turns
+        replay: not a discovery or housekeeping tool of the channel's own."""
         traits = self._registry.traits(name)
-        return traits is None or traits.in_digest
+        return traits is None or traits.in_tool_memory
 
     def _init_framework_callbacks(self) -> None:
         """The callbacks the framework injects on ``register_channel``, unset until then."""
@@ -481,6 +479,9 @@ class AIChannel(
         # (restarts, cache expiry) — the in-memory store dies with the object
         # while conversations outlive it.
         self._tool_usage_loader = None
+        # The reader of this channel's stored tool rows in a room, for the
+        # turn's history: wired at registration.
+        self._tool_history_loader = None
         # The room's background tasks for the turn's notes (RFC §23.4), read
         # from the framework's StatusBus: wired at registration.
         self._room_tasks_loader = None

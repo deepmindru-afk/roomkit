@@ -170,25 +170,6 @@ async def test_a_hook_engine_fold_keeps_its_two_argument_signature() -> None:
     await kit.close()
 
 
-async def test_a_blocked_call_is_remembered_with_its_reason_not_its_eviction() -> None:
-    provider = MockAIProvider(ai_responses=_calls(("lookup", {})))
-    kit = RoomKit()
-    channel = AIChannel("ai1", provider=provider, tool_handler=_answer, evict_threshold_tokens=20)
-    kit.register_channel(channel)
-    await kit.create_room(room_id="r1")
-
-    @kit.hook(HookTrigger.ON_TOOL_CALL, name="block")
-    async def block(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
-        return HookResult.block("withheld: " + "policy says no. " * 20)
-
-    await _turn(channel, [LOOKUP])
-
-    digest = channel._tool_usage.render_digest("r1")  # noqa: SLF001
-    assert "policy says no" in digest
-    assert "too large" not in digest
-    await kit.close()
-
-
 # -- A conference reads a verdict as every channel does -----------------------
 
 

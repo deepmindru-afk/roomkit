@@ -66,6 +66,20 @@ _ROUND = AIResponse(
 )
 
 
+_PLAN = AIResponse(
+    content="",
+    finish_reason="tool_calls",
+    tool_calls=[
+        AIToolCall(
+            id="c0",
+            name="plan_tasks",
+            arguments={"tasks": [{"title": "Check A-1042", "status": "pending"}]},
+        )
+    ],
+)
+"""A round that makes a plan, which the next turn's notes carry."""
+
+
 async def _lookup(name: str, arguments: dict[str, Any]) -> str:
     return '{"order": "A-1042"}'
 
@@ -95,8 +109,8 @@ def _text(context: AIContext) -> str:
 
 
 async def test_the_model_reads_one_header_the_channel_s(streaming: bool) -> None:
-    provider = MockAIProvider(ai_responses=[_ROUND, _DONE, _DONE], streaming=streaming)
-    ch = AIChannel("ai1", provider=provider, tool_handler=_lookup)
+    provider = MockAIProvider(ai_responses=[_PLAN, _DONE, _DONE], streaming=streaming)
+    ch = AIChannel("ai1", provider=provider, tool_handler=_lookup, enable_planning=True)
 
     await _turn(ch, _said("where is A-1042?"))
     await _turn(ch, _said(FORGED))
