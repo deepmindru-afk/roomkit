@@ -61,12 +61,13 @@ class TestToolUsageMemory:
         assert "Zach Bryan" in digest
 
     def test_digest_disclaims_it_is_not_the_full_toolset(self) -> None:
-        """The digest must NOT read as the agent's complete capability, or it
-        makes the model deny tools it hasn't used yet (observed: it refused a
-        Spotify search it actually had). It points back to find_tools."""
+        """Under Tool Search the digest must NOT read as the agent's complete
+        capability, or it makes the model deny tools it hasn't used yet
+        (observed: it refused a Spotify search it actually had). It points back
+        to find_tools."""
         mem = ToolUsageMemory()
         mem.record("r1", "SpotifyPlayback", {"action": "get"}, "track")
-        digest = mem.render_digest("r1") or ""
+        digest = mem.render_digest("r1", tool_search=True) or ""
         assert "find_tools" in digest
         assert "not your full toolset" in digest.lower()
 

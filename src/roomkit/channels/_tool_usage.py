@@ -79,6 +79,16 @@ _ARG_VALUE_CHARS = 48
 # so three of them cannot crowd out a small model's context.
 _RESULTS_SHOWN = 3
 _RESULT_KEEP_CHARS = 6000
+_ALREADY_CALLED = "Tools you've ALREADY CALLED this conversation — reuse them directly."
+# Under Tool Search the digest must not read as the agent's whole toolset, or
+# the model denies a tool it has not used yet (observed: it refused a Spotify
+# search it had).
+_UNDER_TOOL_SEARCH = (
+    "Tools you've ALREADY CALLED this conversation — reuse them directly, "
+    "don't re-search for them. This is NOT your full toolset, only what "
+    "you happened to use: many more tools stay hidden behind find_tools, so "
+    "never conclude you can't do something without searching for it first."
+)
 # The latest images tool results returned, replayed with each later turn.
 _IMAGES_REPLAYED = 2
 # What an image replayed may be: inline, of a type and a size every vision
@@ -299,8 +309,14 @@ class ToolUsageMemory:
         mem = self._by_room.get(room_id)
         return set(mem.tools) if mem else set()
 
-    def render_digest(self, room_id: str | None) -> str | None:
-        """Markdown block listing recent calls, or ``None`` when there are none."""
+    def render_digest(self, room_id: str | None, *, tool_search: bool = False) -> str | None:
+        """Markdown block listing recent calls, or ``None`` when there are none.
+
+        *tool_search* says whether the turn hides tools behind ``find_tools``:
+        only then does the block send the model searching for more. Without
+        it, the turn declares every tool and refuses a ``find_tools`` call
+        (RFC §6.4).
+        """
         if not room_id:
             return None
         mem = self._by_room.get(room_id)
@@ -308,10 +324,7 @@ class ToolUsageMemory:
             return None
         lines = [
             "## Tools you've already used here",
-            "Tools you've ALREADY CALLED this conversation — reuse them directly, "
-            "don't re-search for them. This is NOT your full toolset, only what "
-            "you happened to use: many more tools stay hidden behind find_tools, so "
-            "never conclude you can't do something without searching for it first.",
+            _UNDER_TOOL_SEARCH if tool_search else _ALREADY_CALLED,
             "The most recent calls show what they returned: answer follow-up "
             "questions from it. Before you state a detail it does not contain, call "
             "the tool again: never guess one. What you said from a result you read "

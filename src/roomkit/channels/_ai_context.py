@@ -655,7 +655,7 @@ class AIContextMixin(_AIChannelContract):
         # tool-call events, so without this the model forgets, across turns,
         # which tools/source it used (it would re-ask the user). Injected for
         # every model, not just small ones — the loss is provider-agnostic.
-        digest = self._tool_usage.render_digest(room_id)
+        digest = self._tool_usage.render_digest(room_id, tool_search=loop_ctx.tool_search_active)
         if digest:
             blocks.append(digest)
         return blocks

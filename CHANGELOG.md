@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The tools-already-used notes no longer send the model looking for
+  `find_tools` when Tool Search is off** (RFC 6.4, RMK-1022). After a turn
+  that called a tool, `AIChannel` adds a "Tools you've already used here"
+  block to the next turn's notes. That block always said that more tools were
+  hidden behind `find_tools` and that the model should search before saying
+  it cannot do something. With Tool Search off, which is the case for any
+  channel with a short tool list, the turn declares no `find_tools` and
+  refuses a call to it. The block now says this only when the turn's Tool
+  Search is on.
+
 - **A `kit.close()` cancelled, or called while another runs, no longer
   leaves the kit half closed** (RFC 12.10.4, RMK-1015). The kit was marked
   closed on entry: a `close()` its caller cancelled (a timeout around it, a

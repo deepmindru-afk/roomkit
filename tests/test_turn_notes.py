@@ -90,6 +90,26 @@ async def test_the_system_prompt_holds_while_the_digest_rides_the_input(streamin
     assert "<tool_result>" in notes  # data set apart, not instructions
 
 
+@pytest.mark.parametrize("tool_search", [False, True], ids=["search-off", "search-on"])
+async def test_the_digest_names_find_tools_only_when_the_turn_has_it(
+    tool_search: bool, streaming: bool
+) -> None:
+    """With Tool Search off the turn declares no find_tools and refuses a call
+    to it (RFC §6.4): the digest does not send the model looking for it."""
+    provider = MockAIProvider(
+        ai_responses=[_round("c0", "lookup"), _DONE, _DONE], streaming=streaming
+    )
+    ch = AIChannel("ai1", provider=provider, tool_handler=_lookup, tool_search=tool_search)
+
+    await _turn(ch, "where is A-1042?")
+    await _turn(ch, "and its status?")
+
+    second = provider.calls[2]
+    assert "Tools you've already used here" in _input(second)
+    assert ("find_tools" in {t.name for t in second.tools}) is tool_search
+    assert ("find_tools" in _input(second)) is tool_search
+
+
 async def test_the_plan_rides_the_input(streaming: bool) -> None:
     plan = {"tasks": [{"title": "Check stock", "status": "pending"}]}
     provider = MockAIProvider(
