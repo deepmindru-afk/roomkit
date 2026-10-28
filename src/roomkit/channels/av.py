@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.channels._video_hooks import VideoHooksMixin
 from roomkit.channels._video_resources import _VideoResources
 from roomkit.channels.voice import VoiceChannel
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.enums import ChannelMediaType, ChannelType, HookTrigger
 from roomkit.video.backends.av import AudioVideoBackend
@@ -341,10 +342,9 @@ class AudioVideoChannel(VideoHooksMixin, VoiceChannel):
             pool.shutdown(wait=False)
         if self._avatar:
             await self._avatar.close()
-        for task in list(self._scheduled_tasks):
-            task.cancel()
-        if self._scheduled_tasks:
-            await asyncio.gather(*self._scheduled_tasks, return_exceptions=True)
+        # Cancelled and awaited, but the one running this close (a handler of
+        # a session's end that closes the kit), which would wait for itself.
+        await cancel_and_wait(*self._scheduled_tasks, log_errors_to=logger)
         self._scheduled_tasks.clear()
         await self._video_resources.close()
         self._last_vision_results.clear()

@@ -28,6 +28,7 @@ from roomkit.channels._voice_turn import VoiceTurnMixin
 from roomkit.channels._voice_unheard import UnheardTurns
 from roomkit.channels.addressing import addressing_of
 from roomkit.channels.base import Channel, FrameworkAwareChannel
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.enums import (
     Access,
@@ -2307,10 +2308,9 @@ class VoiceChannel(
         for sid in list(self._stt_streams):
             self._cancel_stt_stream(sid)
         # 2. Cancel scheduled fire-and-forget tasks and await completion
-        for task in self._scheduled_tasks:
-            task.cancel()
-        if self._scheduled_tasks:
-            await asyncio.gather(*self._scheduled_tasks, return_exceptions=True)
+        # Cancelled and awaited, but the one running this close (a handler of
+        # a session's end that closes the kit), which would wait for itself.
+        await cancel_and_wait(*self._scheduled_tasks, log_errors_to=logger)
         self._scheduled_tasks.clear()
         # 3. Close the pipeline (its DSP pool was drained at step 0).
         if self._pipeline is not None:

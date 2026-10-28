@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.channels._video_hooks import VideoHooksMixin
 from roomkit.channels._video_resources import _VideoResources
 from roomkit.channels.base import Channel, FrameworkAwareChannel
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.enums import (
     ChannelCategory,
@@ -458,10 +459,9 @@ class VideoChannel(VideoHooksMixin, FrameworkAwareChannel, Channel):
 
     async def close(self) -> None:
         # Cancel scheduled tasks
-        for task in self._scheduled_tasks:
-            task.cancel()
-        if self._scheduled_tasks:
-            await asyncio.gather(*self._scheduled_tasks, return_exceptions=True)
+        # Cancelled and awaited, but the one running this close (a handler of
+        # a session's end that closes the kit), which would wait for itself.
+        await cancel_and_wait(*self._scheduled_tasks, log_errors_to=logger)
         self._scheduled_tasks.clear()
         recording_error = self._stop_all_recordings()
         # Close video pipeline

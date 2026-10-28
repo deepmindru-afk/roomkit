@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shutdown runs to its end. A `close()` from the kit's own work (a tool's
   call, a hook's body) still runs on once the shutdown has ended: the
   shutdown neither waits for it nor cuts it.
+- **A `kit.close()` from a delivery's hook, or from a session's end, returns
+  and closes the kit** (RMK-1015). An ASYNC `AFTER_BROADCAST` hook runs in
+  its room's delivery lane: a `kit.close()` from it waited for that lane,
+  which waited for the hook, until the lane's 5 s grace ran out and its
+  cancellation cut the close half way, the channels left open. A
+  `voice_session_ended` handler that closes the kit after a client hung up
+  waited for ever: a `RealtimeVoiceChannel`'s close waited for the teardown
+  running the handler, and a `VoiceChannel`'s (as a `VideoChannel`'s and an
+  `AVChannel`'s) for its own tasks, the handler's included. The close now
+  spares the lane, the teardown or the task it is called from: neither
+  waited for nor cut, while every other channel closes and the kit is
+  released.
 
 ## [0.110.0] — 2026-10-27
 

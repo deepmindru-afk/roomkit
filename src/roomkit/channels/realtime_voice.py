@@ -1722,6 +1722,24 @@ class RealtimeVoiceChannel(
                 self._session_teardowns.pop(session.id, None)
             teardown.done.set_result(None)
 
+    async def _await_teardowns_under_way(self) -> None:
+        """Wait for the teardowns under way whose session already left
+        ``_sessions`` (in neither list ``close()`` ends), before its sweep
+        cancels the tasks running them, mid-emit; but the one running this
+        close (a handler of a session's end closing the kit), which would
+        wait for itself."""
+        acting = acting_tasks()
+        with self._state_lock:
+            outstanding = [
+                teardown.done
+                for teardown in self._session_teardowns.values()
+                if teardown.owner not in acting
+            ]
+        if outstanding:
+            await asyncio.gather(
+                *(asyncio.shield(done) for done in outstanding), return_exceptions=True
+            )
+
     async def _before_session_teardown(self, session: VoiceSession) -> None:
         """A subclass's own teardown, run by the owner before the base one."""
 
@@ -2222,15 +2240,7 @@ class RealtimeVoiceChannel(
             except Exception:
                 logger.exception("Error ending session %s during close", session.id)
 
-        # A teardown under way whose session already left ``_sessions`` is in
-        # neither list above and not done: wait for it before the sweep below
-        # cancels the task running it, mid-emit.
-        with self._state_lock:
-            outstanding = [teardown.done for teardown in self._session_teardowns.values()]
-        if outstanding:
-            await asyncio.gather(
-                *(asyncio.shield(done) for done in outstanding), return_exceptions=True
-            )
+        await self._await_teardowns_under_way()
 
         # What the ended sessions left is settled first: the sweep below would
         # cut it.

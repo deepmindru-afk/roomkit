@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._reentrance import ReentryBudget, delivering
 from roomkit.core.locks import _has_room_lock, _held_rooms
-from roomkit.core.task_utils import start_named
+from roomkit.core.task_utils import spared_by_close, start_named
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.providers.utils import _aclose_stream
 from roomkit.telemetry.context import restored_span
@@ -631,10 +631,12 @@ class RoomDeliveryLane:
         a plainly-created task would inherit ``_held_rooms`` and the reentry
         pass would take the lock manager's reentrant fast path *without
         holding the lock*. An empty context makes the executor a stranger to
-        every lock its creator held.
+        every lock its creator held. The executor is named in its own
+        context (:func:`start_named`): a ``close()`` from the work it runs (a
+        delivery's hook) spares it rather than wait for itself.
         """
         if self._task is None and not self._closed:
-            self._task = asyncio.get_running_loop().create_task(
+            self._task = start_named(
                 self._run(),
                 name=f"roomkit-delivery-lane-{self.room_id}",
                 context=contextvars.Context(),
@@ -668,14 +670,20 @@ class RoomDeliveryLane:
         swallows cancellation cannot extend it. Whatever remains is aborted:
         every pending unit is released and its cascade cancelled so no
         waiter hangs.
+
+        A lane whose work runs this close (a delivery's hook closing the kit)
+        is neither drained nor cut: it cannot move on before the close
+        returns. It is sealed, its queued entries aborted, and the round under
+        way ends on its own once its work returns.
         """
-        if not self._closed:
+        spared = self._task is not None and self._task in spared_by_close()
+        if not self._closed and not spared:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.drain(), timeout=self._config.close_grace)
         self._closed = True
         self._wakeup.set()
         task, self._task = self._task, None
-        if task is not None and task is not asyncio.current_task():
+        if task is not None and not spared:
             _, pending = await asyncio.wait({task}, timeout=_TASK_GRACE_S)
             if pending:
                 task.cancel()

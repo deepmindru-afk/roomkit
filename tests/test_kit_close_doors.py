@@ -12,12 +12,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import pytest
 
-from roomkit import HookExecution, HookTrigger, RoomKit, RoomStatus
+from roomkit import (
+    HookExecution,
+    HookTrigger,
+    RealtimeVoiceChannel,
+    RoomKit,
+    RoomStatus,
+    VoiceChannel,
+)
 from roomkit.channels.agent import Agent
 from roomkit.core import framework
 from roomkit.core.task_utils import hold_task
@@ -39,6 +46,9 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
 from roomkit.tasks.posting import send_posted
+from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.stt.mock import MockSTTProvider
 from tests.test_framework import SimpleChannel
 
 
@@ -268,6 +278,101 @@ async def test_a_close_from_a_tool_returns_and_seals_the_kit(door: str) -> None:
     await asyncio.wait_for(asyncio.gather(call, return_exceptions=True), timeout=5.0)
 
     assert kit._closed
+
+
+# -- a close from a delivery, or from a session's end --------------------------
+
+
+class _Witness(SimpleChannel):
+    """A channel that says whether it was closed."""
+
+    closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def _delivery_door(witness: _Witness, closed: asyncio.Event) -> RoomKit:
+    """A delivery's ASYNC AFTER_BROADCAST hook closes the kit: it runs in the
+    room's delivery lane."""
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(witness)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "sms")
+    await kit.attach_channel("r", witness.channel_id)
+
+    @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="quit")
+    async def quit(event: RoomEvent, ctx: RoomContext) -> None:
+        await kit.close()
+        closed.set()
+
+    message = InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Bye."))
+    await kit.process_inbound(message, room_id="r")
+    return kit
+
+
+async def _realtime_session_end_door(witness: _Witness, closed: asyncio.Event) -> RoomKit:
+    """The client hangs up a realtime session; the ``voice_session_ended``
+    handler, run in the session's teardown, closes the kit."""
+    kit = RoomKit()
+    transport = MockRealtimeTransport()
+    channel = RealtimeVoiceChannel("rt", provider=MockRealtimeProvider(), transport=transport)
+    kit.register_channel(channel)
+    kit.register_channel(witness)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "rt")
+    session = await channel.start_session("r", "p", "fake-ws")
+
+    @kit.on("voice_session_ended")
+    async def ended(event: Any) -> None:
+        await kit.close()
+        closed.set()
+
+    await transport.simulate_client_disconnect(session)
+    return kit
+
+
+async def _voice_session_end_door(witness: _Witness, closed: asyncio.Event) -> RoomKit:
+    """The client hangs up a voice session; the ``voice_session_ended``
+    handler, run in one of the voice channel's tasks, closes the kit."""
+    backend = MockVoiceBackend()
+    kit = RoomKit(voice=backend)
+    kit.register_channel(VoiceChannel("voice", stt=MockSTTProvider(), backend=backend))
+    kit.register_channel(witness)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "voice")
+    session = await kit.join("r", "voice", participant_id="u")
+
+    @kit.on("voice_session_ended")
+    async def ended(event: Any) -> None:
+        await kit.close()
+        closed.set()
+
+    await backend.simulate_client_disconnected(session)
+    return kit
+
+
+@pytest.mark.parametrize(
+    "door",
+    [_delivery_door, _realtime_session_end_door, _voice_session_end_door],
+    ids=["delivery-hook", "realtime-session-end", "voice-session-end"],
+)
+async def test_a_close_from_a_delivery_or_a_session_end_returns_and_closes_the_kit(
+    door: Callable[[_Witness, asyncio.Event], Awaitable[RoomKit]],
+) -> None:
+    """The kit's own work closes the kit: its close neither waits for nor
+    cuts the work it runs in, and returns once every channel is closed
+    (RMK-1015)."""
+    witness = _Witness("witness")
+    closed = asyncio.Event()
+
+    # A realtime channel's attach compiles its marks' copies, ~1 s on its own.
+    kit = await asyncio.wait_for(door(witness, closed), 5)
+    await asyncio.wait_for(closed.wait(), 1)
+
+    assert witness.closed
+    await kit.close()
 
 
 async def test_a_held_inline_run_starts_before_a_close_can_cut_it() -> None:
