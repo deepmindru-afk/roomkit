@@ -306,6 +306,9 @@ artifacts = [
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+# Set, or pytest-asyncio warns at configure time, which "error" below fails
+# since pytest 9.2. Every async fixture here is function-scoped.
+asyncio_default_fixture_loop_scope = "function"
 # Stress tests are opt-in: `make stress` (or `pytest -m stress`, whose -m
 # overrides this one). The default run — and CI's coverage run — skips them,
 # and the type-checker run `make typecheck` and CI's type check job make.
