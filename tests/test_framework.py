@@ -746,11 +746,96 @@ class TestLifecycleGuards:
 
     async def test_close_is_idempotent(self) -> None:
         kit = RoomKit()
-        kit.register_channel(SimpleChannel("sms1"))
+        channel = _GatedClose("sms1")
+        channel.release.set()
+        kit.register_channel(channel)
         await kit.create_room(room_id="r1")
         await kit.close()
         # A second close is a no-op, not a second teardown.
         await kit.close()
+        assert channel.closes == 1
+
+
+class TestOneShutdown:
+    """The kit has one shutdown: every close() joins it, and a caller that
+    stops waiting stops only its own wait (RMK-1015)."""
+
+    @pytest.mark.parametrize("cancelled", [False, True], ids=["joined", "first-cancelled"])
+    async def test_a_close_during_another_returns_once_the_shutdown_ends(
+        self, cancelled: bool
+    ) -> None:
+        kit = RoomKit()
+        channel = _GatedClose("sms1")
+        kit.register_channel(channel)
+        first = asyncio.ensure_future(kit.close())
+        await asyncio.wait_for(channel.entered.wait(), 1)
+        if cancelled:
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+        second = asyncio.ensure_future(kit.close())
+        await asyncio.sleep(0)
+        assert not second.done()
+
+        channel.release.set()
+        await asyncio.wait_for(second, 1)
+
+        assert channel.closes == 1 and channel.finished
+        assert first.cancelled() is cancelled
+        await asyncio.wait_for(asyncio.gather(first, return_exceptions=True), 1)
+
+    async def test_a_close_after_a_failed_one_raises_the_same_failure(self) -> None:
+        kit = RoomKit()
+        channel = _GatedClose("sms1", error=RuntimeError("the transport refused"))
+        channel.release.set()
+        kit.register_channel(channel)
+
+        with pytest.raises(ExceptionGroup) as first:
+            await kit.close()
+        with pytest.raises(ExceptionGroup) as second:
+            await kit.close()
+
+        assert second.value is first.value
+        assert channel.closes == 1
+
+    async def test_a_close_from_the_shutdown_s_own_work_returns_at_once(self) -> None:
+        kit = RoomKit()
+        channel = _GatedClose("sms1", closes_the_kit=kit)
+        channel.release.set()
+        kit.register_channel(channel)
+
+        await asyncio.wait_for(kit.close(), 1)
+
+        assert channel.finished
+
+
+class _GatedClose(SimpleChannel):
+    """A channel whose close waits for *release*, then raises *error* when
+    given; with *closes_the_kit*, it closes that kit from its own close."""
+
+    def __init__(
+        self,
+        channel_id: str,
+        *,
+        error: Exception | None = None,
+        closes_the_kit: RoomKit | None = None,
+    ) -> None:
+        super().__init__(channel_id)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.error = error
+        self.kit = closes_the_kit
+        self.closes = 0
+        self.finished = False
+
+    async def close(self) -> None:
+        self.closes += 1
+        self.entered.set()
+        await self.release.wait()
+        if self.kit is not None:
+            await self.kit.close()
+        self.finished = True
+        if self.error is not None:
+            raise self.error
 
 
 # -- Changeset 4: Identity resolution idempotency --

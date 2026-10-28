@@ -100,6 +100,8 @@ from roomkit.core.task_utils import (
     cancel_and_wait,
     cut_once_started,
     held_runs,
+    spared_by_close,
+    start_for_caller,
     wait_for_held,
 )
 from roomkit.core.transcoder import DefaultContentTranscoder
@@ -201,7 +203,7 @@ __all__ = [
 ]
 
 
-def _running(tasks: set[asyncio.Task[Any]], spared: set[asyncio.Task[Any] | None]) -> bool:
+def _running(tasks: set[asyncio.Task[Any]], spared: set[asyncio.Task[Any]]) -> bool:
     """Whether a task of *tasks* still runs, but those *spared*."""
     return any(not task.done() and task not in spared for task in tasks)
 
@@ -409,6 +411,7 @@ class RoomKit(
         # metadata by detach_channel() — not here — so they survive restarts
         # and are visible to every process sharing the store.
         self._closed = False
+        self._shutdown: asyncio.Task[None] | None = None
         self._hook_engine = HookEngine()
         # A hook on a trigger a turn fires registered on the kit is its own
         # executor's (RFC §10.6.6).
@@ -830,7 +833,7 @@ class RoomKit(
         started yet is cut once started, its end run all the same. The runs
         this close runs under are spared: waiting for them would wait for
         itself."""
-        spared = set(held_runs())
+        spared = spared_by_close()
         runs = set(self._background_runs) - spared
         while runs:
             await cancel_and_wait(*runs, log_errors_to=logger, once_started=True)
@@ -843,7 +846,7 @@ class RoomKit(
         for them would wait for itself. A task not started yet is cut once
         started, as a held run is, so its end runs. A task one of them
         starts as it ends is cancelled in turn."""
-        spared = set(held_runs())
+        spared = spared_by_close()
         while pending := [
             task for task in self._pending_hook_tasks if not task.done() and task not in spared
         ]:
@@ -868,7 +871,7 @@ class RoomKit(
             await self._cancel_pending_tasks()
             await self._hook_engine.drain_observers()
             await asyncio.sleep(0)
-            spared = {*held_runs(), asyncio.current_task()}
+            spared = spared_by_close()
             writes = loop.time() < deadline and _running(self._decided_writes, spared)
             if not (
                 writes
@@ -900,15 +903,31 @@ class RoomKit(
                 channel that failed may still be holding its own resources (a
                 bot possibly still in its meeting); the group names each one.
 
-        Idempotent: a second call returns immediately. The flag is set on
-        entry, so a close that raised is not re-run either — the sealed
-        store/lock manager would refuse its operations anyway, and re-closing
-        already-closed channels raises a second, unrelated failure over the
-        one the caller already has.
+        One shutdown per kit (RFC 12.10.4): the first call starts it in a
+        task of its own, and every call, concurrent or later, waits for that
+        one. A caller cancelled, or timed out, cancels only its own wait: the
+        shutdown runs to its end. Once ended, its result answers every later
+        call, a return after a success, the same ``ExceptionGroup`` after a
+        failure; it never runs again — re-closing already-closed channels
+        would raise a second, unrelated failure over the one already reported.
+
+        A call from the kit's own work (a hook's body, a tool's call, a
+        background run, a delivery, a session's end) waits for the shutdown
+        without the shutdown waiting for that work or cutting it; a call from
+        the shutdown's own work (a hook it fires) returns at once.
         """
-        if self._closed:
+        if self._shutdown is None:
+            self._closed = True
+            self._shutdown = start_for_caller(self._shut_down(), name="roomkit-close")
+        elif self._shutdown in held_runs():
+            # Waiting for the shutdown from its own work would wait for itself.
             return
-        self._closed = True
+        await asyncio.shield(self._shutdown)
+
+    async def _shut_down(self) -> None:
+        """The kit's one shutdown (:meth:`close`): its own work stops, the
+        channels close, then what they shared is released; the channels'
+        failures raised last."""
         await self._stop_kit_work()
         channel_failures = await self._close_channels()
         # Close voice backend

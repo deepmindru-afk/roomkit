@@ -182,7 +182,7 @@ async def wait_for_held(held: set[asyncio.Task[Any]], *, until: float) -> None:
     named in the log and left to end on their own.
     """
     loop = asyncio.get_running_loop()
-    spared = {*held_runs(), asyncio.current_task()}
+    spared = spared_by_close()
     while pending := {task for task in held if not task.done()} - spared:
         remaining = until - loop.time()
         if remaining <= 0:
@@ -234,8 +234,9 @@ async def cancel_and_wait(
     still end before the caller moves on, as awaiting them guaranteed, and
     the caller's cancellation is raised once they have.
 
-    ``None`` entries and the current task are skipped: a task tearing itself
-    down cannot wait for its own end. *once_started* cancels a task not
+    ``None`` entries and the tasks the caller runs as (:func:`acting_tasks`)
+    are skipped: a task tearing itself down cannot wait for its own end, nor a
+    shutdown for the caller waiting on it. *once_started* cancels a task not
     started yet after its first step (:func:`cut_once_started`), so its own
     end runs. A task's own exception is raised, as
     awaiting it would, unless *log_errors_to* is given: it is then logged
@@ -246,8 +247,8 @@ async def cancel_and_wait(
     cancellation of the caller, or a timeout around it, waits for the tasks
     too, so a task that never ends holds its caller.
     """
-    current = asyncio.current_task()
-    pending = [t for t in dict.fromkeys(tasks) if t is not None and t is not current]
+    acting = acting_tasks()
+    pending = [t for t in dict.fromkeys(tasks) if t is not None and t not in acting]
     for task in pending:
         if once_started and isinstance(task, asyncio.Task):
             cut_once_started(task)
@@ -295,6 +296,37 @@ def held_runs() -> tuple[asyncio.Task[Any], ...]:
     """The kit-held runs (:func:`hold_task`) the current code runs under: a
     ``close()`` called from one of them must not wait for it."""
     return tuple(task for cell in _HELD_RUNS.get() for task in cell)
+
+
+_ACTS_FOR: contextvars.ContextVar[asyncio.Task[Any] | None] = contextvars.ContextVar(
+    "roomkit_acts_for", default=None
+)
+"""The caller the current code's task was started for (:func:`start_for_caller`)."""
+
+
+def acting_tasks() -> set[asyncio.Task[Any]]:
+    """The tasks the current code runs as: the current one and, inside work
+    started for a caller that waits for it (:func:`start_for_caller`), that
+    caller. A ``close()`` called from here neither waits for nor cuts them."""
+    return {task for task in (asyncio.current_task(), _ACTS_FOR.get()) if task is not None}
+
+
+def spared_by_close() -> set[asyncio.Task[Any]]:
+    """What a ``close()`` called from the current code neither waits for nor
+    cuts: the tasks it runs as (:func:`acting_tasks`) and the kit-held runs it
+    runs under (:func:`held_runs`)."""
+    return {*acting_tasks(), *held_runs()}
+
+
+def start_for_caller[T](work: Coroutine[Any, Any, T], *, name: str) -> asyncio.Task[T]:
+    """Start *work* as a task its caller waits for (the kit's shutdown):
+    named in :func:`held_runs`, and acting for the caller
+    (:func:`acting_tasks`), so what it waits for or cuts spares the caller as
+    the caller's own code would spare itself. Not eager: its first step runs
+    once the caller holds the task, so a call it makes back reads it."""
+    context = contextvars.copy_context()
+    context.run(_ACTS_FOR.set, asyncio.current_task())
+    return start_named(work, name=name, context=context)
 
 
 def _cancellation_requests() -> int:

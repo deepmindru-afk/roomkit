@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from roomkit.channels import _conference_activity
 from roomkit.channels._conference_backlog import TrackBacklog
+from roomkit.core.task_utils import acting_tasks
 from roomkit.voice.pipeline.vad.base import VADEventType
 
 if TYPE_CHECKING:
@@ -268,7 +269,7 @@ class ConferenceLane:
         if self._released.is_set():
             return False
         task, self._task = self._task, None
-        if task is None or task is asyncio.current_task():
+        if task is None or task in acting_tasks():
             self._release_stream()
             return False
         task.cancel()

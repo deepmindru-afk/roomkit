@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
 from roomkit.channels.declared import DeclaredChannel
+from roomkit.core.task_utils import acting_tasks
 from roomkit.core.visibility import answers_reach
 from roomkit.models.enums import Visibility
 from roomkit.models.steering import Cancel as SteeringCancel
@@ -433,8 +434,8 @@ class TurnClient(RoomOwner):
             await self.executor.close()
         for turn in list(self._open):
             turn.abandon()
-        current = asyncio.current_task()
-        calls = [task for task in self._calls if task is not current]
+        acting = acting_tasks()
+        calls = [task for task in self._calls if task not in acting]
         for task in calls:
             if not task.cancelling():
                 # One already cancelled is let finish its cleanup.

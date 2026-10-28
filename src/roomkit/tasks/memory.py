@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Any
 from roomkit.core._failure_log import log_failure
 from roomkit.core.task_utils import (
     cancel_and_wait,
-    held_runs,
     log_task_exception,
     shielded,
+    spared_by_close,
     start_named,
 )
 from roomkit.models.enums import TaskStatus
@@ -86,7 +86,7 @@ class InMemoryTaskRunner(TaskRunner):
         # A task's end may delegate again: that task is cancelled in turn.
         # The ones this close runs under (a worker's tool closing the kit)
         # are spared: cancelling one would wait for itself.
-        spared = set(held_runs())
+        spared = spared_by_close()
         while running := [tid for tid, bg in self._tasks.items() if bg not in spared]:
             for task_id in running:
                 await self.cancel(task_id)

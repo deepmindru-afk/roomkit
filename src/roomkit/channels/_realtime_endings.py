@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._realtime_context import ending_cause, held_by, spare_own_orphaned_call
 from roomkit.channels._realtime_tool_executor import report_interrupted_calls
-from roomkit.core.task_utils import CLOSE_WAIT_S
+from roomkit.core.task_utils import CLOSE_WAIT_S, acting_tasks
 
 if TYPE_CHECKING:
     from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
@@ -89,11 +89,11 @@ def interrupt_for_ending(
     started included) and its tasks, which run on to report its own outcome
     (RFC §12.4). Each interrupted call's own task is cut with them. The calls
     to report interrupted, and the tasks cancelled."""
-    current = asyncio.current_task()
+    acting = acting_tasks()
     cause = ending_cause()
     if cause is not None:
         cause.caused_ending = True
-    interrupted = [call for call in calls if call is not cause and call.task is not current]
+    interrupted = [call for call in calls if call is not cause and call.task not in acting]
     own = [call.task for call in interrupted if call.task is not None]
     return interrupted, cut_tasks([*tasks, *own])
 
@@ -101,7 +101,7 @@ def interrupt_for_ending(
 def cut_tasks(tasks: Iterable[asyncio.Task[Any]]) -> list[asyncio.Task[Any]]:
     """Cancel each of *tasks* an ending reaches but the current one and those
     holding the call that caused the ending; the tasks cancelled."""
-    spared = {asyncio.current_task(), *held_by(ending_cause())}
+    spared = {*acting_tasks(), *held_by(ending_cause())}
     cancelled = [task for task in dict.fromkeys(tasks) if task not in spared]
     for task in cancelled:
         task.cancel()
@@ -144,11 +144,11 @@ async def settle_spared_calls(
     still run, then interrupt the rest and report each once, as cancelled
     (RFC §12.4); never the call whose handler is closing, which runs on."""
     cause = ending_cause()
-    current = asyncio.current_task()
+    acting = acting_tasks()
     running = {
         call.task: call
         for call in calls
-        if call is not cause and call.task is not None and call.task is not current
+        if call is not cause and call.task is not None and call.task not in acting
         if not call.task.done()
     }
     if not running:

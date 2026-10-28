@@ -87,7 +87,7 @@ from roomkit.channels.base import (
 )
 from roomkit.core._participant_channels import record_reached
 from roomkit.core._voice_delivery import held_at_the_limit, injection_depth, injection_silent
-from roomkit.core.task_utils import CLOSE_WAIT_S, _finish_cleanup, close_unstarted
+from roomkit.core.task_utils import CLOSE_WAIT_S, _finish_cleanup, acting_tasks, close_unstarted
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -1711,7 +1711,7 @@ class RealtimeVoiceChannel(
                 )
                 self._session_teardowns[session.id] = teardown
         if not owned:
-            if teardown.owner is not current:
+            if teardown.owner not in acting_tasks():
                 await asyncio.shield(teardown.done)
             return
         try:
@@ -2203,11 +2203,11 @@ class RealtimeVoiceChannel(
         await self._pipeline_quiesce()
         self._closing = True
         connecting = list(self._connecting_sessions.values())
-        current = asyncio.current_task()
+        acting = acting_tasks()
         tasks = []
         for pending in connecting:
             pending.disconnected = True
-            if pending.task is not current and not pending.task.done():
+            if pending.task not in acting and not pending.task.done():
                 if not pending.task.cancelling():
                     pending.task.cancel()
                 tasks.append(pending.task)

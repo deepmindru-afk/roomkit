@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from roomkit.core.exceptions import TurnLinkError
-from roomkit.core.task_utils import cancel_reason
+from roomkit.core.task_utils import acting_tasks, cancel_reason
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.models.steering import SteeringDirective
@@ -431,7 +431,7 @@ class OwnerTurn:
         # What the turn published is still published; nothing is added after.
         self._publisher.close()
         self._beat.cancel()
-        if self._pump is not asyncio.current_task():
+        if self._pump not in acting_tasks():
             self._pump.cancel()
         self._calls.cancel_all()
         self._inputs.turn_ended(self)

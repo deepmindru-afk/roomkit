@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.channels._tool_registry import set_turn_owner_tools
 from roomkit.core._turn_scope import enter_turn
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
+from roomkit.core.task_utils import acting_tasks
 from roomkit.tools.context import ToolCallContext, owner_served_call
 from roomkit.tools.result import as_tool_result
 from roomkit.turns._codec import encode_result
@@ -103,9 +104,9 @@ class OwnerCalls:
     def cancel_all(self) -> None:
         """The turn is over for the owner: every call still running is
         cancelled, but the one running this code (a close it called)."""
-        current = asyncio.current_task()
+        acting = acting_tasks()
         for task in list(self._running.values()):
-            if task is not current and not task.cancelling():
+            if task not in acting and not task.cancelling():
                 task.cancel("turn_ended")
 
     def _forget(self, call_id: str, task: asyncio.Task[None]) -> None:

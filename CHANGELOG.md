@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A `kit.close()` after one that failed raises the same failure** (RFC
+  12.10.4, RMK-1015). A channel that fails to close makes `close()` raise an
+  `ExceptionGroup`; a later `close()` used to return without a word, as if the
+  kit had closed cleanly. It now raises that same `ExceptionGroup`, as a
+  channel's own `close()` does: the kit's close reports what its one shutdown
+  achieved, and never runs it again.
+
+### Fixed
+
+- **A `kit.close()` cancelled, or called while another runs, no longer
+  leaves the kit half closed** (RFC 12.10.4, RMK-1015). The kit was marked
+  closed on entry: a `close()` its caller cancelled (a timeout around it, a
+  Ctrl+C in a `finally`) stopped where it stood, its channels never closed
+  nor its store released, and every later `close()` returned at once; a
+  second `close()` running beside the first returned before anything was
+  closed. The kit now has one shutdown, run in a task of its own: every
+  `close()` waits for it, a cancelled one cancels only its own wait, and the
+  shutdown runs to its end. A `close()` from the kit's own work (a tool's
+  call, a hook's body) still runs on once the shutdown has ended: the
+  shutdown neither waits for it nor cuts it.
+
 ## [0.110.0] — 2026-10-27
 
 ### Added

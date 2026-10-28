@@ -25,7 +25,7 @@ from roomkit.channels._discussion_turn import issue_mark, retire_mark
 from roomkit.core._changes import withdrawn
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT, chain_depth_exceeded, unanswered
 from roomkit.core.locks import _has_room_lock
-from roomkit.core.task_utils import hold_task
+from roomkit.core.task_utils import acting_tasks, hold_task
 from roomkit.models.enums import ChannelType, EventStatus, RoomStatus
 
 from ._dispatching import Dispatcher
@@ -113,7 +113,7 @@ class TurnDriver:
         self._stopping = True
         self._drain = not _has_room_lock(self._room.room_id)
         task, self._task = self._task, None
-        if task is None or task is asyncio.current_task():
+        if task is None or task in acting_tasks():
             return
         task.cancel()
         await asyncio.wait([task])

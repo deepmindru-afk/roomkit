@@ -21,7 +21,7 @@ from roomkit.core._reentrance import (
 )
 from roomkit.core.exceptions import ReentryLoopCapError
 from roomkit.core.locks import lent_while_it_runs, unlocked_context
-from roomkit.core.task_utils import held_runs, start_named
+from roomkit.core.task_utils import spared_by_close, start_named
 from roomkit.core.visibility import answer_scope, narrower_scope
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -1515,7 +1515,7 @@ class HookEngine:
         engines = [self]
         if self.turn_side is not None and self.turn_side.engine is not self:
             engines.append(self.turn_side.engine)
-        spared = set(held_runs())
+        spared = spared_by_close()
         return [
             task
             for engine in engines
