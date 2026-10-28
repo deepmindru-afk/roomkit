@@ -9,38 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **A `kit.close()` after one that failed raises the same failure** (RFC
-  12.10.4, RMK-1015). A channel that fails to close makes `close()` raise an
-  `ExceptionGroup`; a later `close()` used to return without a word, as if the
-  kit had closed cleanly. It now raises that same `ExceptionGroup`, as a
-  channel's own `close()` does: the kit's close reports what its one shutdown
-  achieved, and never runs it again.
+- **BREAKING — a `kit.close()` after one that failed raises the same
+  failure** (RFC 12.10.4, RMK-1015). A channel that fails to close makes
+  `close()` raise an `ExceptionGroup`; a later `close()` used to return
+  without a word, as if the kit had closed cleanly. It now raises that same
+  `ExceptionGroup`, as a channel's own `close()` does: the kit's close
+  reports what its one shutdown achieved, and never runs it again. The exit
+  of an `async with RoomKit()` block is such a later call. Migration: a
+  failed `close()` called and handled inside `async with RoomKit()` is
+  raised again by the block's exit; drop that call and handle the failure
+  around the block.
 
 ### Fixed
 
 - **A `kit.close()` cancelled, or called while another runs, no longer
   leaves the kit half closed** (RFC 12.10.4, RMK-1015). The kit was marked
   closed on entry: a `close()` its caller cancelled (a timeout around it, a
-  Ctrl+C in a `finally`) stopped where it stood, its channels never closed
-  nor its store released, and every later `close()` returned at once; a
-  second `close()` running beside the first returned before anything was
+  task cancelled while it closes) stopped where it stood, its channels never
+  closed nor its store released, and every later `close()` returned at once;
+  a second `close()` running beside the first returned before anything was
   closed. The kit now has one shutdown, run in a task of its own: every
   `close()` waits for it, a cancelled one cancels only its own wait, and the
-  shutdown runs to its end. A `close()` from the kit's own work (a tool's
+  shutdown runs to its end while the event loop runs. A process that
+  cancels every task as it ends (`asyncio.run` interrupted during its last
+  `close()`) cuts the shutdown too: a later `close()` then raises
+  `RoomKitError` saying so. A `close()` from the kit's own work (a tool's
   call, a hook's body) still runs on once the shutdown has ended: the
-  shutdown neither waits for it nor cuts it.
-- **A `kit.close()` from a delivery's hook, or from a session's end, returns
-  and closes the kit** (RMK-1015). An ASYNC `AFTER_BROADCAST` hook runs in
-  its room's delivery lane: a `kit.close()` from it waited for that lane,
-  which waited for the hook, until the lane's 5 s grace ran out and its
-  cancellation cut the close half way, the channels left open. A
-  `voice_session_ended` handler that closes the kit after a client hung up
-  waited for ever: a `RealtimeVoiceChannel`'s close waited for the teardown
-  running the handler, and a `VoiceChannel`'s (as a `VideoChannel`'s and an
-  `AVChannel`'s) for its own tasks, the handler's included. The close now
-  spares the lane, the teardown or the task it is called from: neither
-  waited for nor cut, while every other channel closes and the kit is
-  released.
+  shutdown neither waits for it nor cuts it, whether that call started the
+  shutdown or joined one under way.
+- **A `kit.close()` from a delivery's hook, from a session's end, or from a
+  discussion's `ON_SPEAK_QUEUE` hook returns and closes the kit**
+  (RMK-1015). An ASYNC `AFTER_BROADCAST` hook runs in its room's delivery
+  lane: a `kit.close()` from it waited for that lane, which waited for the
+  hook, until the lane's 5 s grace ran out and its cancellation cut the
+  close half way, the channels left open. A `voice_session_ended` handler
+  that closes the kit after a client hung up waited for ever: a
+  `RealtimeVoiceChannel`'s close waited for the teardown running the
+  handler, and a `VoiceChannel`'s (as a `VideoChannel`'s and an
+  `AVChannel`'s) for its own tasks, the handler's included. An ASYNC
+  `ON_SPEAK_QUEUE` hook's close waited 5 s for the announcement running it.
+  The close now spares the lane, the teardown, the announcement or the task
+  it is called from: neither waited for nor cut, while every other channel
+  closes and the kit is released; the deliveries queued behind a spared
+  lane's are dropped, as any left at a close's end are. Two such calls at
+  once (two sessions ending together), or one while another `close()` runs
+  (a delegation's `on_complete` included), spare each one's work alike.
 
 ## [0.110.0] — 2026-10-27
 

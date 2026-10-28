@@ -87,7 +87,13 @@ from roomkit.channels.base import (
 )
 from roomkit.core._participant_channels import record_reached
 from roomkit.core._voice_delivery import held_at_the_limit, injection_depth, injection_silent
-from roomkit.core.task_utils import CLOSE_WAIT_S, _finish_cleanup, acting_tasks, close_unstarted
+from roomkit.core.task_utils import (
+    CLOSE_WAIT_S,
+    _finish_cleanup,
+    acting_tasks,
+    close_unstarted,
+    wait_for_unspared,
+)
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -1711,8 +1717,12 @@ class RealtimeVoiceChannel(
                 )
                 self._session_teardowns[session.id] = teardown
         if not owned:
-            if teardown.owner not in acting_tasks():
-                await asyncio.shield(teardown.done)
+            # Not when this code runs as its owner (a handler of the session's
+            # end closing the kit), which would wait for itself, the close's
+            # callers that join meanwhile included.
+            await wait_for_unspared(
+                lambda: () if teardown.owner in acting_tasks() else (teardown.done,)
+            )
             return
         try:
             await self._before_session_teardown(session)
@@ -1725,20 +1735,20 @@ class RealtimeVoiceChannel(
     async def _await_teardowns_under_way(self) -> None:
         """Wait for the teardowns under way whose session already left
         ``_sessions`` (in neither list ``close()`` ends), before its sweep
-        cancels the tasks running them, mid-emit; but the one running this
-        close (a handler of a session's end closing the kit), which would
-        wait for itself."""
-        acting = acting_tasks()
-        with self._state_lock:
-            outstanding = [
-                teardown.done
-                for teardown in self._session_teardowns.values()
-                if teardown.owner not in acting
-            ]
-        if outstanding:
-            await asyncio.gather(
-                *(asyncio.shield(done) for done in outstanding), return_exceptions=True
-            )
+        cancels the tasks running them, mid-emit; but the ones running this
+        close (a handler of a session's end closing the kit, one that joins
+        it meanwhile included), which would wait for itself."""
+
+        def outstanding() -> list[asyncio.Future[None]]:
+            acting = acting_tasks()
+            with self._state_lock:
+                return [
+                    teardown.done
+                    for teardown in self._session_teardowns.values()
+                    if teardown.owner not in acting
+                ]
+
+        await wait_for_unspared(outstanding)
 
     async def _before_session_teardown(self, session: VoiceSession) -> None:
         """A subclass's own teardown, run by the owner before the base one."""

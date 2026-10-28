@@ -97,12 +97,13 @@ from roomkit.core.mixins import (
 from roomkit.core.mixins.helpers import _refuses_writes
 from roomkit.core.task_utils import (
     CLOSE_WAIT_S,
+    Callers,
     cancel_and_wait,
     cut_once_started,
     held_runs,
     spared_by_close,
-    start_for_caller,
     wait_for_held,
+    wait_for_unspared,
 )
 from roomkit.core.transcoder import DefaultContentTranscoder
 from roomkit.identity.base import IdentityResolver
@@ -206,6 +207,21 @@ __all__ = [
 def _running(tasks: set[asyncio.Task[Any]], spared: set[asyncio.Task[Any]]) -> bool:
     """Whether a task of *tasks* still runs, but those *spared*."""
     return any(not task.done() and task not in spared for task in tasks)
+
+
+async def _await_shutdown(shutdown: asyncio.Task[None]) -> None:
+    """Wait for the kit's *shutdown*, its failure raised. One cut itself is
+    no cancellation of a caller nobody cancelled: it is told so."""
+    try:
+        await asyncio.shield(shutdown)
+    except asyncio.CancelledError:
+        caller = asyncio.current_task()
+        if shutdown.cancelled() and (caller is None or not caller.cancelling()):
+            raise RoomKitError(
+                "The kit's shutdown was cancelled before it ended: "
+                "its channels and its store may not all be closed"
+            ) from None
+        raise
 
 
 class RoomKit(
@@ -412,6 +428,7 @@ class RoomKit(
         # and are visible to every process sharing the store.
         self._closed = False
         self._shutdown: asyncio.Task[None] | None = None
+        self._shutdown_callers = Callers()
         self._hook_engine = HookEngine()
         # A hook on a trigger a turn fires registered on the kit is its own
         # executor's (RFC §10.6.6).
@@ -833,12 +850,9 @@ class RoomKit(
         started yet is cut once started, its end run all the same. The runs
         this close runs under are spared: waiting for them would wait for
         itself."""
-        spared = spared_by_close()
-        runs = set(self._background_runs) - spared
-        while runs:
+        # A run's end may start another: it is cancelled in turn.
+        while runs := {run for run in self._background_runs if not run.done()} - spared_by_close():
             await cancel_and_wait(*runs, log_errors_to=logger, once_started=True)
-            # A run's end may start another: it is cancelled in turn.
-            runs = {run for run in self._background_runs if not run.done()} - spared
 
     async def _cancel_pending_tasks(self) -> None:
         """Cancel the pending hook tasks and the stream readers the kit holds
@@ -846,14 +860,17 @@ class RoomKit(
         for them would wait for itself. A task not started yet is cut once
         started, as a held run is, so its end runs. A task one of them
         starts as it ends is cancelled in turn."""
-        spared = spared_by_close()
-        while pending := [
-            task for task in self._pending_hook_tasks if not task.done() and task not in spared
-        ]:
+        while pending := set(self._pending_hook_tasks) - spared_by_close():
             for task in pending:
-                cut_once_started(task)
-            await asyncio.gather(*pending, return_exceptions=True)
-            self._pending_hook_tasks.difference_update(pending)
+                if not task.done():
+                    cut_once_started(task)
+            await wait_for_unspared(lambda pending=pending: pending - spared_by_close())
+            ended = {task for task in pending if task.done()}
+            for task in ended:
+                # Retrieved, as awaiting it would: its end is this close's.
+                if not task.cancelled():
+                    task.exception()
+            self._pending_hook_tasks.difference_update(ended)
 
     async def _end_what_the_channels_started(self) -> None:
         """End what the channels' closes started, before the store is
@@ -910,19 +927,27 @@ class RoomKit(
         call, a return after a success, the same ``ExceptionGroup`` after a
         failure; it never runs again — re-closing already-closed channels
         would raise a second, unrelated failure over the one already reported.
+        A shutdown cut itself (every task of the process cancelled, as
+        ``asyncio.run`` does as it ends) raises :class:`RoomKitError` to a
+        caller nobody cancelled.
 
         A call from the kit's own work (a hook's body, a tool's call, a
         background run, a delivery, a session's end) waits for the shutdown
-        without the shutdown waiting for that work or cutting it; a call from
-        the shutdown's own work (a hook it fires) returns at once.
+        without the shutdown waiting for that work or cutting it, whether it
+        started the shutdown or joined one under way; a call from the
+        shutdown's own work (a hook it fires) returns at once.
         """
         if self._shutdown is None:
             self._closed = True
-            self._shutdown = start_for_caller(self._shut_down(), name="roomkit-close")
+            self._shutdown = self._shutdown_callers.start(self._shut_down(), name="roomkit-close")
         elif self._shutdown in held_runs():
             # Waiting for the shutdown from its own work would wait for itself.
             return
-        await asyncio.shield(self._shutdown)
+        else:
+            # Its work is spared from now on, where the shutdown already
+            # waits for it included.
+            self._shutdown_callers.join()
+        await _await_shutdown(self._shutdown)
 
     async def _shut_down(self) -> None:
         """The kit's one shutdown (:meth:`close`): its own work stops, the

@@ -7,7 +7,7 @@ import contextvars
 import inspect
 import logging
 import weakref
-from collections.abc import Awaitable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from typing import Any, Protocol
 
 from roomkit.core.exceptions import RoomKitError
@@ -181,18 +181,14 @@ async def wait_for_held(held: set[asyncio.Task[Any]], *, until: float) -> None:
     is only ever waited for on a budget. The ones still running then are
     named in the log and left to end on their own.
     """
-    loop = asyncio.get_running_loop()
-    spared = spared_by_close()
-    while pending := {task for task in held if not task.done()} - spared:
-        remaining = until - loop.time()
-        if remaining <= 0:
-            logger.warning(
-                "Closing with %d decided write(s) still running, left to end on their own: %s",
-                len(pending),
-                ", ".join(sorted(task.get_name() for task in pending)),
-            )
-            return
-        await asyncio.wait(pending, timeout=remaining)
+    timeout = until - asyncio.get_running_loop().time()
+    pending = await wait_for_unspared(lambda: set(held) - spared_by_close(), timeout=timeout)
+    if pending:
+        logger.warning(
+            "Closing with %d decided write(s) still running, left to end on their own: %s",
+            len(pending),
+            ", ".join(sorted(t.get_name() for t in pending if isinstance(t, asyncio.Task))),
+        )
 
 
 def close_unstarted(*works: object) -> None:
@@ -236,7 +232,9 @@ async def cancel_and_wait(
 
     ``None`` entries and the tasks the caller runs as (:func:`acting_tasks`)
     are skipped: a task tearing itself down cannot wait for its own end, nor a
-    shutdown for the caller waiting on it. *once_started* cancels a task not
+    shutdown for a caller waiting on it. One a caller that joins the shutdown
+    meanwhile runs as, or under (:func:`spared_by_close`), stops being waited
+    for. *once_started* cancels a task not
     started yet after its first step (:func:`cut_once_started`), so its own
     end runs. A task's own exception is raised, as
     awaiting it would, unless *log_errors_to* is given: it is then logged
@@ -255,14 +253,19 @@ async def cancel_and_wait(
         else:
             task.cancel()
     cancelled: asyncio.CancelledError | None = None
-    while any(not t.done() for t in pending):
+    while True:
         try:
-            await asyncio.wait(pending)
+            # A task a caller that joined meanwhile runs as, or under, is
+            # spared, not waited for: it waits for this teardown in turn.
+            await wait_for_unspared(lambda: set(pending) - spared_by_close())
+            break
         except asyncio.CancelledError as exc:
             # The caller's own: the teardown finishes first
             cancelled = cancelled or exc
     errors: list[BaseException] = [
-        error for t in pending if not t.cancelled() and (error := t.exception()) is not None
+        error
+        for t in pending
+        if t.done() and not t.cancelled() and (error := t.exception()) is not None
     ]
     if cancelled is not None:
         for error in errors:
@@ -298,35 +301,96 @@ def held_runs() -> tuple[asyncio.Task[Any], ...]:
     return tuple(task for cell in _HELD_RUNS.get() for task in cell)
 
 
-_ACTS_FOR: contextvars.ContextVar[asyncio.Task[Any] | None] = contextvars.ContextVar(
+class Callers:
+    """The callers of work every one of them waits for (the kit's shutdown,
+    which every ``close()`` waits for): the one that started it and each one
+    that joined it since, with the kit-held runs each runs under. What the
+    work waits for or cuts spares them all (:func:`acting_tasks`,
+    :func:`spared_by_close`), as each caller's own code would spare itself,
+    and its waits wake as one joins (:func:`wait_for_unspared`): the work of
+    a caller that joins while it is waited for stops being waited for."""
+
+    def __init__(self) -> None:
+        self.acting: set[asyncio.Task[Any]] = set()
+        self.under: set[asyncio.Task[Any]] = set()
+        self._joined: asyncio.Future[None] | None = None
+
+    def start[T](self, work: Coroutine[Any, Any, T], *, name: str) -> asyncio.Task[T]:
+        """Join, then start *work* as a task acting for the callers, named
+        in :func:`held_runs`. Not eager: its first step runs once the caller
+        holds the task, so a call it makes back reads it."""
+        self.join()
+        context = contextvars.copy_context()
+        context.run(_ACTS_FOR.set, self)
+        return start_named(work, name=name, context=context)
+
+    def join(self) -> None:
+        """Count the current code among the callers: the tasks it runs as and
+        the kit-held runs it runs under."""
+        acting, under = acting_tasks(), set(held_runs())
+        if acting <= self.acting and under <= self.under:
+            return
+        self.acting |= acting
+        self.under |= under
+        if self._joined is not None:
+            self._joined.set_result(None)
+            self._joined = None
+
+    def joined(self) -> asyncio.Future[None]:
+        """A future done once the next caller joins."""
+        if self._joined is None:
+            self._joined = asyncio.get_running_loop().create_future()
+        return self._joined
+
+
+_ACTS_FOR: contextvars.ContextVar[Callers | None] = contextvars.ContextVar(
     "roomkit_acts_for", default=None
 )
-"""The caller the current code's task was started for (:func:`start_for_caller`)."""
+"""The callers the current code's task acts for (:meth:`Callers.start`)."""
 
 
 def acting_tasks() -> set[asyncio.Task[Any]]:
     """The tasks the current code runs as: the current one and, inside work
-    started for a caller that waits for it (:func:`start_for_caller`), that
-    caller. A ``close()`` called from here neither waits for nor cuts them."""
-    return {task for task in (asyncio.current_task(), _ACTS_FOR.get()) if task is not None}
+    started for callers that wait for it (:class:`Callers`), theirs. A
+    ``close()`` called from here neither waits for nor cuts them."""
+    current = asyncio.current_task()
+    callers = _ACTS_FOR.get()
+    return {
+        *(() if current is None else (current,)),
+        *(() if callers is None else callers.acting),
+    }
 
 
 def spared_by_close() -> set[asyncio.Task[Any]]:
     """What a ``close()`` called from the current code neither waits for nor
     cuts: the tasks it runs as (:func:`acting_tasks`) and the kit-held runs it
-    runs under (:func:`held_runs`)."""
-    return {*acting_tasks(), *held_runs()}
+    runs under (:func:`held_runs`), its callers' included."""
+    callers = _ACTS_FOR.get()
+    return {*acting_tasks(), *held_runs(), *(() if callers is None else callers.under)}
 
 
-def start_for_caller[T](work: Coroutine[Any, Any, T], *, name: str) -> asyncio.Task[T]:
-    """Start *work* as a task its caller waits for (the kit's shutdown):
-    named in :func:`held_runs`, and acting for the caller
-    (:func:`acting_tasks`), so what it waits for or cuts spares the caller as
-    the caller's own code would spare itself. Not eager: its first step runs
-    once the caller holds the task, so a call it makes back reads it."""
-    context = contextvars.copy_context()
-    context.run(_ACTS_FOR.set, asyncio.current_task())
-    return start_named(work, name=name, context=context)
+async def wait_for_unspared(
+    pending: Callable[[], Iterable[asyncio.Future[Any]]], *, timeout: float | None = None
+) -> set[asyncio.Future[Any]]:
+    """Wait until *pending*, read again at each wake, holds nothing still
+    running, or until *timeout*: what it still holds then, never cut.
+
+    It wakes as one of them ends and, inside work its callers wait for
+    (:class:`Callers`), as a caller joins: *pending*, reading
+    :func:`acting_tasks` or :func:`spared_by_close`, then drops the work of a
+    caller that joined while it was waited for, which waits for this work in
+    turn. A cancellation of the waiter is raised.
+    """
+    loop = asyncio.get_running_loop()
+    until = None if timeout is None else loop.time() + timeout
+    callers = _ACTS_FOR.get()
+    while running := {future for future in pending() if not future.done()}:
+        remaining = None if until is None else until - loop.time()
+        if remaining is not None and remaining <= 0:
+            return running
+        wakes = running if callers is None else {*running, callers.joined()}
+        await asyncio.wait(wakes, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+    return set()
 
 
 def _cancellation_requests() -> int:

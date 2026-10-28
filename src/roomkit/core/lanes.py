@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._reentrance import ReentryBudget, delivering
 from roomkit.core.locks import _has_room_lock, _held_rooms
-from roomkit.core.task_utils import spared_by_close, start_named
+from roomkit.core.task_utils import spared_by_close, start_named, wait_for_unspared
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.providers.utils import _aclose_stream
 from roomkit.telemetry.context import restored_span
@@ -657,8 +657,7 @@ class RoomDeliveryLane:
 
     async def drain(self) -> None:
         """Wait until every queued entry has been processed."""
-        while self._indexed or self._unindexed or self._busy:
-            await asyncio.sleep(0.01)
+        await self._drain_unless(lambda: False)
 
     async def aclose(self) -> None:
         """Stop the lane: bounded drain, then cancel, then abort leftovers.
@@ -676,19 +675,34 @@ class RoomDeliveryLane:
         returns. It is sealed, its queued entries aborted, and the round under
         way ends on its own once its work returns.
         """
-        spared = self._task is not None and self._task in spared_by_close()
-        if not self._closed and not spared:
+        task = self._task
+
+        def spared() -> bool:
+            # Read again as the close goes: a close that joins it from this
+            # lane's work spares the lane from then on.
+            return task is not None and task in spared_by_close()
+
+        if not self._closed and not spared():
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self.drain(), timeout=self._config.close_grace)
+                await asyncio.wait_for(
+                    self._drain_unless(spared), timeout=self._config.close_grace
+                )
         self._closed = True
         self._wakeup.set()
-        task, self._task = self._task, None
-        if task is not None and not spared:
-            _, pending = await asyncio.wait({task}, timeout=_TASK_GRACE_S)
+        self._task = None
+        if task is not None and not spared():
+            pending = await wait_for_unspared(
+                lambda: () if spared() else (task,), timeout=_TASK_GRACE_S
+            )
             if pending:
                 task.cancel()
                 await asyncio.wait({task}, timeout=_TASK_GRACE_S)
         self._abort_pending("kit_closed")
+
+    async def _drain_unless(self, spared: Callable[[], bool]) -> None:
+        """Wait until every queued entry has been processed, or *spared*."""
+        while (self._indexed or self._unindexed or self._busy) and not spared():
+            await asyncio.sleep(0.01)
 
     def _drop_entry(self, entry: ExecEntry | CursorEntry, reason: str) -> None:
         if isinstance(entry, ExecEntry):

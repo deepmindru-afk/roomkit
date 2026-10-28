@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit._media import content_words
 from roomkit.core.hooks import HookRegistration
 from roomkit.core.locks import _has_room_lock
+from roomkit.core.task_utils import spared_by_close, start_named, wait_for_unspared
 from roomkit.models.enums import EventStatus, EventType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.hook import HookResult
@@ -736,18 +737,22 @@ class DiscussionRoom:
                 await asyncio.wait([previous])
             await run()
 
-        task = asyncio.get_running_loop().create_task(announce(), context=contextvars.Context())
+        # Named in the hooks' held runs: a close from one spares the chain.
+        task = start_named(announce(), context=contextvars.Context())
         self._last_fire = task
         self._announcing.add(task)
         task.add_done_callback(self._announcing.discard)
 
     async def _finish_announcing(self) -> None:
-        """Let the queued announcements run, briefly: never from one of them,
+        """Let the queued announcements run, briefly: never from one of them
+        (a hook's body closing the kit, one that joins the close included),
         which the rest wait for."""
         last = self._last_fire
-        if last is None or asyncio.current_task() in self._announcing:
+        if last is None or spared_by_close() & self._announcing:
             return
         if _has_room_lock(self.room_id):
             # An announcement's hooks may take the room lock this caller holds.
             return
-        await asyncio.wait([last], timeout=_STOP_WAIT)
+        await wait_for_unspared(
+            lambda: () if spared_by_close() & self._announcing else (last,), timeout=_STOP_WAIT
+        )

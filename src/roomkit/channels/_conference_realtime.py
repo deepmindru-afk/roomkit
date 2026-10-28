@@ -74,7 +74,12 @@ from roomkit.channels._served_tools import CollisionLog, dict_tool_name, warn_to
 from roomkit.channels._tool_registry import schema_tool
 from roomkit.core._voice_delivery import held_at_the_limit, injection_depth
 from roomkit.core.exceptions import UnservedToolCallError
-from roomkit.core.task_utils import log_task_exception, spared_by_close, start_named
+from roomkit.core.task_utils import (
+    log_task_exception,
+    spared_by_close,
+    start_named,
+    wait_for_unspared,
+)
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.tool_call import ToolCallEvent
@@ -1181,10 +1186,7 @@ class ConferenceRealtime:
         hook that unplugs or closes from an ON_ERROR announcement would wait
         for itself. A wait cancelled leaves them running: they are not this
         waiter's to cut."""
-        running = spared_by_close()
-        pending = [report for report in self._reports if report not in running]
-        if pending:
-            await asyncio.wait(pending)
+        await wait_for_unspared(lambda: set(self._reports) - spared_by_close())
 
     def abandon_all(self) -> list[VoiceSession]:
         """Every room off the books at once — the channel is closing."""

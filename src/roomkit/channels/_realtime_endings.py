@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._realtime_context import ending_cause, held_by, spare_own_orphaned_call
 from roomkit.channels._realtime_tool_executor import report_interrupted_calls
-from roomkit.core.task_utils import CLOSE_WAIT_S, acting_tasks
+from roomkit.core.task_utils import CLOSE_WAIT_S, acting_tasks, wait_for_unspared
 
 if TYPE_CHECKING:
     from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
@@ -153,9 +153,12 @@ async def settle_spared_calls(
     }
     if not running:
         return
-    _, pending = await asyncio.wait(running, timeout=CLOSE_WAIT_S)
+    # A call whose handler joins the close meanwhile runs on, as its own.
+    pending = await wait_for_unspared(lambda: set(running) - acting_tasks(), timeout=CLOSE_WAIT_S)
     for task in pending:
         task.cancel()
     if pending:
         await asyncio.wait(pending, timeout=CLOSE_WAIT_S)
-    await report_interrupted_calls(host, [running[task] for task in pending], why)
+    await report_interrupted_calls(
+        host, [call for task, call in running.items() if task in pending], why
+    )

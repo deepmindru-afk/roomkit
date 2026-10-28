@@ -18,16 +18,21 @@ from typing import Any
 import pytest
 
 from roomkit import (
+    ChannelBinding,
+    ChannelType,
     HookExecution,
     HookTrigger,
     RealtimeVoiceChannel,
     RoomKit,
     RoomStatus,
+    SpeakQueueChange,
+    SpeakQueueEvent,
+    VideoChannel,
     VoiceChannel,
 )
 from roomkit.channels.agent import Agent
 from roomkit.core import framework
-from roomkit.core.task_utils import hold_task
+from roomkit.core.task_utils import hold_task, run_to_its_end
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory
@@ -46,9 +51,12 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
 from roomkit.tasks.posting import send_posted
+from roomkit.video.backends.mock import MockVideoBackend
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from roomkit.voice.stt.mock import MockSTTProvider
+from tests.orchestration.test_strategy_discussion import _provider, _say
+from tests.orchestration.test_strategy_discussion import _room as _discussion
 from tests.test_framework import SimpleChannel
 
 
@@ -280,7 +288,7 @@ async def test_a_close_from_a_tool_returns_and_seals_the_kit(door: str) -> None:
     assert kit._closed
 
 
-# -- a close from a delivery, or from a session's end --------------------------
+# -- a close from a delivery, a session's end, an announcement -----------------
 
 
 class _Witness(SimpleChannel):
@@ -292,7 +300,26 @@ class _Witness(SimpleChannel):
         self.closed = True
 
 
-async def _delivery_door(witness: _Witness, closed: asyncio.Event) -> RoomKit:
+class _Closer:
+    """The kit's own work closing the kit, once let go."""
+
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.go = asyncio.Event()
+        self.closed = asyncio.Event()
+        self.door: asyncio.Future[Any] | None = None
+        """What opened the door, when it waits for the work: awaited last."""
+
+    async def __call__(self, kit: RoomKit) -> None:
+        if self.entered.is_set():
+            return
+        self.entered.set()
+        await self.go.wait()
+        await kit.close()
+        self.closed.set()
+
+
+async def _delivery_door(witness: _Witness, work: _Closer) -> RoomKit:
     """A delivery's ASYNC AFTER_BROADCAST hook closes the kit: it runs in the
     room's delivery lane."""
     kit = RoomKit()
@@ -304,15 +331,18 @@ async def _delivery_door(witness: _Witness, closed: asyncio.Event) -> RoomKit:
 
     @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="quit")
     async def quit(event: RoomEvent, ctx: RoomContext) -> None:
-        await kit.close()
-        closed.set()
+        await work(kit)
 
     message = InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Bye."))
-    await kit.process_inbound(message, room_id="r")
+    # Its delivery waits for the hook, which may be held.
+    work.door = asyncio.ensure_future(kit.process_inbound(message, room_id="r"))
+    entered = asyncio.ensure_future(work.entered.wait())
+    await asyncio.wait({work.door, entered}, return_when=asyncio.FIRST_COMPLETED)
+    entered.cancel()
     return kit
 
 
-async def _realtime_session_end_door(witness: _Witness, closed: asyncio.Event) -> RoomKit:
+async def _realtime_session_end_door(witness: _Witness, work: _Closer) -> RoomKit:
     """The client hangs up a realtime session; the ``voice_session_ended``
     handler, run in the session's teardown, closes the kit."""
     kit = RoomKit()
@@ -326,14 +356,13 @@ async def _realtime_session_end_door(witness: _Witness, closed: asyncio.Event) -
 
     @kit.on("voice_session_ended")
     async def ended(event: Any) -> None:
-        await kit.close()
-        closed.set()
+        await work(kit)
 
     await transport.simulate_client_disconnect(session)
     return kit
 
 
-async def _voice_session_end_door(witness: _Witness, closed: asyncio.Event) -> RoomKit:
+async def _voice_session_end_door(witness: _Witness, work: _Closer) -> RoomKit:
     """The client hangs up a voice session; the ``voice_session_ended``
     handler, run in one of the voice channel's tasks, closes the kit."""
     backend = MockVoiceBackend()
@@ -346,33 +375,210 @@ async def _voice_session_end_door(witness: _Witness, closed: asyncio.Event) -> R
 
     @kit.on("voice_session_ended")
     async def ended(event: Any) -> None:
-        await kit.close()
-        closed.set()
+        await work(kit)
 
     await backend.simulate_client_disconnected(session)
     return kit
 
 
+async def _video_session_end_door(witness: _Witness, work: _Closer) -> RoomKit:
+    """A video session is unbound; the ``video_session_ended`` handler, run
+    in one of the video channel's tasks, closes the kit."""
+    backend = MockVideoBackend()
+    kit = RoomKit()
+    video = VideoChannel("video", backend=backend)
+    kit.register_channel(video)
+    kit.register_channel(witness)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "video")
+    session = await backend.connect("r", "u", "video")
+    binding = ChannelBinding(room_id="r", channel_id="video", channel_type=ChannelType.VIDEO)
+    video.bind_session(session, "r", binding)
+
+    @kit.on("video_session_ended")
+    async def ended(event: Any) -> None:
+        await work(kit)
+
+    video.unbind_session(session)
+    return kit
+
+
+async def _delegation_end_door(witness: _Witness, work: _Closer) -> RoomKit:
+    """A background delegation ends; its ``on_complete``, run in the task's
+    end, closes the kit."""
+    kit = RoomKit()
+    kit.register_channel(witness)
+    kit.register_channel(Agent("worker", provider=MockAIProvider(responses=["Done."])))
+    await kit.create_room(room_id="r")
+
+    async def on_complete(result: Any) -> None:
+        await work(kit)
+
+    await kit.delegate("r", "worker", "Go.", on_complete=on_complete)
+    return kit
+
+
+async def _held_write_door(witness: _Witness, work: _Closer) -> RoomKit:
+    """A decided write a background run waits for (a strategy's or a
+    delegation's, which its caller never cuts) closes the kit, from a hook
+    it runs."""
+    kit = RoomKit()
+    kit.register_channel(witness)
+
+    async def run() -> None:
+        await run_to_its_end(work(kit), held=kit._decided_writes, name="write")
+
+    hold_task(kit, run())
+    return kit
+
+
+async def _speak_queue_door(witness: _Witness, work: _Closer) -> RoomKit:
+    """A discussion's turn ends; an ASYNC ON_SPEAK_QUEUE hook, run under the
+    announcement of that change, closes the kit."""
+    kit = RoomKit()
+    kit.register_channel(witness)
+
+    @kit.hook(HookTrigger.ON_SPEAK_QUEUE, execution=HookExecution.ASYNC)
+    async def quit(event: SpeakQueueEvent, ctx: RoomContext) -> None:
+        if event.change == SpeakQueueChange.TURN_ENDED:
+            await work(kit)
+
+    await _discussion(kit, {"a": _provider("Done.")})
+    await _say(kit, "@a go")
+    return kit
+
+
 @pytest.mark.parametrize(
     "door",
-    [_delivery_door, _realtime_session_end_door, _voice_session_end_door],
-    ids=["delivery-hook", "realtime-session-end", "voice-session-end"],
+    [
+        _delivery_door,
+        _realtime_session_end_door,
+        _voice_session_end_door,
+        _video_session_end_door,
+        _speak_queue_door,
+        _delegation_end_door,
+        _held_write_door,
+    ],
+    ids=[
+        "delivery-hook",
+        "realtime-session-end",
+        "voice-session-end",
+        "video-session-end",
+        "speak-queue-hook",
+        "delegation-end",
+        "held-write",
+    ],
 )
-async def test_a_close_from_a_delivery_or_a_session_end_returns_and_closes_the_kit(
-    door: Callable[[_Witness, asyncio.Event], Awaitable[RoomKit]],
+async def test_a_close_from_the_kit_s_own_work_returns_and_closes_the_kit(
+    door: Callable[[_Witness, _Closer], Awaitable[RoomKit]],
 ) -> None:
     """The kit's own work closes the kit: its close neither waits for nor
     cuts the work it runs in, and returns once every channel is closed
     (RMK-1015)."""
     witness = _Witness("witness")
-    closed = asyncio.Event()
+    work = _Closer()
+    work.go.set()
 
     # A realtime channel's attach compiles its marks' copies, ~1 s on its own.
-    kit = await asyncio.wait_for(door(witness, closed), 5)
-    await asyncio.wait_for(closed.wait(), 1)
+    kit = await asyncio.wait_for(door(witness, work), 5)
+    await asyncio.wait_for(work.closed.wait(), 1)
 
     assert witness.closed
     await kit.close()
+    if work.door is not None:
+        await asyncio.wait_for(work.door, 1)
+
+
+@pytest.mark.parametrize(
+    "door",
+    [
+        _delivery_door,
+        _realtime_session_end_door,
+        _speak_queue_door,
+        _delegation_end_door,
+        _held_write_door,
+    ],
+    ids=[
+        "delivery-hook",
+        "realtime-session-end",
+        "speak-queue-hook",
+        "delegation-end",
+        "held-write",
+    ],
+)
+async def test_a_close_from_the_kit_s_own_work_joining_another_spares_that_work(
+    door: Callable[[_Witness, _Closer], Awaitable[RoomKit]],
+) -> None:
+    """Another close() already runs, and waits for the work (the lane's
+    drain, the session's teardown) when that work closes the kit too: from
+    then on it is spared, and both calls return once the kit is closed
+    (RMK-1015)."""
+    witness = _Witness("witness")
+    work = _Closer()
+    kit = await asyncio.wait_for(door(witness, work), 5)
+    await asyncio.wait_for(work.entered.wait(), 1)
+
+    first = asyncio.ensure_future(kit.close())
+    # The other close's shutdown reaches the work, and waits for it, first.
+    for _ in range(5):
+        await asyncio.sleep(0)
+    work.go.set()
+
+    await asyncio.wait_for(work.closed.wait(), 1)
+    await asyncio.wait_for(first, 1)
+    assert witness.closed
+    if work.door is not None:
+        await asyncio.wait_for(work.door, 1)
+
+
+async def test_two_sessions_ending_at_once_each_close_the_kit() -> None:
+    """Two realtime sessions' clients hang up together, and each one's
+    ``voice_session_ended`` handler closes the kit: the second joins the
+    shutdown the first started, which spares both (RMK-1015)."""
+    kit = RoomKit()
+    transport = MockRealtimeTransport()
+    channel = RealtimeVoiceChannel("rt", provider=MockRealtimeProvider(), transport=transport)
+    witness = _Witness("witness")
+    kit.register_channel(channel)
+    kit.register_channel(witness)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "rt")
+    sessions = [await channel.start_session("r", f"p{n}", f"ws-{n}") for n in (1, 2)]
+    returned: list[str] = []
+    both = asyncio.Event()
+
+    @kit.on("voice_session_ended")
+    async def ended(event: Any) -> None:
+        await kit.close()
+        returned.append(event.room_id)
+        if len(returned) == 2:
+            both.set()
+
+    await asyncio.wait_for(
+        asyncio.gather(*(transport.simulate_client_disconnect(s) for s in sessions)), 1
+    )
+    await asyncio.wait_for(both.wait(), 1)
+    assert witness.closed
+
+
+async def test_the_deliveries_queued_behind_a_lane_a_close_runs_in_are_dropped() -> None:
+    """A delivery's hook closes the kit while the room's next message waits
+    behind it in the lane: the lane is spared, not drained, so that message
+    is never delivered, and its caller is not held (RMK-1015)."""
+    witness = _Witness("witness")
+    work = _Closer()
+    kit = await asyncio.wait_for(_delivery_door(witness, work), 5)
+    await asyncio.wait_for(work.entered.wait(), 1)
+    message = InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Again."))
+    queued = asyncio.ensure_future(kit.process_inbound(message, room_id="r"))
+    # Queued behind the delivery whose hook runs.
+    for _ in range(20):
+        await asyncio.sleep(0)
+    work.go.set()
+
+    await asyncio.wait_for(work.closed.wait(), 1)
+    await asyncio.wait_for(asyncio.gather(*(f for f in (work.door, queued) if f)), 1)
+    assert [event.content.body for event in witness.delivered] == ["Bye."]
 
 
 async def test_a_held_inline_run_starts_before_a_close_can_cut_it() -> None:

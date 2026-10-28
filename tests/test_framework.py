@@ -797,6 +797,22 @@ class TestOneShutdown:
         assert second.value is first.value
         assert channel.closes == 1
 
+    async def test_a_close_after_its_shutdown_was_cut_says_so(self) -> None:
+        """Every task cancelled, as a process's last cleanup does, cuts the
+        shutdown: a later caller nobody cancelled is told so, not handed a
+        cancellation of its own."""
+        kit = RoomKit()
+        channel = _GatedClose("sms1")
+        kit.register_channel(channel)
+        first = asyncio.ensure_future(kit.close())
+        await asyncio.wait_for(channel.entered.wait(), 1)
+        for task in asyncio.all_tasks() - {asyncio.current_task()}:
+            task.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+
+        with pytest.raises(RoomKitError, match="shutdown was cancelled"):
+            await kit.close()
+
     async def test_a_close_from_the_shutdown_s_own_work_returns_at_once(self) -> None:
         kit = RoomKit()
         channel = _GatedClose("sms1", closes_the_kit=kit)

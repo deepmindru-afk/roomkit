@@ -34,7 +34,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from roomkit.core.callbacks import subscribe_callback
-from roomkit.core.task_utils import log_task_exception
+from roomkit.core.task_utils import acting_tasks, log_task_exception
 from roomkit.voice.auth import AuthCallback
 from roomkit.voice.backends.base import (
     AudioReceivedCallback,
@@ -439,14 +439,13 @@ class FastRTCRealtimeTransport(VoiceBackend):
 
     async def close(self) -> None:
         """Close all connections and release resources."""
-        tasks = list(self._connection_tasks.values())
+        # Not the one running this close (a connection's callback closing
+        # the kit), which would wait for itself.
+        acting = acting_tasks()
+        tasks = [task for task in self._connection_tasks.values() if task not in acting]
         for task in tasks:
-            if task is not asyncio.current_task():
-                task.cancel()
-        await asyncio.gather(
-            *(task for task in tasks if task is not asyncio.current_task()),
-            return_exceptions=True,
-        )
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         for session in list(self._sessions.values()):
             await self.disconnect(session)
         # Connections can be waiting for authentication/session binding.

@@ -16,6 +16,7 @@ from roomkit.core.task_utils import (
     shielded,
     spared_by_close,
     start_named,
+    wait_for_unspared,
 )
 from roomkit.models.enums import TaskStatus
 from roomkit.models.response_metadata import TurnEntries
@@ -72,8 +73,10 @@ class InMemoryTaskRunner(TaskRunner):
             return False
         end = self._cancelled_ends.pop(task_id, None)
         if end is None:
-            # Its work ran to its end, and it is ending as it stands.
-            await asyncio.wait({bg})
+            # Its work ran to its end, and it is ending as it stands; not
+            # waited for once its end closes the kit (an on_complete joining
+            # the close), which would wait for itself.
+            await wait_for_unspared(lambda: {bg} - spared_by_close())
             return False
         try:
             await cancel_and_wait(bg)
@@ -86,10 +89,14 @@ class InMemoryTaskRunner(TaskRunner):
         # A task's end may delegate again: that task is cancelled in turn.
         # The ones this close runs under (a worker's tool closing the kit)
         # are spared: cancelling one would wait for itself.
-        spared = spared_by_close()
-        while running := [tid for tid, bg in self._tasks.items() if bg not in spared]:
+        while running := self._unspared():
             for task_id in running:
                 await self.cancel(task_id)
+
+    def _unspared(self) -> list[str]:
+        """The tasks running but the ones the current close runs under."""
+        spared = spared_by_close()
+        return [task_id for task_id, bg in self._tasks.items() if bg not in spared]
 
     async def _execute(
         self,

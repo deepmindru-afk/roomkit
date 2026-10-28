@@ -21,7 +21,7 @@ from roomkit.core._reentrance import (
 )
 from roomkit.core.exceptions import ReentryLoopCapError
 from roomkit.core.locks import lent_while_it_runs, unlocked_context
-from roomkit.core.task_utils import spared_by_close, start_named
+from roomkit.core.task_utils import spared_by_close, start_named, wait_for_unspared
 from roomkit.core.visibility import answer_scope, narrower_scope
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -1504,10 +1504,9 @@ class HookEngine:
         another trigger is waited for too. The observers the caller runs
         under are spared: waiting for them would wait for itself.
         """
-        # Only the tasks still running: a done one leaves the set on its done
-        # callback, which awaiting it again would never let run.
-        while running := self.running_observers():
-            await asyncio.gather(*running, return_exceptions=True)
+        # Read again at each wake: an observer started meanwhile is waited
+        # for, one whose caller joined the close is spared.
+        await wait_for_unspared(self.running_observers)
 
     def running_observers(self) -> list[asyncio.Task[None]]:
         """The observers still running, this engine's and its turn side's,
