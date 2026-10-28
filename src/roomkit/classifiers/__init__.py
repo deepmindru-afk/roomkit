@@ -16,9 +16,11 @@ from roomkit.classifiers.base import (
     check_answers,
 )
 from roomkit.classifiers.jev import JevClassifier
+from roomkit.classifiers.llamacpp import LlamaCppClassifier
 from roomkit.classifiers.llm import LLMClassifier
 from roomkit.classifiers.mock import MockClassifier
 from roomkit.classifiers.openai import OpenAIClassifier
+from roomkit.classifiers.system_one import SystemOneClassifier
 
 __all__ = [
     "Answer",
@@ -29,12 +31,14 @@ __all__ = [
     "ClassifierError",
     "JevClassifier",
     "LLMClassifier",
+    "LlamaCppClassifier",
     "MockClassifier",
     "OpenAIClassifier",
     "Question",
     "ScoreAnswer",
     "ScoreQuestion",
     "State",
+    "SystemOneClassifier",
     "YesNoAnswer",
     "YesNoQuestion",
     "check_answers",

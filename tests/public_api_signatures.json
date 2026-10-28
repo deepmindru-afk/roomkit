@@ -1363,6 +1363,12 @@
   "roomkit.LiveKitConfig": {
     "__init__": ["def", "url=None", "api_key=None", "api_secret=None", "access_ttl=datetime.timedelta(seconds=900)", "audio_sample_rate=48000", "audio_channels=1", "publish_queue_ms=300", "remote_unmute=False", "sip_gateway=False", "room_metadata_key='roomkit'"]
   },
+  "roomkit.LlamaCppClassifier": {
+    "__init__": ["def", "config", "*", "timeout=30.0"],
+    "classify": ["async def", "state", "questions"],
+    "close": ["async def"],
+    "start": ["async def"]
+  },
   "roomkit.LocalModel": {
     "__init__": ["def", "name", "kind", "description", "size_mb", "files", "paths", "settings=<factory>", "voices=()"]
   },
@@ -2239,6 +2245,11 @@
     "agents": ["def"],
     "install": ["async def", "kit", "room_id"],
     "uninstall": ["async def", "kit", "room_id"]
+  },
+  "roomkit.SystemOneClassifier": {
+    "__init__": ["def", "base_url=None", "*", "model=None", "api_key=None", "timeout=10.0", "client=None"],
+    "classify": ["async def", "state", "questions"],
+    "close": ["async def"]
   },
   "roomkit.TTSContext": {
     "__init__": ["def", "context_id", "turns", "next_turn_id"]

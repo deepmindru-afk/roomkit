@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`SystemOneClassifier` asks a decision model on any server with a
+  System One API** (RFC 6.8, RMK-1025). TypeSafe's API (`POST
+  {base_url}/v1/systemone`) is now also served by Ollama (d3, d1, nimble,
+  tev1, clef…), a LiteLLM proxy (Jev, OpenAI's Decisions models translated,
+  Clef…), llama.cpp and vLLM.
+  - `SystemOneClassifier(base_url, model=..., api_key=None)` asks any of
+    them through the TypeSafe SDK (`roomkit[typesafe]`). The model is
+    required, since the SDK's default is a TypeSafe one.
+  - It was probed against TypeSafe, LiteLLM to Jev and to `gpt-6-luna`,
+    Ollama with `d3:2b` and `d1:2b`, and llama.cpp with d1.
+  - A score is the expected level, computed from each level's probability:
+    llama.cpp sent the likeliest level in its `score` field instead.
+- **`LlamaCppClassifier` runs a decision model itself through llama.cpp**
+  (RMK-1025), the way `LlamaCppAIProvider` runs a chat model.
+  `LlamaCppClassifier(LlamaCppConfig(model="LiquidAI/d1-2B-GGUF:Q8_0"))`
+  downloads llama.cpp and the model, starts `llama-server`, and stops it on
+  `close()`. It needs the `typesafe` and `llamacpp` extras.
+
 ### Changed
 
 - **`LlamaCppAIProvider` runs llama.cpp's latest stable release, v0.8.0

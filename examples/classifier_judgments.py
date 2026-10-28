@@ -20,11 +20,20 @@ The classifier is chosen by ``CLASSIFIER``:
 - ``openai``: OpenAI's Decisions API on ``gpt-6-luna``, probabilities, ~150-450 ms
   a call (``pip install roomkit[openai]``, ``OPENAI_API_KEY``);
 - ``anthropic``: Claude Haiku answering under a JSON schema, every probability 0
-  or 1 (``ANTHROPIC_API_KEY``).
+  or 1 (``ANTHROPIC_API_KEY``);
+- ``system-one``: any server with a System One API, an Ollama, a LiteLLM proxy,
+  a llama-server or vLLM (``pip install roomkit[typesafe]``, ``SYSTEM_ONE_URL``
+  and ``SYSTEM_ONE_MODEL``, and ``SYSTEM_ONE_API_KEY`` when the server needs one);
+- ``llamacpp``: a decision model RoomKit runs itself through llama.cpp, LiquidAI
+  d1 by default (``pip install roomkit[typesafe,llamacpp]``; ``LLAMACPP_MODEL`` for
+  another; the first run downloads llama.cpp and the model).
 
 Run with:
     uv run python examples/classifier_judgments.py
     CLASSIFIER=jev TYPESAFE_API_KEY=... uv run python examples/classifier_judgments.py
+    CLASSIFIER=system-one SYSTEM_ONE_URL=http://localhost:11434 SYSTEM_ONE_MODEL=d3:2b \
+        uv run python examples/classifier_judgments.py
+    CLASSIFIER=llamacpp uv run python examples/classifier_judgments.py
 """
 
 from __future__ import annotations
@@ -44,13 +53,16 @@ from roomkit import (
     ChoiceQuestion,
     Classifier,
     JevClassifier,
+    LlamaCppClassifier,
     LLMClassifier,
     MockClassifier,
     OpenAIClassifier,
     ScoreQuestion,
+    SystemOneClassifier,
     YesNoQuestion,
 )
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
+from roomkit.providers.llamacpp import LlamaCppConfig
 
 logger = setup_logging("example.classifier_judgments")
 
@@ -106,7 +118,7 @@ def decide(answers: Answers) -> tuple[str, str]:
     return "silent", "not hers" if addressee == "person" else "nothing asked"
 
 
-def classifier_for(turn: int) -> Classifier:
+def make_classifier() -> Classifier:
     kind = os.environ.get("CLASSIFIER", "mock")
     if kind == "jev":
         return JevClassifier(require_env("TYPESAFE_API_KEY")["TYPESAFE_API_KEY"])
@@ -116,7 +128,17 @@ def classifier_for(turn: int) -> Classifier:
         key = require_env("ANTHROPIC_API_KEY")["ANTHROPIC_API_KEY"]
         config = AnthropicConfig(api_key=key, model="claude-haiku-5-5")
         return LLMClassifier(AnthropicAIProvider(config))
-    return MockClassifier(SCRIPT[turn])
+    if kind == "system-one":
+        server = require_env("SYSTEM_ONE_URL", "SYSTEM_ONE_MODEL")
+        return SystemOneClassifier(
+            server["SYSTEM_ONE_URL"],
+            model=server["SYSTEM_ONE_MODEL"],
+            api_key=os.environ.get("SYSTEM_ONE_API_KEY"),
+        )
+    if kind == "llamacpp":
+        model = os.environ.get("LLAMACPP_MODEL", "LiquidAI/d1-2B-GGUF:Q8_0")
+        return LlamaCppClassifier(LlamaCppConfig(model=model))
+    return MockClassifier(SCRIPT)
 
 
 def describe(answers: Answers) -> str:
@@ -130,21 +152,28 @@ def describe(answers: Answers) -> str:
 
 
 async def main() -> None:
+    classifier = make_classifier()
+    try:
+        if isinstance(classifier, LlamaCppClassifier):
+            logger.info("Starting the local decision model (the first run downloads it)...")
+            await classifier.start()
+        await judge_each_turn(classifier)
+    finally:
+        await classifier.close()
+
+
+async def judge_each_turn(classifier: Classifier) -> None:
     history: list[dict[str, str]] = []
-    for index, (speaker, text) in enumerate(TURNS):
+    for speaker, text in TURNS:
         state = {
             "agent": "Nova",
             "people": PEOPLE,
             "recent": history[-6:],
             "last": {"from": speaker, "text": text},
         }
-        classifier = classifier_for(index)
-        try:
-            started = time.perf_counter()
-            answers = await classifier.classify(state, QUESTIONS)
-            elapsed = (time.perf_counter() - started) * 1000
-        finally:
-            await classifier.close()
+        started = time.perf_counter()
+        answers = await classifier.classify(state, QUESTIONS)
+        elapsed = (time.perf_counter() - started) * 1000
         mode, reason = decide(answers)
         logger.info('%s: "%s"', speaker, text)
         logger.info("  %s (%.0f ms)", describe(answers), elapsed)
