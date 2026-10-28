@@ -1,11 +1,14 @@
 """Pin the llama.cpp build the llamacpp provider downloads.
 
-Reads a llama.cpp GitHub release (the newest ``bNNNN`` build by default, or the
-tag given) and rewrites ``src/roomkit/providers/llamacpp/_builds.py`` with the
-asset and SHA-256 of every variant the provider knows how to pick.
+Reads a llama.cpp GitHub release and rewrites
+``src/roomkit/providers/llamacpp/_builds.py`` with the asset and SHA-256 of
+every variant the provider knows how to pick. By default it pins the latest
+stable release (``vX.Y.Z``): a stable release carries no binaries, only a
+``nightly-tag.txt`` naming the ``bNNNN`` build it is, whose binaries are pinned.
 
-    uv run python scripts/update_llamacpp_build.py            # newest build
-    uv run python scripts/update_llamacpp_build.py b11160     # a given build
+    uv run python scripts/update_llamacpp_build.py            # latest stable
+    uv run python scripts/update_llamacpp_build.py v0.8.0     # a given stable
+    uv run python scripts/update_llamacpp_build.py b11960     # a given build
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -41,19 +45,35 @@ VARIANTS: dict[str, tuple[str, bool]] = {
 
 def _get(url: str) -> object:
     request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310 - fixed https host
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310 - fixed https host
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise SystemExit(f"{url}: {exc.code} {exc.reason}") from None
 
 
-def _release(tag: str | None) -> dict:
-    if tag:
-        return _get(f"{API}/tags/{tag}")  # type: ignore[return-value]
-    for release in _get(f"{API}?per_page=20"):  # type: ignore[union-attr]
-        # llama.cpp publishes every bNNNN build as a prerelease: the newest one
-        # is the build to pin, whatever the flag says.
-        if re.fullmatch(r"b\d+", release["tag_name"]) and not release["draft"]:
-            return release
-    raise SystemExit("no bNNNN release among the 20 newest")
+def _text(url: str) -> str:
+    with urllib.request.urlopen(url, timeout=30) as response:  # nosec B310 - a GitHub release asset
+        return response.read().decode().strip()
+
+
+def _release(tag: str | None) -> tuple[dict, str | None]:
+    """The ``bNNNN`` release to pin, and the stable release it is, if any.
+
+    No *tag* is the latest stable release (``releases/latest``: llama.cpp
+    marks every ``bNNNN`` build a prerelease).
+    """
+    if tag and re.fullmatch(r"b\d+", tag):
+        return _get(f"{API}/tags/{tag}"), None  # type: ignore[return-value]
+    stable: dict = _get(f"{API}/tags/{tag}" if tag else f"{API}/latest")  # type: ignore[assignment]
+    name = stable["tag_name"]
+    urls = [a["browser_download_url"] for a in stable["assets"] if a["name"] == "nightly-tag.txt"]
+    if len(urls) != 1:
+        raise SystemExit(f"{name}: no nightly-tag.txt naming its build")
+    build = _text(urls[0])
+    if not re.fullmatch(r"b\d+", build):
+        raise SystemExit(f"{name}: nightly-tag.txt names {build!r}, not a bNNNN build")
+    return _get(f"{API}/tags/{build}"), name  # type: ignore[return-value]
 
 
 def _pick(assets: dict[str, str], prefix: str, pattern: str) -> tuple[str, str]:
@@ -72,7 +92,7 @@ def _pick_cudart(assets: dict[str, str], tag: str, pattern: str) -> tuple[str, s
 
 
 def main() -> None:
-    release = _release(sys.argv[1] if len(sys.argv) > 1 else None)
+    release, stable = _release(sys.argv[1] if len(sys.argv) > 1 else None)
     tag = release["tag_name"]
     missing = [
         a["name"] for a in release["assets"] if not (a.get("digest") or "").startswith("sha256:")
@@ -86,8 +106,11 @@ def main() -> None:
         extra = _pick_cudart(assets, tag, pattern) if cudart else None
         rows.append((variant, name, digest, extra))
 
+    pinned = f"llama.cpp {stable} (build {tag})" if stable else f"llama.cpp build {tag}"
     lines = [
         '"""The llama.cpp build the llamacpp provider downloads — generated, do not edit.',
+        "",
+        f"{pinned}.",
         "",
         "Regenerate with ``uv run python scripts/update_llamacpp_build.py``.",
         '"""',
@@ -109,7 +132,7 @@ def main() -> None:
         lines.append("    ),")
     lines.append("}")
     TARGET.write_text("\n".join(lines) + "\n")
-    print(f"pinned llama.cpp {tag}: {len(rows)} variants → {TARGET}")
+    print(f"pinned {pinned}: {len(rows)} variants → {TARGET}")
 
 
 if __name__ == "__main__":

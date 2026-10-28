@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`LlamaCppAIProvider` runs llama.cpp's latest stable release, v0.8.0
+  (build b11960)** (RMK-1024).
+  - The pinned build was b11160, a nightly from September. It could not
+    load the models llama.cpp added since, LiquidAI LFM3 among them.
+  - `LiquidAI/LFM3-1.7B-GGUF:Q4_K_M` now runs from its Hugging Face
+    reference, its tool calls right on GPU and CPU.
+  - Keep its reasoning on (`enable_thinking` left `None`). With it off, the
+    model writes `answer</think>answer`, and llama.cpp leaves that in the
+    reply.
+  - `make update-llamacpp` pins the latest stable release by default
+    instead of the newest nightly; `BUILD=v0.8.0` or `BUILD=b11960` names
+    one.
+
 - **An AI channel's earlier tool calls ride its history as tool messages**
   (RFC 6.4, RMK-1023). From one turn to the next, the tools an agent called
   were recalled in a "Tools you've already used here" block. That block was

@@ -82,8 +82,9 @@ llms-full:
 check-models:
 	uv run python scripts/check_models.py
 
-# Pin the newest llama.cpp build the llamacpp provider downloads (archives and
-# SHA-256 from the GitHub release). Pass a tag to pin another: BUILD=b11160.
+# Pin llama.cpp's latest stable release for the llamacpp provider (archives and
+# SHA-256 from the GitHub release). Pass a tag to pin another: BUILD=v0.8.0 (a
+# stable release) or BUILD=b11960 (a nightly build).
 update-llamacpp:
 	uv run python scripts/update_llamacpp_build.py $(BUILD)
 	uv run ruff format src/roomkit/providers/llamacpp/_builds.py
