@@ -909,6 +909,32 @@ class RoomKit(
         if self._closed:
             return
         self._closed = True
+        await self._stop_kit_work()
+        channel_failures = await self._close_channels()
+        # Close voice backend
+        if self._voice:
+            await self._voice.close()
+        await self._realtime.close()
+        # What the channels' closes started ends before the store is
+        # released, as what the drains started did.
+        await self._end_what_the_channels_started()
+        await self._release_shared_resources()
+        # Last, the failures the channel loop collected. After everything, so
+        # the caller learns of them without any other part of the shutdown
+        # having been skipped on their account — what cannot be reported as a
+        # success is a close that returns cleanly while a channel that failed
+        # may still be holding its media (RFC 12.10.4).
+        if channel_failures:
+            raise ExceptionGroup(
+                f"{len(channel_failures)} channel(s) failed to close; "
+                "the rest of the shutdown ran to completion",
+                channel_failures,
+            )
+
+    async def _stop_kit_work(self) -> None:
+        """Stop the kit's own work while the channels it uses are still open
+        (timers, recordings, discussions, background runs, decided writes,
+        sources, lanes, turns, observers), what its ends start included."""
         # No verification ends after this: the timers die with the kit.
         self._cancel_verification_timers()
         # Stop room-level media recorders before channels close (RFC §12.11)
@@ -953,16 +979,20 @@ class RoomKit(
         await self._cancel_background_runs()
         await wait_for_held(self._decided_writes, until=writes_deadline)
         await self._cancel_pending_tasks()
-        # Then close the channels. In sequence, but shielded from one another:
-        # they close one at a time, so a close that raises would leave every
-        # channel behind it holding its media — for a conference channel, a
-        # bot left sitting in a meeting (RFC 12.10.4). Collected rather than
+
+    async def _close_channels(self) -> list[Exception]:
+        """Close every channel, one at a time and shielded from one another;
+        the failures, each noted with its channel."""
+        # In sequence, but shielded from one another: they close one at a
+        # time, so a close that raises would leave every channel behind it
+        # holding its media — for a conference channel, a bot left sitting in
+        # a meeting (RFC 12.10.4). Collected rather than
         # swallowed: the failed channel's own resources are in an unknown
         # state — its bot may still be in its conference — and a close() that
         # returns cleanly over that turns a logged error into an operational
         # and disclosure risk. Raised at the very end, so the failure of one
         # channel costs nothing else its shutdown.
-        channel_failures: list[Exception] = []
+        failures: list[Exception] = []
         for channel_id, channel in self._channels.items():
             try:
                 await channel.close()
@@ -972,14 +1002,13 @@ class RoomKit(
                     channel_id,
                 )
                 error.add_note(f"while closing channel {channel_id!r}")
-                channel_failures.append(error)
-        # Close voice backend
-        if self._voice:
-            await self._voice.close()
-        await self._realtime.close()
-        # What the channels' closes started ends before the store is
-        # released, as what the drains started did.
-        await self._end_what_the_channels_started()
+                failures.append(error)
+        return failures
+
+    async def _release_shared_resources(self) -> None:
+        """Release what the channels shared, once every one is closed: the
+        store and the lock managers after the operations they already have,
+        then the status bus and the telemetry."""
         # Every channel is closed and its media released. Only now wait for
         # the operations the store or the lock manager already has — they are
         # bracketed by resource leases, and this wait is what lets a channel's
@@ -997,17 +1026,6 @@ class RoomKit(
         await self._status_bus.close()
         # Flush telemetry (ends active spans, flushes exporter)
         self._telemetry.close()
-        # Last, the failures the channel loop collected. After everything, so
-        # the caller learns of them without any other part of the shutdown
-        # having been skipped on their account — what cannot be reported as a
-        # success is a close that returns cleanly while a channel that failed
-        # may still be holding its media (RFC 12.10.4).
-        if channel_failures:
-            raise ExceptionGroup(
-                f"{len(channel_failures)} channel(s) failed to close; "
-                "the rest of the shutdown ran to completion",
-                channel_failures,
-            )
 
     @contextlib.contextmanager
     def _resource_lease(self) -> Generator[None, None, None]:
