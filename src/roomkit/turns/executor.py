@@ -285,17 +285,22 @@ class TurnExecutor:
         task.add_done_callback(self._forget)
         task.add_done_callback(partial(_let_go, link))
 
+    def _spare_turns_run_under(self) -> None:
+        """Let the turns the current close runs under run on whatever cuts
+        them: a kit's close cuts every model turn at once, the one its call
+        runs in included, but not the call that runs it (RFC §12.10.4)."""
+        spared = set(turns_run_under())
+        for turn in self._turns.values():
+            if turn.turn_id in spared:
+                turn.spare()
+
     async def close(self) -> None:
         """Take no more turns, and cut the ones running, but the turns this
         close runs under: waiting for them would wait for itself."""
         self._closed = True
+        self._spare_turns_run_under()
         spared = set(turns_run_under())
-        running = []
-        for task, turn in list(self._turns.items()):
-            if turn.turn_id in spared:
-                turn.spare()
-            else:
-                running.append(task)
+        running = [task for task, turn in self._turns.items() if turn.turn_id not in spared]
         if running:
             await cancel_and_wait(*running, log_errors_to=logger)
         await self._channels.close()

@@ -294,12 +294,12 @@ async def test_the_owner_serves_the_task_tools_set_up_on_an_agent() -> None:
         entry = registry.owner_lookup(CANCEL_TASK_TOOL, "r")
         assert entry is not None and entry.serve is not None
         answer = json.loads(await entry.serve({"task_id": task.id}))
+    with pytest.raises(RuntimeError, match="already"):
+        room.kit.setup_task_tools(speaker)  # type: ignore[arg-type]
     await room.kit.close()
 
     assert names == ["cancel_task", "task_status"]
     assert answer["status"] == "cancelled"
-    with pytest.raises(RuntimeError, match="already"):
-        room.kit.setup_task_tools(speaker)  # type: ignore[arg-type]
 
 
 class _Failing(MockAIProvider):

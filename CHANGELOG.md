@@ -84,28 +84,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a call made in the close's last moments was stored and never
   delivered. Now admission stops as `close()` starts, whoever calls: an
   outside caller, a hook or a tool still running, a channel's own `close()`.
-  - Refused: every call that writes or delivers, and every other one too:
-    `steer`, `transcribe`, `synthesize`, `delegate`, `register_channel`,
-    `unregister_channel`… A channel's own doors refuse the same way:
-    `RealtimeVoiceChannel.start_session`, a participant arriving in a
-    conference. `async with` on a closed kit raises it too. `commit_event`
-    after the close no longer writes.
+  - Refused: every call that writes or delivers, and every other one too,
+    synchronous calls included: `steer`, `transcribe`, `synthesize`,
+    `delegate`, `register_channel`, `unregister_channel`, `hook()`, `on()`,
+    `identity_hook()`, `on_delivery_status()`, `subscribe_websocket`,
+    `setup_background`, `setup_task_tools`… A channel's own doors refuse
+    the same way: `RealtimeVoiceChannel.start_session`, a participant
+    arriving in a conference (quietly, at debug). `async with` on a closed
+    kit raises it too. `commit_event` after the close no longer writes.
   - The reads (`get_room`, `get_timeline`, `get_binding`, `list_*`,
     `is_member`, `regenerate_target`, `room_recordings`,
     `room_strategy_is_current`, `sender_verification`, `source_health`,
-    `verification_of`) answer during the close, and after it while the
-    store is open: an `InMemoryStore`, or a Postgres pool the integrator
-    handed in. A store the kit closed (SQLite, a Postgres pool the kit
-    opened) refuses them with `KitClosedError`, never its own error.
+    `verification_of`, and the synchronous `get_channel`, `hooks_for`,
+    `identity_enabled_for`, `list_channels`, `list_sources`,
+    `room_strategy`, `speak_queue`) answer during the close, and after it
+    while the store is open: an `InMemoryStore`, or a Postgres pool the
+    integrator handed in. A store the kit closed (SQLite, a Postgres pool
+    the kit opened) refuses them with `KitClosedError`, never its own
+    error. Work a read starts (a source's health check) is no read.
   - The teardown calls return doing nothing, since the close tears down
     what they would: `cancel_delivery` (0), `cancel_task` (False),
-    `disconnect_websocket`, `disconnect_voice`, `disconnect_video`, `leave`
-    (None), `unsubscribe_room` (False).
-  - A call taken before the close and still under way as it ends reads
-    `kit_closed` in its `cancellation_reason`, whatever it delivered.
+    `disconnect_websocket`, `disconnect_voice`, `disconnect_video`, `leave`,
+    `unsubscribe_websocket` (None), `unsubscribe_room` (False).
+  - A call under way when the close starts reads `kit_closed` in its
+    `cancellation_reason`, even when its sends end within the grace.
 
   Migration: let a hook or a channel's close that may run during a close
-  catch `KitClosedError`.
+  catch `KitClosedError`. A read after the close on a store the kit closed
+  raises `KitClosedError`: catch it, not the store's `RuntimeError`.
 
 - **BREAKING — `kit.close()` no longer drains: what has not started is cut
   at once, the running work gets one grace of 5 s** (RFC 12.10.4,
@@ -121,9 +127,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     to wait for the lock, then fail on the sealed store after `close()` had
     returned.
   - A call whose hooks or commit outlast the grace is cut the same way. One
-    whose commit had started when it was cut reads its event back: stored,
-    it returns that event (`InboundResult.event`, or the event
-    `send_event` and `commit_event` return), `kit_closed`, never a refusal.
+    whose commit had started when it was cut reads its event back once its
+    writes unwound, within the unwind: stored, `process_inbound` returns
+    it as `InboundResult.event` with `cancellation_reason="kit_closed"`
+    (a BLOCKED record keeping its hooks' reason), and `send_event`,
+    `commit_event` and `post` return it, never a refusal. A store that
+    completes the write after that, or a read-back that fails (logged as a
+    warning), leaves the call reported as not stored.
   - A call that commits within the grace is stored, and delivered to no
     one: its delivery is dropped as the queued ones are, its
     `delivery_results` empty.
@@ -132,18 +142,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     no longer waited for on 5 s, again on the same deadline, then on a
     fresh 5 s after the channels closed, and left running past that. The
     kit's own steps that wait on integrator code (a source's `stop()`, a
-    delegation's `on_complete`) and the handlers a voice or video channel
-    runs for a session's start or end get the same grace. What a channel's
-    close starts is cut at once.
-  - The close takes the grace, plus the channels' closes, plus at most
-    1 s more, twice: after the grace and after the channels, for cut work
-    that ignores its cancellation. The operations the store or the lock
-    manager still runs are waited for within the second one. With a send,
-    a write, an observer and a hook that never end, it took 19.8 s; it
-    takes 5 s.
-  - Work still running then is abandoned and named in the log; the store
-    is released under it, so its writes fail, and a send it still makes is
-    its channel's own.
+    delegation's `on_complete`) run side by side within the same grace, so
+    a slow one holds no other back, and every source's task is cut,
+    whatever its `stop()` does; a source restarting on failure is not
+    restarted once the close started. The handlers a voice or video
+    channel runs for a session's start or end get the grace too. What a
+    channel's close starts is cut at once.
+  - The close takes the grace, plus the channels' closes and the kit's own
+    backends' closes (the turn backend, voice, realtime, the store, the
+    lock managers, the status bus), plus at most 1 s more, twice: after the
+    grace and after the channels, for cut work that ignores its
+    cancellation. The operations the store or the lock manager still runs,
+    and the calls the turn backend's turns made, are waited for within an
+    unwind. With a send, a write, an observer and a hook that never end, it
+    took 19.8 s; it takes 5 s.
+  - Nothing is written or delivered after `close()` returns by work that
+    honours its cut. Work that ignores it past the unwind is abandoned and
+    named in the log, once: a store the kit closed then refuses its
+    writes, a store that stays open (an `InMemoryStore`, a pool handed in)
+    takes them, and a send it still makes is its channel's own.
 
   Migration: for a delivery that must go out, wait for
   `result.delivery.wait()` before `close()`.
@@ -153,8 +170,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the close starts, while the other running work has its grace. It used to
   be cut only once every lane had drained, up to 6 s later. What it
   streamed is stored marked `cancelled`, and an open tool call gets its end
-  row, `failed`. Migration: let a turn whose answer you need end before
-  `close()`.
+  row, `failed`, error `kit_closed`. The turn a tool closing the kit runs
+  in is cut the same way, the tool's own call left to run: its end row is
+  stored before the kit releases its store, and what the turn does after
+  the close is refused quietly, no error logged. Migration: let a turn
+  whose answer you need end before `close()`.
 
 - **BREAKING — a call `kit.close()` cuts reads `kit_closed`, never
   `lane_cancelled`, with what it delivered** (RFC 12.10.4, RMK-1030). A

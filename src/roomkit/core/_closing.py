@@ -20,7 +20,7 @@ from typing import Any
 
 from roomkit.core import task_utils
 from roomkit.core._reentrance import ReentryBudget
-from roomkit.core.exceptions import KitClosedError
+from roomkit.core.exceptions import KitClosedError, TurnLinkError
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.locks import _has_room_lock
 from roomkit.models.delivery import InboundResult
@@ -36,6 +36,19 @@ def cut_by_close() -> InboundResult:
     """The result of a call into a room the kit's close cut before its
     commit (RFC §12.10.4): nothing of it is stored."""
     return InboundResult(blocked=True, reason=KIT_CLOSED, cancellation_reason=KIT_CLOSED)
+
+
+def ended_by_close(kit: Any, exc: BaseException) -> bool:
+    """Whether *exc* is the kit's own close ending the work that raised it:
+    a call refused or cut, the store it released, the turn backend it closed
+    (RFC §12.10.4). Expected, so logged at debug, never as a failure."""
+    if not kit._closed:
+        return False
+    if isinstance(exc, KitClosedError):
+        return True
+    if isinstance(exc, TurnLinkError) and exc.reason == "backend_closed":
+        return True
+    return isinstance(exc, RuntimeError) and kit._store_released
 
 
 def refuse_closed(closed: bool, what: str = "call") -> None:
@@ -54,6 +67,7 @@ class Cascades:
 
     def __init__(self) -> None:
         self._live: weakref.WeakSet[DeliveryCascade] = weakref.WeakSet()
+        self._cut_turns: weakref.WeakSet[asyncio.Task[Any]] = weakref.WeakSet()
         self.closed = False
 
     def new(self, room_id: str, *, reentry_budget: int | ReentryBudget) -> DeliveryCascade:
@@ -67,11 +81,18 @@ class Cascades:
 
     def cut(self, spared: set[asyncio.Task[Any]]) -> None:
         """Cut every cascade under way, its turns at once (the turn work in
-        *spared*, which the close runs under, left to end)."""
+        *spared*, the tasks the close runs as, left to end)."""
         self.closed = True
         for cascade in list(self._live):
-            if cascade.in_flight:
+            if cascade.in_flight and cascade.cancelled is None:
+                self._cut_turns.update(cascade.turn_work() - spared)
                 cascade.cancel(KIT_CLOSED, spared=spared, wake=False)
+
+    def unwinding(self) -> set[asyncio.Task[Any]]:
+        """The turns the close cut still ending: what a cut turn leaves (its
+        text, its open calls' end rows) is written before the store is
+        released, the turn a close's own call runs in included."""
+        return {task for task in self._cut_turns if not task.done()}
 
     def running(self) -> set[asyncio.Task[Any]]:
         """The work of the cascades the close cut, still running: a cut turn
@@ -144,7 +165,8 @@ class DoorRuns:
         self._running: set[asyncio.Task[Any]] = set()
         self._waiting: set[asyncio.Task[Any]] = set()
         self._unwinding: set[asyncio.Task[Any]] = set()
-        self._cut: set[asyncio.Task[Any]] = set()
+        # Each call the close cut, and when: its read-back ends with its unwind.
+        self._cut: dict[asyncio.Task[Any], float] = {}
         self.closed = False
 
     @contextlib.asynccontextmanager
@@ -173,12 +195,15 @@ class DoorRuns:
         try:
             yield
         except asyncio.CancelledError:
-            if record is None or not self._was_cut(task):
+            cut_at = None if record is None else self._take_cut(task)
+            if record is None or cut_at is None:
                 raise
             # Its unwind: a commit that landed as it was cut is read back,
-            # so the call reports it stored (RFC §10.1, §12.10.4).
+            # so the call reports it stored (RFC §10.1, §12.10.4). Its writes
+            # run to their end under it (run_to_its_end), cut and unwound
+            # first: the read comes after them.
             self._unwinding.add(record.task)
-            committed = await self._read_back(record)
+            committed = await self._read_back(record, cut_at)
             raise CallCutError(
                 f"The kit closed before this {what} ended"
                 + ("" if committed is not None else ": nothing of it is stored"),
@@ -255,17 +280,24 @@ class DoorRuns:
             task for task in self._running | self._waiting | self._unwinding if not task.done()
         }
 
-    async def _read_back(self, record: _Run) -> RoomEvent | None:
+    async def _read_back(self, record: _Run, cut_at: float) -> RoomEvent | None:
         """The event *record*'s commit stored, read by its id within the
-        unwind; ``None`` when it is not stored, or cannot be read."""
+        unwind the close gave the call from its cut at *cut_at*; ``None``
+        when it is not stored, or cannot be read in time (logged: the call
+        then reports nothing stored, whatever the store holds)."""
         event = record.committing
         if event is None:
             return None
         try:
-            async with asyncio.timeout(task_utils.CUT_UNWIND_S):
+            async with asyncio.timeout_at(cut_at + task_utils.CUT_UNWIND_S):
                 stored = await self._read_event(event.id)
-        except Exception:  # noqa: BLE001 - a read that fails reports nothing stored
-            logger.debug("Reading back the event %s a cut call committed failed", event.id)
+        except Exception as error:  # noqa: BLE001 - a read that fails reports nothing stored
+            logger.warning(
+                "The kit closed as a call committed event %s, and reading it back failed "
+                "(%s): the call reports nothing stored",
+                event.id,
+                type(error).__name__,
+            )
             return None
         if stored is None or stored.room_id != event.room_id:
             return None
@@ -274,17 +306,20 @@ class DoorRuns:
     def _cut_task(self, task: asyncio.Task[Any]) -> None:
         if task in self._cut or task.done():
             return
-        self._cut.add(task)
+        self._cut[task] = asyncio.get_running_loop().time()
         task.cancel(KIT_CLOSED)
 
-    def _was_cut(self, task: asyncio.Task[Any] | None) -> bool:
-        """Whether the close cut *task*, the cancellation it raised the
-        close's own: taken back, it is no cancellation of the caller. A
-        cancellation from elsewhere besides stays the caller's."""
+    def _take_cut(self, task: asyncio.Task[Any] | None) -> float | None:
+        """When the close cut *task*, if the cancellation it raised is the
+        close's own: taken back, it is no cancellation of the caller.
+        ``None`` when the close did not cut it, or a cancellation from
+        elsewhere besides stays the caller's."""
         if task is None or task not in self._cut:
-            return False
-        self._cut.discard(task)
-        return task.uncancel() == 0 if task.cancelling() else True
+            return None
+        cut_at = self._cut.pop(task)
+        if task.cancelling() and task.uncancel() != 0:
+            return None
+        return cut_at
 
     def _leave(self, task: asyncio.Task[Any]) -> None:
         """The call *task* ran ended: a cut that never reached it (the call
@@ -293,10 +328,8 @@ class DoorRuns:
         self._running.discard(task)
         self._waiting.discard(task)
         self._unwinding.discard(task)
-        if task in self._cut:
-            self._cut.discard(task)
-            if task.cancelling():
-                task.uncancel()
+        if self._cut.pop(task, None) is not None and task.cancelling():
+            task.uncancel()
 
 
 def inbound_cut_result(cut: KitClosedError) -> InboundResult:

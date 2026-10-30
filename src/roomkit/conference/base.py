@@ -26,7 +26,7 @@ from roomkit.conference.models import (
     ConferenceParticipant,
     ConferenceTrack,
 )
-from roomkit.core.exceptions import ConferenceCapabilityError
+from roomkit.core.exceptions import ConferenceCapabilityError, KitClosedError
 from roomkit.video.video_frame import VideoFrame
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import AudioChunk
@@ -439,6 +439,9 @@ class ConferenceBackend(ABC):
                 result = callback(*args)
                 if inspect.isawaitable(result):
                     await result
+            except KitClosedError as refused:
+                # The kit closing refuses what arrives: expected, not a failure.
+                logger.debug("Conference callback on %s refused: %s", event, refused)
             except Exception:
                 logger.exception("Conference callback failed on %s: %r", event, callback)
 

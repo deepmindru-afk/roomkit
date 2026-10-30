@@ -192,7 +192,18 @@ _READS: dict[str, tuple[Callable[[RoomKit, str], Awaitable[Any]], bool]] = {
     "verification_of": (lambda kit, room: kit.verification_of("u1"), True),
 }
 
-_TEARDOWN: dict[str, tuple[Callable[[RoomKit], Awaitable[Any]], Any]] = {
+_SYNC_READS: dict[str, Callable[[RoomKit], Any]] = {
+    # The kit's synchronous reads: they answer during the close and after it.
+    "get_channel": lambda kit: kit.get_channel("sms"),
+    "hooks_for": lambda kit: kit.hooks_for(HookTrigger.BEFORE_BROADCAST),
+    "identity_enabled_for": lambda kit: kit.identity_enabled_for(ChannelType.SMS),
+    "list_channels": lambda kit: kit.list_channels(),
+    "list_sources": lambda kit: kit.list_sources(),
+    "room_strategy": lambda kit: kit.room_strategy("r"),
+    "speak_queue": lambda kit: kit.speak_queue("r"),
+}
+
+_TEARDOWN: dict[str, tuple[Callable[[RoomKit], Any], Any]] = {
     # The call, and what it returns once the close started.
     "cancel_delivery": (lambda kit: kit.cancel_delivery("key"), 0),
     "cancel_task": (lambda kit: kit.cancel_task("task"), False),
@@ -201,14 +212,15 @@ _TEARDOWN: dict[str, tuple[Callable[[RoomKit], Awaitable[Any]], Any]] = {
     "disconnect_video": (lambda kit: kit.disconnect_video(object()), None),
     "leave": (lambda kit: kit.leave(object()), None),
     "unsubscribe_room": (lambda kit: kit.unsubscribe_room("subscription"), False),
+    "unsubscribe_websocket": (lambda kit: kit.unsubscribe_websocket("ws", "conn", "r"), None),
 }
 
 _REFUSED = sorted(
     name
-    for name, _ in inspect.getmembers(RoomKit, inspect.iscoroutinefunction)
-    if not name.startswith("_") and name not in {"close", *_READS, *_TEARDOWN}
+    for name, member in inspect.getmembers(RoomKit, inspect.isfunction)
+    if not name.startswith("_") and name not in {"close", *_READS, *_SYNC_READS, *_TEARDOWN}
 )
-"""Every other public coroutine of the kit."""
+"""Every other public method of the kit, a coroutine or not."""
 
 
 class _Release(_Transport):
@@ -300,24 +312,76 @@ async def test_a_read_answers_during_the_close_and_after_it_while_its_store_is_o
         assert await call(kit, room_id) == before
 
 
-@pytest.mark.parametrize("name", [*_REFUSED, "register_channel", "unregister_channel"])
+class _BeatingSource(SourceProvider):
+    """A source whose health check starts a heartbeat, which posts a status
+    naming room ``r`` once *release* is set."""
+
+    def __init__(self, kit: RoomKit) -> None:
+        self.kit = kit
+        self.release = asyncio.Event()
+        self.beats: list[asyncio.Future[None]] = []
+
+    @property
+    def name(self) -> str:
+        return "beating"
+
+    async def start(self, emit: Any) -> None:
+        await asyncio.Event().wait()
+
+    async def stop(self) -> None:
+        pass
+
+    async def healthcheck(self) -> Any:
+        self.beats.append(asyncio.ensure_future(self._beat()))
+        return await super().healthcheck()
+
+    async def _beat(self) -> None:
+        await self.release.wait()
+        self.kit.status_bus.post("src", "heartbeat", "ok", metadata={"room_id": "r"})
+
+
+async def test_work_a_read_starts_is_no_read_once_the_kit_closed(close_grace: float) -> None:
+    """A task a read starts (a source's health check, run by
+    ``source_health``) is no read: once the kit closed, what it sets off
+    builds no room's context on the released store, and fires no hook."""
+    held = _Release("ws")
+    kit = await _kit(held)
+    fired: list[Any] = []
+
+    @kit.hook(HookTrigger.ON_STATUS_POSTED, execution=HookExecution.ASYNC, name="status")
+    async def on_status(entry: Any, ctx: Any) -> None:
+        fired.append(entry)
+
+    source = _BeatingSource(kit)
+    await kit.attach_source("sms", source)
+    await _a_send_held_for_ever(kit, held, "r")
+    closing = await _closing(kit)
+    await kit.source_health("sms")
+    held.release.set()
+    await closing
+
+    source.release.set()
+    await asyncio.wait(source.beats, timeout=1)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert fired == []
+
+
+@pytest.mark.parametrize("name", _REFUSED)
 async def test_every_other_call_is_refused_once_the_close_started(name: str) -> None:
     """Any call but a read, a teardown call and close() is refused with
     KitClosedError once the close started, during it and after it, before it
     reads its arguments: a call that hands its work off (a delegation, a
-    turn) as one that writes (RFC §12.10.4)."""
+    turn) as one that writes, a synchronous one (a channel's registration, a
+    hook's, a WebSocket's subscription) as a coroutine (RFC §12.10.4)."""
     held = _Release("ws")
     kit = await _kit(held)
     await _a_send_held_for_ever(kit, held, "r")
     closing = await _closing(kit)
-    late = SimpleChannel("late")
 
     async def call() -> Any:
-        if name == "register_channel":
-            return kit.register_channel(late)
-        if name == "unregister_channel":
-            return kit.unregister_channel("ws")
-        return await getattr(kit, name)()
+        made = getattr(kit, name)()
+        return await made if inspect.isawaitable(made) else made
 
     with pytest.raises(KitClosedError):
         await call()
@@ -337,11 +401,30 @@ async def test_a_teardown_call_returns_doing_nothing_once_the_close_started(name
     await _a_send_held_for_ever(kit, held, "r")
     closing = await _closing(kit)
 
-    during = await call(kit)
+    async def answer() -> Any:
+        made = call(kit)
+        return await made if inspect.isawaitable(made) else made
+
+    during = await answer()
     held.release.set()
     await closing
 
-    assert (during, await call(kit)) == (quiet, quiet)
+    assert (during, await answer()) == (quiet, quiet)
+
+
+@pytest.mark.parametrize("name", list(_SYNC_READS))
+async def test_a_sync_read_answers_during_the_close_and_after_it(name: str) -> None:
+    held = _Release("ws")
+    kit = await _kit(held)
+    await _a_send_held_for_ever(kit, held, "r")
+    before = _SYNC_READS[name](kit)
+    closing = await _closing(kit)
+
+    during = _SYNC_READS[name](kit)
+    held.release.set()
+    await closing
+
+    assert (during, _SYNC_READS[name](kit)) == (before, before)
 
 
 async def test_a_call_from_a_hook_in_the_close_s_grace_is_refused(close_grace: float) -> None:
@@ -450,10 +533,12 @@ async def test_a_call_a_channel_s_close_makes_is_refused() -> None:
     ]
 
 
-async def test_a_session_or_a_participant_arriving_once_the_close_started_is_refused() -> None:
+async def test_a_session_or_a_participant_arriving_once_the_close_started_is_refused(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A channel's own doors refuse as the kit's do once the close started: a
-    realtime session does not start, a conference arrival writes nothing and
-    tells no one (RFC §12.10.4)."""
+    realtime session does not start, a conference arrival writes nothing,
+    tells no one, and is no error in the log (RFC §12.10.4)."""
     held = _Release("ws")
     backend = MockConferenceBackend()
     conference = ConferenceChannel("conf", backend=backend, stt=MockSTTProvider())
@@ -467,13 +552,15 @@ async def test_a_session_or_a_participant_arriving_once_the_close_started_is_ref
 
     with pytest.raises(KitClosedError):
         await realtime.start_session("r", "p-realtime", "conn")
-    await backend.simulate_participant_joined("r", "p-conference")
+    with caplog.at_level(logging.WARNING, logger="roomkit"):
+        await backend.simulate_participant_joined("r", "p-conference")
     members = await kit.list_members("r")
     held.release.set()
     await closing
 
     assert "connect" not in [c.method for c in provider.calls]
     assert (members, joined) == ([], [])
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 async def test_async_with_a_closed_kit_is_refused() -> None:
@@ -715,7 +802,7 @@ async def test_a_running_tool_call_is_cut_at_once_its_end_row_stored(long_grace:
     assert ran == ["cut"]
     assert result.cancellation_reason == "kit_closed"
     ends = [e for e in await kit.store.list_events("r") if e.type == "tool_call_end"]
-    assert [e.content.status for e in ends] == ["failed"]
+    assert [(e.content.status, e.content.error) for e in ends] == [("failed", "kit_closed")]
 
 
 # -- 4. Other running work gets one grace, then is cut ----------------------------
@@ -896,6 +983,36 @@ async def test_a_call_whose_commit_landed_as_it_was_cut_reports_it_stored(
     assert transport.sent == []
 
 
+class _ReadBackFails(_AnswerNeverComes):
+    """A store whose commit lands as the grace runs out, and that cannot
+    read an event back."""
+
+    async def get_event(self, event_id: str) -> RoomEvent | None:
+        raise RuntimeError("the store is gone")
+
+
+async def test_a_cut_commit_whose_read_back_fails_reports_nothing_stored_and_says_so(
+    close_grace: float, cut_unwind: float, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The limit of the read-back: one that fails leaves the call reported
+    as not stored, whatever the store holds, and the log says so."""
+    store = _ReadBackFails()
+    kit = await _kit(_Transport("ws"), store=store)
+    call = asyncio.ensure_future(kit.process_inbound(_message("slow"), room_id="r"))
+    await store.written.wait()
+
+    with caplog.at_level(logging.WARNING, logger="roomkit"):
+        await kit.close()
+
+    result = await call
+    assert (result.blocked, result.reason, result.cancellation_reason) == (
+        True,
+        "kit_closed",
+        "kit_closed",
+    )
+    assert [r for r in caplog.records if "reading it back failed" in r.getMessage()] != []
+
+
 class _Stubborn:
     """Work that ignores its cut: it runs on until the test releases it."""
 
@@ -1014,10 +1131,9 @@ async def test_work_ignoring_its_cut_is_abandoned_once_the_unwind_ran_out(
     try:
         with caplog.at_level(logging.WARNING, logger="roomkit.framework"):
             await asyncio.wait_for(closing, 1)
-        # Abandoned, not waited for, and named; an on_complete runs shielded
-        # from the cut of the step that awaited it, which the close names not.
-        logged = [r for r in caplog.records if "still run" in r.getMessage()]
-        assert (bool(logged), work.release.is_set()) == (case != "on-complete", False)
+        # Abandoned, not waited for, and named once in the log.
+        logged = [r for r in caplog.records if "still running after their cut" in r.getMessage()]
+        assert (len(logged), work.release.is_set()) == (1, False)
     finally:
         work.release.set()
     if case == "send":
@@ -1025,6 +1141,84 @@ async def test_work_ignoring_its_cut_is_abandoned_once_the_unwind_ran_out(
         assert (cut.status, cut.error.code, cut.error.retryable) == ("failed", "kit_closed", True)
     if isinstance(call, asyncio.Future):
         await asyncio.gather(call, return_exceptions=True)
+
+
+class _Source(SourceProvider):
+    """A source reading an open connection until cut; its ``stop()`` runs
+    until *stop_release* is set, when given; with *emits*, it sends a
+    message every few milliseconds."""
+
+    def __init__(
+        self, name: str, *, stop_release: asyncio.Event | None = None, emits: bool = False
+    ) -> None:
+        self._name, self.stop_release, self.emits = name, stop_release, emits
+        self.steps: list[str] = []
+        self.starts = 0
+        self.reading = asyncio.Event()
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    async def start(self, emit: Any) -> None:
+        self.starts += 1
+        self.reading.set()
+        try:
+            while True:
+                await asyncio.sleep(0.005)
+                if self.emits:
+                    await emit(_message("from the source"))
+        except asyncio.CancelledError:
+            self.steps.append("task cut")
+            raise
+
+    async def stop(self) -> None:
+        self.steps.append("stop")
+        if self.stop_release is not None:
+            await self.stop_release.wait()
+
+
+async def test_a_stuck_source_stop_keeps_no_other_source_running(
+    close_grace: float, cut_unwind: float
+) -> None:
+    """The kit's own steps stop side by side within the one grace: a source
+    whose ``stop()`` never ends holds no other step back, and every source's
+    task is cut whatever its ``stop()`` does (RFC §12.10.4)."""
+    kit = await _kit(_Transport("ws"))
+    stuck, ordinary = _Source("a", stop_release=asyncio.Event()), _Source("b")
+    await kit.attach_source("sms", stuck)
+    await kit.attach_source("ws", ordinary)
+    await asyncio.gather(stuck.reading.wait(), ordinary.reading.wait())
+
+    try:
+        await asyncio.wait_for(kit.close(), 1)
+    finally:
+        assert stuck.stop_release is not None
+        stuck.stop_release.set()
+
+    assert (stuck.steps, ordinary.steps) == (["stop", "task cut"], ["stop", "task cut"])
+
+
+async def test_a_source_restarting_on_failure_stops_restarting_once_the_close_started(
+    close_grace: float, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A source that restarts on failure fails on a closing kit (its message
+    refused) while its ``stop()`` runs: it is not restarted, and its end is
+    no error in the log."""
+    kit = await _kit(_Transport("ws"))
+    source = _Source("restarting", stop_release=asyncio.Event(), emits=True)
+    await kit.attach_source("sms", source, auto_restart=True, restart_delay=0.001)
+    await source.reading.wait()
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="roomkit"):
+            await asyncio.wait_for(kit.close(), 1)
+    finally:
+        assert source.stop_release is not None
+        source.stop_release.set()
+
+    assert source.starts == 1
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
 
 
 async def _a_session_ending(kind: str) -> tuple[RoomKit, Callable[[], Any]]:

@@ -534,6 +534,35 @@ async def test_the_kits_close_waits_for_a_running_handler_to_unwind() -> None:
     await asyncio.gather(turn, return_exceptions=True)
 
 
+async def test_the_kits_close_abandons_a_handler_ignoring_its_cut_once_its_unwind_ran_out(
+    close_grace: float, cut_unwind: float, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An owner-served call that ignores its cut does not hold the kit's
+    close: it is abandoned once the unwind ran out (RFC §12.10.4)."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def serve(arguments: dict[str, Any]) -> str:
+        started.set()
+        while not release.is_set():
+            with contextlib.suppress(asyncio.CancelledError):
+                await release.wait()
+        return "late"
+
+    agent = _agent("agent", _call("probe", {}), "unread")
+    kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
+        orchestration_tool(PROBE, serve, waits=True), room_id="r1", owner=object()
+    )
+    turn = asyncio.create_task(_say(kit, "go"))
+    await asyncio.wait_for(started.wait(), 2)
+
+    try:
+        await asyncio.wait_for(kit.close(), 1)
+    finally:
+        release.set()
+    await asyncio.gather(turn, return_exceptions=True)
+
+
 async def test_a_handler_that_closes_the_kit_sees_the_close_through() -> None:
     steps: list[str] = []
     closed = asyncio.Event()

@@ -316,6 +316,10 @@ class DeliveryCascade:
                 task.cancel()
             raise
 
+    def turn_work(self) -> set[asyncio.Task[Any]]:
+        """The cascade's turn work still running."""
+        return {task for task in self._turn_work if not task.done()}
+
     def running(self) -> set[asyncio.Task[Any]]:
         """The work it owns still running (:meth:`run`): its turns, the
         reading of its streams, its delivery sets and their aftermath. Its
@@ -660,9 +664,6 @@ class RoomDeliveryLane:
         # round took, end with.
         self._reason = "lane_cancelled"
         self._cut = False
-        # The work the close is called from (RFC §12.10.4): the turn work of
-        # a cascade the seal drops that it holds is left to end.
-        self._spared: Callable[[], set[asyncio.Task[Any]]] = set
 
     @property
     def idle(self) -> bool:
@@ -710,15 +711,14 @@ class RoomDeliveryLane:
         """The lane's executor, while it runs."""
         return self._task
 
-    def seal(self, reason: str, spared: Callable[[], set[asyncio.Task[Any]]] = set) -> None:
+    def seal(self, reason: str) -> None:
         """Take no more work (RFC §12.10.4): the queued entries are dropped
-        with *reason*, their cascades cancelled but for the turn work in
-        *spared* (the work the close is called from), and the round under
-        way ends after the entry it runs; what it ran is then finished as
-        usual."""
+        with *reason*, their cascades cancelled, and the round under way
+        ends after the entry it runs; what it ran is then finished as usual.
+        The kit's close cuts the cascades under way first, sparing what it
+        is called from: a drop cancels nothing of them again."""
         self._closed = True
         self._reason = reason
-        self._spared = spared
         self._wakeup.set()
         self._abort_pending(reason)
 
@@ -744,7 +744,7 @@ class RoomDeliveryLane:
                 self.room_id,
                 entry.index,
             )
-            entry.cascade.cancel(reason, spared=self._spared())
+            entry.cascade.cancel(reason)
             entry.cascade.release()
 
     def _abort_pending(self, reason: str) -> None:
@@ -1037,7 +1037,6 @@ class RoomLaneRegistry:
         self._config = config
         self._lanes: dict[str, RoomDeliveryLane] = {}
         self._sealed = False
-        self._spared: Callable[[], set[asyncio.Task[Any]]] = set
 
     def lane(self, room_id: str) -> RoomDeliveryLane:
         """Get or create (and start) the room's lane."""
@@ -1064,7 +1063,7 @@ class RoomLaneRegistry:
                     room_id,
                     entry.index,
                 )
-                entry.cascade.cancel(KitClosedError.code, spared=self._spared())
+                entry.cascade.cancel(KitClosedError.code)
                 entry.cascade.release()
             return
         self.lane(room_id).enqueue(entry)
@@ -1081,18 +1080,13 @@ class RoomLaneRegistry:
             del self._lanes[lane.room_id]
         return True
 
-    def seal(
-        self, reason: str = "kit_closed", spared: Callable[[], set[asyncio.Task[Any]]] = set
-    ) -> None:
+    def seal(self, reason: str = "kit_closed") -> None:
         """Take no more work (RFC §12.10.4): every entry queued or enqueued
-        from now on is dropped with *reason*, its cascade cancelled but for
-        the turn work in *spared* (the work the close is called from, read
-        at each drop); the rounds under way end after the entry each runs.
-        Idempotent."""
+        from now on is dropped with *reason*, its cascade cancelled; the
+        rounds under way end after the entry each runs. Idempotent."""
         self._sealed = True
-        self._spared = spared
         for lane in self._lanes.values():
-            lane.seal(reason, spared)
+            lane.seal(reason)
 
     def running(self) -> set[asyncio.Task[None]]:
         """The executors still running, the rounds under way included."""

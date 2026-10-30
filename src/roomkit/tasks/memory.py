@@ -211,13 +211,28 @@ class InMemoryTaskRunner(TaskRunner):
 
         # Run on_complete BEFORE setting result so hooks fire before waiters unblock
         if on_complete:
-            try:
-                await on_complete(result)
-            except Exception:
-                logger.exception("on_complete callback failed for task %s", task.id)
+            await _complete(kit, task.id, on_complete, result)
 
         # ALWAYS set result — callers of wait() depend on this
         task._set_result(result)
 
         self._tasks.pop(task.id, None)
         self._handles.pop(task.id, None)
+
+
+async def _complete(
+    kit: RoomKit, task_id: str, on_complete: OnCompleteCallback, result: DelegatedTaskResult
+) -> None:
+    """Run a task's completion callback as the kit's work, on a task of its
+    own: the kit's close gives it the grace, then cuts it, and names it in
+    its log when it outlasts its unwind (RFC §12.10.4, §23.3). The task's end
+    goes on whatever becomes of it."""
+
+    async def callback() -> None:
+        await on_complete(result)
+
+    run = start_named(callback(), name=f"roomkit-task-on-complete-{task_id}")
+    kit._hold_channel_work(run)
+    await asyncio.wait({run})
+    if not run.cancelled() and (error := run.exception()) is not None:
+        logger.error("on_complete callback failed for task %s", task_id, exc_info=error)

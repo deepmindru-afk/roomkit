@@ -827,6 +827,7 @@ class HelpersMixin:
         recent_limit: int | None = None,
         carrying: RoomContext | None = None,
         reads_history: bool = False,
+        read: bool = False,
     ) -> RoomContext:
         """Build a RoomContext for the given room.
 
@@ -859,7 +860,9 @@ class HelpersMixin:
         Runs whole under the framework's resource lease: it is store reads and
         nothing else, and ``close()`` promises not to release the store while
         an operation it was given is still in flight — a context built for a
-        hook announcement is one of the reads that promise covers.
+        hook announcement is one of the reads that promise covers. *read*
+        says one of the kit's reads builds it: after the close, it reads the
+        store while the store is open (RFC §12.10.4).
 
         "Store reads and nothing else" is also what lets the reads share one
         connection (``store.connection()``): the recent-events limit is derived
@@ -871,7 +874,7 @@ class HelpersMixin:
         room's ON_STATUS_POSTED hooks (RFC §19.8).
         """
         await self._ensure_status_bus_subscribed()
-        with self._resource_lease():
+        with self._resource_lease(read=read):
             async with self._store.connection():
                 room, bindings, participants = await self._store.load_room_context(room_id)
                 if room is None:

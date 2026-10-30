@@ -43,7 +43,7 @@ from roomkit.channels.agent import Agent
 from roomkit.core.task_utils import hold_task, run_to_its_end
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory
+from roomkit.models.enums import ChannelCategory, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.room import RoomTimers
@@ -57,6 +57,7 @@ from roomkit.providers.ai.base import (
     StreamTextDelta,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
 from roomkit.tasks.posting import send_posted
@@ -307,24 +308,81 @@ class _SlowCursor(InMemoryStore):
         return await super().get_delivered_index(room_id)
 
 
+def _recording(store: type[ConversationStore]) -> type[ConversationStore]:
+    """*store*, recording each row it commits, and whether the kit had
+    released it then (its ``close()`` called: nothing is written after)."""
+
+    class Recording(store):  # type: ignore[valid-type, misc]
+        def __init__(self, *args: Any) -> None:
+            super().__init__(*args)
+            self.released = False
+            self.commits: list[tuple[EventType, bool, Any]] = []
+
+        async def commit_event(self, room_id: str, event: RoomEvent, **kw: Any) -> RoomEvent:
+            stored = await super().commit_event(room_id, event, **kw)
+            error = getattr(event.content, "error", None)
+            self.commits.append((event.type, self.released, error))
+            return stored
+
+        async def close(self) -> None:
+            self.released = True
+            await super().close()
+
+    return Recording
+
+
+class _HoldsForEver(SimpleChannel):
+    """A transport whose send of ``hold`` never ends: the room's lane busy."""
+
+    def __init__(self, channel_id: str) -> None:
+        super().__init__(channel_id)
+        self.holding = asyncio.Event()
+
+    async def deliver(self, event: RoomEvent, binding: Any, context: Any) -> Any:
+        if getattr(event.content, "body", "") == "hold":
+            self.holding.set()
+            await asyncio.Event().wait()
+        return await super().deliver(event, binding, context)
+
+
 @pytest.mark.in_process(
     "the kit closes from a tool in its own turn: an executor elsewhere holds no kit"
 )
-@pytest.mark.parametrize("store", ["slow-cursor", "sqlite"])
-async def test_a_close_from_a_tool_whose_lane_is_busy_returns(store: str, tmp_path: Any) -> None:
-    """A tool closes the kit while its turn's rows still wait in the room's
-    lane: the close spares the lane's work the tool runs under, so the
-    tool's close returns, and the call reads its cut, ``kit_closed``, never
-    that cut as its error (RMK-1030)."""
-    kit = RoomKit(
-        store=_SlowCursor() if store == "slow-cursor" else SQLiteStore(tmp_path / "r.db")
-    )
+@pytest.mark.parametrize("how", ["itself", "from-a-task"])
+@pytest.mark.parametrize("lane", ["idle", "busy"])
+@pytest.mark.parametrize("store", ["memory", "slow-cursor", "sqlite"])
+async def test_a_tool_closing_the_kit_gets_its_end_row_before_the_close_returns(
+    store: str,
+    lane: str,
+    how: str,
+    tmp_path: Any,
+    close_grace: float,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A tool closes the kit from its own turn, or from a task it starts and
+    awaits, its room's lane idle or busy: the close cuts that turn as any
+    other, the open call's end row is stored before the kit releases its
+    store, nothing is written after, no error is logged, and the call reads
+    its cut, ``kit_closed``, never that cut as its error (RMK-1030)."""
+    if store == "sqlite":
+        recording: Any = _recording(SQLiteStore)(tmp_path / "r.db")
+    else:
+        recording = _recording(_SlowCursor if store == "slow-cursor" else InMemoryStore)()
+    kit = RoomKit(store=recording)
+    holds = _HoldsForEver("ws")
     ended = asyncio.Event()
     steps: list[str] = []
+    held: list[asyncio.Future[Any]] = []
 
     async def shutdown(name: str, arguments: dict[str, Any]) -> str:
+        if lane == "busy":
+            message = InboundMessage(
+                channel_id="sms", sender_id="u", content=TextContent(body="hold")
+            )
+            held.append(asyncio.ensure_future(kit.process_inbound(message, room_id="r")))
+            await holds.holding.wait()
         try:
-            await kit.close()
+            await (kit.close() if how == "itself" else asyncio.create_task(kit.close()))
             steps.append("closed")
         except BaseException as error:
             steps.append(type(error).__name__)
@@ -346,16 +404,28 @@ async def test_a_close_from_a_tool_whose_lane_is_busy_returns(store: str, tmp_pa
     )
     kit.register_channel(Agent("agent", provider=provider, tools=[tool], tool_handler=shutdown))
     kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(holds)
     await kit.create_room(room_id="r")
     await kit.attach_channel("r", "sms")
+    await kit.attach_channel("r", "ws")
     await kit.attach_channel("r", "agent", category=ChannelCategory.INTELLIGENCE)
     message = InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Go."))
 
-    result = await asyncio.wait_for(kit.process_inbound(message, room_id="r"), 5)
-    await asyncio.wait_for(ended.wait(), 1)
+    with caplog.at_level(logging.WARNING, logger="roomkit"):
+        result = await asyncio.wait_for(kit.process_inbound(message, room_id="r"), 5)
+        await asyncio.wait_for(ended.wait(), 1)
+        await asyncio.wait_for(asyncio.gather(*held, return_exceptions=True), 1)
+        for _ in range(20):  # what the tool's turn does once it resumed
+            await asyncio.sleep(0)
 
-    assert steps == ["closed"]
+    # The tool's own close returns; a tool whose task the close cut (one
+    # awaiting a close it started) sees its cut.
+    assert steps == ["closed"] or (how == "from-a-task" and steps == ["CancelledError"])
     assert (result.cancellation_reason, result.error) == ("kit_closed", None)
+    ends = [row for row in recording.commits if row[0] == EventType.TOOL_CALL_END]
+    assert ends == [(EventType.TOOL_CALL_END, False, "kit_closed")]
+    assert [kind for kind, after, _ in recording.commits if after] == []
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
 
 
 # -- a close from a delivery, a session's end, an announcement -----------------

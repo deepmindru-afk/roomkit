@@ -345,6 +345,8 @@ class TestTheKitsClose:
         caller = asyncio.create_task(kit.process_inbound(_msg("first"), room_id="r1"))
         await _cancelled_while(caller, store.written)
         closing = asyncio.ensure_future(kit.close())
+        await asyncio.sleep(0)
+        assert not closing.done()  # it gives the commit in flight its grace
         store.answer.set()
         await asyncio.wait_for(closing, 1)
 

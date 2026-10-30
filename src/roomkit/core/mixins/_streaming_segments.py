@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from roomkit.channels._tool_event_result import tool_event_payload
+from roomkit.core._closing import KIT_CLOSED, ended_by_close
 from roomkit.core._instructions import response_metadata
 from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core.event_router import stream_record
@@ -350,9 +351,11 @@ class SegmentWriter:
 
         A running tool is aborted, with the cancellation's *reason*, and its
         call closed ``failed``, so no start row stays pending (RFC §12.2 step
-        13s).
+        13s): its error ``kit_closed`` when the kit's close cut it (RFC
+        §12.10.4), else ``cancelled``.
         """
-        await self.close_calls(await reader.abandon(reason=reason))
+        error = KIT_CLOSED if reason == KIT_CLOSED else "cancelled"
+        await self.close_calls(await reader.abandon(error, reason=reason))
         self.end_stopped()
         await self.flush_text(cancelled=True)
         # Text already written at a call's boundary carries no record of its
@@ -542,6 +545,9 @@ class SegmentWriter:
 
     def _log_orphan_failure(self, task: asyncio.Task[RoomEvent | None]) -> None:
         if not task.cancelled() and (exc := task.exception()) is not None:
+            if ended_by_close(self._kit, exc):
+                logger.debug("Streamed row of room %s not written: the kit closed", self._room_id)
+                return
             logger.error(
                 "Streamed row write failed after its read was cancelled (room %s)",
                 self._room_id,

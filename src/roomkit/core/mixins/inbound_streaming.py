@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
+from roomkit.core._closing import ended_by_close
 from roomkit.core._failure_log import log_failure
 from roomkit.core._reentrance import delivering
 from roomkit.core._room_turns import stop_turn, until_turn_starts
@@ -384,8 +385,13 @@ class InboundStreamingMixin(HelpersMixin):
         correlation_id: str,
         caller_logs: bool = False,
     ) -> None:
-        """Log a response stream's failure once, then fire ON_ERROR as its source."""
+        """Log a response stream's failure once, then fire ON_ERROR as its
+        source; a failure that is the kit's own close is expected, and only
+        noted at debug (RFC §12.10.4)."""
         room_id = context.room.id
+        if ended_by_close(self, exc):
+            logger.debug("%s ended as the kit closed: %s", what, exc)
+            return
         log_failure(
             logger,
             exc,

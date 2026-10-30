@@ -115,6 +115,10 @@ class ExecutorTurn:
         self._work: asyncio.Task[Any] | None = None
         self._built: Channel | None = None
         self._spared = False
+        # A spared turn its owner cut: the owner was told it ended, and
+        # hears nothing more of it (RFC §12.10.4).
+        self._let_go = False
+        self._letting_go: asyncio.Future[None] | None = None
         self._mark: dict[str, Any] | None = None
         # Every frame goes in order, the stream's text deltas by burst.
         self._frames = FrameSender(link.send)
@@ -368,7 +372,7 @@ class ExecutorTurn:
     async def _send(self, frame: Frame) -> int:
         """Send *frame*; one that cannot cross is refused to the owner as an
         error naming it. An owner lost hears nothing more."""
-        if self._cut == "owner_lost":
+        if self._cut == "owner_lost" or self._let_go:
             return 0
         try:
             return await self._frames.send(frame)
@@ -445,6 +449,8 @@ class ExecutorTurn:
                 self._cut_read()
         elif isinstance(message, Cancel):
             self._cut_turn(message.reason)
+            if self._spared:
+                await self._let_owner_go()
         elif isinstance(message, ToolResult | HostResult):
             self._calls.resolve(message)
         elif isinstance(message, InputAnswer):
@@ -472,8 +478,23 @@ class ExecutorTurn:
 
     def spare(self) -> None:
         """Let the turn's work run on whatever ends its link: a close called
-        from inside this turn must not cut the turn it runs under."""
+        from inside this turn must not cut the turn it runs under. One cut
+        already ends for its owner now (:meth:`_let_owner_go`)."""
         self._spared = True
+        if self._cut is not None and not self._let_go and self._letting_go is None:
+            self._letting_go = asyncio.ensure_future(self._let_owner_go())
+
+    async def _let_owner_go(self) -> None:
+        """Tell the owner the turn ended, once, and nothing after: its work
+        runs the kit's close that cut the turn, and ends only once that close
+        returned, which waits for the owner (RFC §12.10.4)."""
+        if self._let_go:
+            return
+        self._let_go = True
+        try:
+            await self._frames.send(End())
+        except Exception:  # noqa: BLE001 - an owner gone needs no end
+            logger.debug("Turn %s: its owner is gone", self._request.turn_id)
 
     def _cut_turn(self, reason: str) -> None:
         """Cut the turn: its work is cancelled once, so a later cut never

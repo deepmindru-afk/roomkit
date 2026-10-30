@@ -30,6 +30,7 @@ class SourceOpsHost(Protocol):
 
     _sources: dict[str, SourceProvider]
     _source_tasks: dict[str, asyncio.Task[None]]
+    _closed: bool
 
     async def process_inbound(
         self,
@@ -49,6 +50,7 @@ class SourceOpsMixin(HelpersMixin):
 
     _sources: dict[str, SourceProvider]
     _source_tasks: dict[str, asyncio.Task[None]]
+    _closed: bool
 
     # Stub for cross-mixin call — implemented by InboundMixin in the MRO.
     async def process_inbound(
@@ -173,11 +175,12 @@ class SourceOpsMixin(HelpersMixin):
         if source is None:
             raise SourceNotFoundError(f"No source attached to channel {channel_id}")
 
-        # Stop the source
-        await source.stop()
-
-        # Cancel the runner task and await its completion
-        await cancel_and_wait(task, log_errors_to=logging.getLogger("roomkit.sources"))
+        try:
+            await source.stop()
+        finally:
+            # The runner task ends whatever the source's stop() does: one the
+            # kit's close cut once its grace ran out included (RFC §12.10.4).
+            await cancel_and_wait(task, log_errors_to=logging.getLogger("roomkit.sources"))
 
         # Both names, as in ``attach_source``.
         await self._emit_framework_event(
@@ -224,6 +227,11 @@ class SourceOpsMixin(HelpersMixin):
                 logger.debug("Source %s cancelled", source.name)
                 raise
             except Exception as e:
+                if self._closed:
+                    # A closing kit refuses what the source sends, and
+                    # restarts nothing (RFC §12.10.4).
+                    logger.debug("Source %s ended as the kit closes: %s", source.name, e)
+                    break
                 attempt += 1
                 logger.exception("Source %s failed (attempt %d): %s", source.name, attempt, e)
                 await self._emit_framework_event(
@@ -261,6 +269,8 @@ class SourceOpsMixin(HelpersMixin):
                     f"/{max_restart_attempts}" if max_restart_attempts else "",
                 )
                 await asyncio.sleep(current_delay)
+                if self._closed:
+                    break
 
                 # Exponential backoff: double delay, cap at max
                 current_delay = min(current_delay * 2, max_restart_delay)

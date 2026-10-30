@@ -115,13 +115,13 @@ class RegenerateMixin(HelpersMixin):
         """
         if organization_id is not None:
             await self.get_room(room_id, organization_id=organization_id)
-        context, found = await self._regenerate_target(room_id)
+        context, found = await self._regenerate_target(room_id, read=True)
         if context.room.status in _REFUSING_STATUSES:
             raise RoomClosedError(f"Room {room_id} does not accept new events")
         return found[0] if found is not None else None
 
     async def _regenerate_target(
-        self, room_id: str
+        self, room_id: str, *, read: bool = False
     ) -> tuple[RoomContext, tuple[RoomEvent, ChannelBinding] | None]:
         """The event a regenerate re-runs the agent on, with the binding that
         wrote it, and the context it was found in.
@@ -138,9 +138,10 @@ class RegenerateMixin(HelpersMixin):
 
         Returns ``(context, None)`` when nothing qualifies. The context comes
         back because the status gate reads it, and because building it is the
-        expensive half of the call.
+        expensive half of the call. *read* says :meth:`regenerate_target`,
+        a read, asks (RFC §12.10.4).
         """
-        context = await self._build_context(room_id, reads_history=True)
+        context = await self._build_context(room_id, reads_history=True, read=read)
         transports = {
             b.channel_id: b for b in context.bindings if b.category == ChannelCategory.TRANSPORT
         }

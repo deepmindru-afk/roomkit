@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import inspect
 import logging
@@ -272,6 +273,39 @@ async def cancel_and_wait(
         (log_errors_to or logger).debug(
             "Task failed before its cancellation: %s", error, exc_info=error
         )
+
+
+_CLOSE_CALLERS: weakref.WeakSet[asyncio.Task[Any]] = weakref.WeakSet()
+"""The tasks a kit's ``close()`` is called from, until it returns."""
+
+
+def calling_close() -> contextlib.AbstractContextManager[None]:
+    """Around a kit's ``close()``: the calling task is one a turn that ends,
+    or a channel that closes, never cuts (RFC §12.10.4): cutting it would
+    cut the close."""
+    return _CallingClose(asyncio.current_task())
+
+
+class _CallingClose:
+    __slots__ = ("_first", "_task")
+
+    def __init__(self, task: asyncio.Task[Any] | None) -> None:
+        self._task = task
+        self._first = False
+
+    def __enter__(self) -> None:
+        if self._task is not None and self._task not in _CLOSE_CALLERS:
+            self._first = True
+            _CLOSE_CALLERS.add(self._task)
+
+    def __exit__(self, *exc: object) -> None:
+        if self._first and self._task is not None:
+            _CLOSE_CALLERS.discard(self._task)
+
+
+def close_callers() -> set[asyncio.Task[Any]]:
+    """The tasks waiting for a kit's ``close()`` they called (:func:`calling_close`)."""
+    return set(_CLOSE_CALLERS)
 
 
 _HELD_RUNS: contextvars.ContextVar[tuple[list[asyncio.Task[Any]], ...]] = contextvars.ContextVar(

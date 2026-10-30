@@ -8,6 +8,7 @@ kit's own executor is served on first use.
 from __future__ import annotations
 
 import asyncio
+import logging
 import weakref
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
@@ -17,7 +18,8 @@ from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
 from roomkit.channels.declared import DeclaredChannel
-from roomkit.core.task_utils import acting_tasks
+from roomkit.core import task_utils
+from roomkit.core.task_utils import acting_tasks, close_callers
 from roomkit.core.visibility import answers_reach
 from roomkit.models.enums import Visibility
 from roomkit.models.steering import Cancel as SteeringCancel
@@ -57,6 +59,8 @@ if TYPE_CHECKING:
         RoomCall,
         RoomPublication,
     )
+
+logger = logging.getLogger("roomkit.turns")
 
 
 def turn_request(
@@ -426,21 +430,30 @@ class TurnClient(RoomOwner):
 
     async def close(self) -> None:
         """Close the own executor, which cuts its turns, stop holding every
-        turn still open (a stream nobody read), wait for the calls its turns
-        made to end (but the one running this close), then close the backend.
+        turn still open (a stream nobody read), cut the calls its turns made
+        (but the one running this close) and wait for them to end, at most
+        the kit's unwind, then close the backend. A call still running then,
+        ignoring its cut, is named in the log and abandoned (RFC §12.10.4).
         Work of a turn that reaches it after this is refused."""
         self._closed = True
         if self.executor is not None:
             await self.executor.close()
         for turn in list(self._open):
             turn.abandon()
-        acting = acting_tasks()
+        acting = acting_tasks() | close_callers()
         calls = [task for task in self._calls if task not in acting]
         for task in calls:
             if not task.cancelling():
                 # One already cancelled is let finish its cleanup.
                 task.cancel()
-        await asyncio.gather(*calls, return_exceptions=True)
+        if calls:
+            _, left = await asyncio.wait(calls, timeout=task_utils.CUT_UNWIND_S)
+            if left:
+                logger.warning(
+                    "Closing the turn backend with %d call(s) still running after their cut: %s",
+                    len(left),
+                    ", ".join(sorted(task.get_name() for task in left)),
+                )
         self._started.clear()
         await self.backend.close()
 

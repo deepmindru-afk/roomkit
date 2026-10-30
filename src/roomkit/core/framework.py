@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import contextvars
 import functools
 import inspect
 import logging
+import weakref
 from collections.abc import Awaitable, Callable, Coroutine, Generator, Iterable, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -105,6 +105,8 @@ from roomkit.core.task_utils import (
     CLOSE_GRACE_S,
     CUT_UNWIND_S,
     Callers,
+    acting_tasks,
+    calling_close,
     cut_once_started,
     held_runs,
     spared_by_close,
@@ -440,6 +442,8 @@ class RoomKit(
         self._shutdown_callers = Callers()
         # The shutdown's stop of the kit's own work, within its grace.
         self._stopping: asyncio.Task[None] | None = None
+        # The work the close abandoned, ignoring its cut: named once.
+        self._abandoned: weakref.WeakSet[asyncio.Task[Any]] = weakref.WeakSet()
         self._hook_engine = HookEngine()
         # A hook on a trigger a turn fires registered on the kit is its own
         # executor's (RFC §10.6.6).
@@ -877,7 +881,11 @@ class RoomKit(
             *self._cascades.running(),
             *(() if self._stopping is None else (self._stopping,)),
         }
-        return {task for task in work if not task.done()} - spared_by_close()
+        # A turn the close cut ends without waiting for the close, the one a
+        # close's own call runs in included: its end is waited for.
+        return ({task for task in work if not task.done()} - spared_by_close()) | (
+            self._cascades.unwinding() - acting_tasks()
+        )
 
     def _cut_running_work(self) -> set[asyncio.Task[Any]]:
         """Cut the kit's work still running, but what the current close runs
@@ -899,6 +907,13 @@ class RoomKit(
         task.add_done_callback(self._pending_hook_tasks.discard)
         self._pending_hook_tasks.add(task)
 
+    def _spare_turns_run_under(self) -> None:
+        """The turns the closing call runs in, on this kit's own executor:
+        cut, they end for their owner at once, while the call runs on."""
+        executor = self._turns.executor
+        if executor is not None:
+            executor._spare_turns_run_under()
+
     def _close_spared(self) -> set[asyncio.Task[Any]]:
         """The work every ``close()`` the shutdown answers is called from:
         the tasks each runs as and the kit-held runs each runs under, read
@@ -913,10 +928,13 @@ class RoomKit(
         background runs, the verification timers."""
         spared = self._close_spared()
         self._door_runs.cut_waiting(spared)
-        # Every delivery's turns first, then the queued deliveries: a drop
-        # spares the turn work the close is called from as the cut does.
-        self._cascades.cut(spared)
-        self._lanes.seal(spared=self._close_spared)
+        # Every model turn, the one a close's own call runs in included: the
+        # call itself, the task the close runs as, runs on (RFC §12.10.4).
+        self._spare_turns_run_under()
+        self._cascades.cut(set(self._shutdown_callers.acting))
+        # Then the queued deliveries: a drop cancels nothing of a cut cascade
+        # again, so what the cut spared stays spared.
+        self._lanes.seal()
         self._cancel_verification_timers()
         for run in set(self._background_runs) - spared:
             cut_once_started(run)
@@ -928,11 +946,14 @@ class RoomKit(
         the log and abandoned (RFC §12.10.4)."""
         timeout = until - asyncio.get_running_loop().time()
         left = await wait_for_unspared(self._cut_running_work, timeout=timeout)
-        if left:
+        # Each named once, at the first unwind it outlasts.
+        named = {task for task in left if isinstance(task, asyncio.Task)} - set(self._abandoned)
+        if named:
+            self._abandoned.update(named)
             logger.warning(
                 "Closing with %d task(s) still running after their cut: %s",
-                len(left),
-                ", ".join(sorted(t.get_name() for t in left if isinstance(t, asyncio.Task))),
+                len(named),
+                ", ".join(sorted(task.get_name() for task in named)),
             )
 
     async def close(self) -> None:
@@ -965,11 +986,11 @@ class RoomKit(
         What their closes started is cut at once. Then the framework waits
         for the operations the store and the lock manager already have
         (each runs under a resource lease), within the last unwind, seals
-        both, and releases them. Nothing the kit takes is written or
-        delivered after close() returns: it takes the grace plus the
-        channels' closes, and at most :data:`CUT_UNWIND_S` more, twice, for
-        cut work that ignores its cancellation, abandoned then and named in
-        the log.
+        both, and releases them. Nothing is written or delivered after
+        close() returns by work that honours its cut: it takes the grace,
+        plus the channels' and the kit's own backends' closes, plus at most
+        :data:`CUT_UNWIND_S` more, twice, for cut work that ignores its
+        cancellation, abandoned then and named in the log once.
 
         Raises:
             ExceptionGroup: one or more channels failed to close. Raised only
@@ -996,6 +1017,11 @@ class RoomKit(
         started the shutdown or joined one under way; a call from the
         shutdown's own work (a hook it fires) returns at once.
         """
+        with calling_close():
+            await self._close_kit()
+
+    async def _close_kit(self) -> None:
+        """:meth:`close`, its calling task marked as calling it."""
         if self._shutdown is None:
             self._closed = True
             # Counted among the callers first: what the close cuts at once
@@ -1008,8 +1034,9 @@ class RoomKit(
             return
         else:
             # Its work is spared from now on, where the shutdown already
-            # waits for it included.
+            # waits for it included: the turn its call runs in, cut, ends.
             self._shutdown_callers.join()
+            self._spare_turns_run_under()
         await _await_shutdown(self._shutdown)
 
     async def _shut_down(self) -> None:
@@ -1053,22 +1080,28 @@ class RoomKit(
     async def _stop_kit_work(self) -> None:
         """Stop the kit's own work while the channels it uses are still open:
         recordings, greeting gates, the delivery backend, discussions,
-        delegations, sources."""
-        # Stop room-level media recorders before channels close (RFC §12.11)
-        await self._close_room_recorders()
+        delegations, sources. The steps run side by side within the close's
+        one grace (RFC §12.10.4): one that waits on integrator code (a
+        source's ``stop()``, a delegation's ``on_complete``) holds no other
+        back, and the close's cut cuts every one still running."""
         # Clear stale greeting gates
         for room_id in list(self._greeting_gates):
             self._force_clear_greeting_gate(room_id)
-        # Stop delivery backend worker loop
+        steps: dict[str, Coroutine[Any, Any, None]] = {
+            # Room-level media recorders stop before channels close (RFC §12.11)
+            "room recorders": self._close_room_recorders(),
+            # The discussions' turns, their queues kept (RFC §19.7.5 rule 16)
+            "discussions": self._stop_discussions(),
+            "delegated tasks": self._task_runner.close(),
+        }
         if self._delivery_backend is not None:
-            await self._delivery_backend.close()
-        # Stop the discussions' turns, their queues kept (RFC §19.7.5 rule
-        # 16), then the delegated tasks.
-        await self._stop_discussions()
-        await self._task_runner.close()
-        # Stop all event sources
-        for channel_id in list(self._sources.keys()):
-            await self._detach_source(channel_id)
+            steps["delivery backend"] = self._delivery_backend.close()
+        for channel_id in list(self._sources):
+            steps[f"source {channel_id}"] = self._detach_source(channel_id)
+        outcomes = await asyncio.gather(*steps.values(), return_exceptions=True)
+        for step, outcome in zip(steps, outcomes, strict=True):
+            if isinstance(outcome, Exception):
+                logger.error("Stopping the %s failed as the kit closed", step, exc_info=outcome)
 
     async def _close_channels(self) -> list[Exception]:
         """Close every channel, one at a time and shielded from one another;
@@ -1119,7 +1152,7 @@ class RoomKit(
         self._telemetry.close()
 
     @contextlib.contextmanager
-    def _resource_lease(self) -> Generator[None, None, None]:
+    def _resource_lease(self, *, read: bool = False) -> Generator[None, None, None]:
         """Hold the store and the lock manager open across one operation.
 
         Taken by a channel around work those resources have already been
@@ -1138,11 +1171,12 @@ class RoomKit(
         at all — there is nothing for the shutdown to wait for — and resume
         after the store has been released, asking for a lease as its first
         act. Granting one then would be a use-after-free with a registration
-        on it; the seal turns it into an error that says what happened. A
-        read is the exception: the store answers it after the close while
-        it is open, and refuses it once released (RFC §12.10.4).
+        on it; the seal turns it into an error that says what happened. One
+        of the kit's reads (*read*) is the exception: the store answers it
+        after the close while it is open, and refuses it once released (RFC
+        §12.10.4). It asks so itself: work a read starts is no read.
         """
-        if self._resource_leases_sealed and _reading.get():
+        if self._resource_leases_sealed and read:
             yield
             return
         if self._resource_leases_sealed:
@@ -2009,14 +2043,15 @@ class RoomKit(
 
 # -- Admission (RFC §12.10.4) --
 #
-# Once close() starts, the kit's calls fall in three classes: the reads work
-# (the store the kit closed refuses them once released), the teardown calls
-# return without doing anything (the close tears everything down), and every
-# other call is refused, whoever makes it: an outside caller, or the kit's own
-# work still running (a hook, a tool, a channel's close). A call taken before
-# runs as a call the close cuts (core._closing.DoorRuns). The classes are put
-# on each public call here, in one place, rather than repeated at the top of
-# each; the framework's own steps call the private bodies.
+# Once close() starts, the kit's calls fall in three classes, coroutines and
+# synchronous calls alike: the reads work (the store the kit closed refuses
+# them once released), the teardown calls return without doing anything (the
+# close tears everything down), and every other call is refused, whoever makes
+# it: an outside caller, or the kit's own work still running (a hook, a tool,
+# a channel's close). A call taken before runs as a call the close cuts
+# (core._closing.DoorRuns). The classes are put on each public call here, in
+# one place, rather than repeated at the top of each; the framework's own
+# steps call the private bodies.
 
 _READS = frozenset(
     {
@@ -2078,7 +2113,24 @@ started like any other: they are not cut as running work, since what they
 wait for is cut, and ends them; one waiting for the very work that closes
 the kit (a delegation whose tool closes it) would hold the close its grace."""
 
-_TAKEN_WHILE_CLOSING = frozenset({"close", *_READS, *_TEARDOWN})
+_SYNC_READS = frozenset(
+    {
+        "get_channel",
+        "hooks_for",
+        "identity_enabled_for",
+        "list_channels",
+        "list_sources",
+        "room_strategy",
+        "speak_queue",
+    }
+)
+"""The synchronous reads: they answer during the close and after it."""
+
+_SYNC_TEARDOWN: dict[str, Any] = {"unsubscribe_websocket": None}
+"""The synchronous teardown calls, each with what it returns, doing nothing,
+once the close started."""
+
+_TAKEN_WHILE_CLOSING = frozenset({"close", *_READS, *_TEARDOWN, *_SYNC_READS, *_SYNC_TEARDOWN})
 """The calls a closing kit does not refuse: a close joins the shutdown."""
 
 _CUT_RESULTS: dict[str, Callable[[KitClosedError], Any]] = {
@@ -2119,11 +2171,6 @@ def _work_refused_once_closed(
     return call
 
 
-_reading: contextvars.ContextVar[bool] = contextvars.ContextVar("roomkit_kit_read", default=False)
-"""Set while one of the kit's reads runs: after the close, it reads the
-store while the store is open, the resource leases sealed or not."""
-
-
 def _read_while_open(
     name: str, method: Callable[..., Awaitable[Any]]
 ) -> Callable[..., Awaitable[Any]]:
@@ -2133,15 +2180,12 @@ def _read_while_open(
 
     @functools.wraps(method)
     async def call(kit: RoomKit, /, *args: Any, **kwargs: Any) -> Any:
-        token = _reading.set(True)
         try:
             return await method(kit, *args, **kwargs)
         except RuntimeError as error:
             if not kit._store_released:
                 raise
             raise KitClosedError(f"The kit closed its store: {name}() reads nothing") from error
-        finally:
-            _reading.reset(token)
 
     return call
 
@@ -2161,10 +2205,25 @@ def _quiet_once_closed(
     return call
 
 
+def _quiet_once_closed_sync(
+    name: str, method: Callable[..., Any], value: Any
+) -> Callable[..., Any]:
+    """The synchronous teardown call *name* (*method*), returning *value*
+    without doing anything once the kit's close started."""
+
+    @functools.wraps(method)
+    def call(kit: RoomKit, /, *args: Any, **kwargs: Any) -> Any:
+        if kit._closed:
+            return value
+        return method(kit, *args, **kwargs)
+
+    return call
+
+
 def _refused_once_closed_sync(name: str, method: Callable[..., Any]) -> Callable[..., Any]:
-    """The call *name* (*method*), which changes the channels a closing kit
-    closes, refused with :class:`KitClosedError` once the kit's close
-    started."""
+    """The synchronous call *name* (*method*) (a channel's registration, a
+    hook's, a WebSocket's subscription), refused with
+    :class:`KitClosedError` once the kit's close started."""
 
     @functools.wraps(method)
     def call(kit: RoomKit, /, *args: Any, **kwargs: Any) -> Any:
@@ -2184,6 +2243,11 @@ for _name, _call in inspect.getmembers(RoomKit, inspect.iscoroutinefunction):
         setattr(RoomKit, _name, _quiet_once_closed(_name, _call, _TEARDOWN[_name]))
     else:
         setattr(RoomKit, _name, _work_refused_once_closed(_name, _call))
-for _name in ("register_channel", "unregister_channel"):
-    setattr(RoomKit, _name, _refused_once_closed_sync(_name, getattr(RoomKit, _name)))
+for _name, _call in inspect.getmembers(RoomKit, inspect.isfunction):
+    if _name.startswith("_") or inspect.iscoroutinefunction(_call) or _name in _SYNC_READS:
+        continue
+    if _name in _SYNC_TEARDOWN:
+        setattr(RoomKit, _name, _quiet_once_closed_sync(_name, _call, _SYNC_TEARDOWN[_name]))
+    else:
+        setattr(RoomKit, _name, _refused_once_closed_sync(_name, _call))
 del _name, _call
