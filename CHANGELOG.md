@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A tool call's intent: the sentence the model writes for the person with
+  each call** (RFC 6.4, RMK-1040). `AIChannel(..., tool_call_intents=True)`
+  shows each tool's schema with the optional `_roomkit_intent` property; the
+  tool loop takes it out of the call's arguments before the gate and carries
+  it, normalized, as `intent` on `ToolCallEvent`, on the `TOOL_CALL_START` and
+  `TOOL_CALL_END` ephemeral events and on `ToolCallContent`.
+  - The handler, `BEFORE_TOOL_USE` and the schema check see the tool's own
+    arguments: a closed schema no longer refuses the call over the property.
+  - A missing or unusable intent is `None` and never fails a call; a tool
+    whose schema declares the property keeps it as its argument.
+  - Off by default: schemas, arguments, events and rows are unchanged. A row
+    or a turn frame carries `intent` only when it has one.
+  - `AIToolCall` and `StreamToolCall` gain `intent`. Realtime sessions, ACP
+    agents and provider-served calls carry none.
+
 - **`KitClosedError` and `ShutdownCancelledError`, both `RoomKitError`s**
   (RFC 12.10.4, RMK-1030).
   - `KitClosedError` is what a closing kit raises to a call that writes or
