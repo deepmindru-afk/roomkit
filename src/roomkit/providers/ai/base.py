@@ -115,9 +115,9 @@ class AIToolCall(BaseModel):
     which (RFC §6.4)."""
     intent: str | None = None
     """What the call does, in a sentence the model wrote for the person: the
-    tool loop sets it on a call it serves, taken out of the arguments, with
-    the agent's ``tool_call_intents`` on (RFC §6.4); a provider leaves it
-    ``None``. Display text only."""
+    tool loop sets it when it takes the reserved property out of the call's
+    arguments, with the agent's ``tool_call_intents`` on (RFC §6.4); a
+    provider leaves it ``None``. Display text only."""
 
 
 class AIToolCallPart(BaseModel):

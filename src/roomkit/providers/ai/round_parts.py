@@ -44,9 +44,9 @@ class _Call:
 
 
 def call_part(call: RoundCall) -> AIToolCallPart:
-    """The history part of a call as the model wrote it: its intent back in
-    its arguments when it has one (RFC §6.4), its metadata (a thought
-    signature) kept."""
+    """The history part of a call: its intent, as normalized, back among its
+    arguments when it has one (RFC §6.4), its metadata (a thought signature)
+    kept."""
     return AIToolCallPart(
         id=call.id,
         name=call.name,

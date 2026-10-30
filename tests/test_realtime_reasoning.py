@@ -758,6 +758,37 @@ class TestAgentReasoningBackend:
         assert result.is_error
         assert "outside business hours" in result.result
 
+    async def test_an_agent_with_intents_hands_the_session_its_tool_s_arguments(
+        self,
+    ) -> None:
+        """Its model is shown the intent's property and its loop takes it out,
+        but the session's door takes a name and arguments: the call's report
+        there carries no intent (RFC §6.4)."""
+        handed: list[tuple[str, dict[str, Any]]] = []
+
+        async def execute(name: str, arguments: dict[str, Any]) -> ToolCallResult:
+            handed.append((name, dict(arguments)))
+            return ToolCallResult('{"status": "on time"}')
+
+        call = {"flight": "UA482", "_roomkit_intent": "Je vérifie le vol."}
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="", tool_calls=[AIToolCall(id="c1", name="lookup", arguments=call)]
+                ),
+                AIResponse(content="UA482 is on time."),
+            ]
+        )
+        backend = AgentReasoningBackend(
+            AIChannel("reasoner", provider=provider, tool_call_intents=True)
+        )
+
+        _ = [o async for o in backend.run(self._request(execute))]
+
+        shown = next(tool for tool in provider.calls[0].tools if tool.name == "lookup")
+        assert "_roomkit_intent" in shown.parameters["properties"]
+        assert handed == [("lookup", {"flight": "UA482"})]
+
     async def test_a_turn_cut_by_its_deadline_has_no_answer(self) -> None:
         """The loop's own bounds hold: its deadline ends the turn, which
         fails for the channel to answer (RFC §6.4)."""
