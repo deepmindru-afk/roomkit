@@ -136,6 +136,9 @@ class _StreamRound:
     text_coalescer: _TextCoalescer | None = None
     prefix: str = ""
     external_tools: _ExternalStreamTools | None = None
+    # A call the loop serves, its intent taken out of its arguments, when
+    # the agent asks its model for one (RFC §6.4).
+    take_intent: Callable[[StreamToolCall], StreamToolCall] | None = None
     state: _StreamRoundState = field(default_factory=_StreamRoundState, init=False)
     _composition: _ToolCallDeltaCoalescer = field(init=False)
     _dedup: _PrefixDeduplicator = field(init=False)
@@ -205,7 +208,10 @@ class _StreamRound:
         self.state.transcript.add_call(call.id)
         external = self.external_tools
         if external is None or not external.takes(call):
-            self.state.tool_calls.append(call)
+            # Only a call the loop serves itself: the provider's own were
+            # never shown the intent's property (RFC §6.4).
+            taken = call if self.take_intent is None else self.take_intent(call)
+            self.state.tool_calls.append(taken)
             return
         async with aclosing(external.stream_call(call, self.index)) as deltas:
             async for delta in deltas:

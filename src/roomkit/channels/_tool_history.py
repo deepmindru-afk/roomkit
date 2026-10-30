@@ -9,7 +9,8 @@ the participant asked, and models answer it (RMK-1023).
 
 A round replays what the model was given: the arguments it wrote (the start
 row's, never a BEFORE_TOOL_USE rewrite, which may hold the very value a hook
-kept from it) and the result it read. An oversized result's placeholder stays
+kept from it), its intent back among them while the agent asks for one, and
+the result it read. An oversized result's placeholder stays
 while the room still stores the result it points to, as the turn could read it
 back. Which calls are replayed is the tool memory's rule: an answer the tool
 gave, served, failed or withheld by a hook, never a refusal, a call nothing
@@ -28,6 +29,7 @@ from roomkit.channels._tool_eviction import eviction_placeholder_size, is_evicti
 from roomkit.models.enums import EventType, ToolCallOutcome
 from roomkit.models.event import RoomEvent, ToolCallContent
 from roomkit.providers.ai.base import AIMessage, AIToolCallPart, AIToolResultPart
+from roomkit.providers.ai.tool_intent import with_intent
 from roomkit.tools._outcome import kept_in_tool_memory
 
 REPLAYED_CALLS = 8
@@ -47,6 +49,7 @@ class _Call:
     tool_id: str
     name: str
     arguments: dict[str, Any]
+    intent: str | None = None
     result: str = ""
     evicted: bool = False
     is_error: bool = False
@@ -70,13 +73,15 @@ def tool_rounds(
     replayed: Callable[[str], bool],
     resolves: Callable[[str], bool],
     keep_chars: int,
+    intents: bool = False,
 ) -> list[ToolRound]:
     """*rows*, a channel's stored tool rows in a room oldest first, as the
     rounds its history replays.
 
     *replayed* says whether a call to a tool is work the agent did, *resolves*
     whether the room still stores the result an oversized result's placeholder
-    points to, and *keep_chars* how much of a result is replayed whole.
+    points to, *keep_chars* how much of a result is replayed whole, and
+    *intents* whether a call's intent goes back among its arguments.
     """
     rounds = _rounds(rows)
     kept = [call for calls in rounds for call in calls if _kept(call, replayed)]
@@ -88,18 +93,26 @@ def tool_rounds(
     def result(call: _Call) -> str:
         return _shown_result(call, id(call) in whole, keep_chars, resolves)
 
+    def arguments(call: _Call) -> dict[str, Any]:
+        return with_intent(call.arguments, call.intent if intents else None)
+
     shown = ([call for call in calls if id(call) in chosen] for calls in rounds)
-    return [_round(calls, ids, result) for calls in shown if calls]
+    return [_round(calls, ids, result, arguments) for calls in shown if calls]
 
 
-def _round(calls: list[_Call], ids: dict[int, str], result: Callable[[_Call], str]) -> ToolRound:
+def _round(
+    calls: list[_Call],
+    ids: dict[int, str],
+    result: Callable[[_Call], str],
+    arguments: Callable[[_Call], dict[str, Any]],
+) -> ToolRound:
     """*calls*, one round's, as the assistant's calls then their results."""
     return ToolRound(
         index=calls[0].index,
         calls=AIMessage(
             role="assistant",
             content=[
-                AIToolCallPart(id=ids[id(c)], name=c.name, arguments=c.arguments) for c in calls
+                AIToolCallPart(id=ids[id(c)], name=c.name, arguments=arguments(c)) for c in calls
             ],
         ),
         results=AIMessage(
@@ -170,7 +183,7 @@ def _rounds(rows: list[RoomEvent]) -> list[list[_Call]]:
             continue
         key = (row.correlation_id, content.tool_id)
         if row.type == EventType.TOOL_CALL_START:
-            call = _Call(row.index, content.tool_id, content.tool_name, dict(content.arguments))
+            call = _started(row.index, content)
             if not opened or row.correlation_id != last_start:
                 rounds.append([])
             rounds[-1].append(call)
@@ -187,6 +200,11 @@ def _rounds(rows: list[RoomEvent]) -> list[list[_Call]]:
         call.is_error = content.status == "failed"
         call.outcome = content.outcome
     return rounds
+
+
+def _started(index: int, start: ToolCallContent) -> _Call:
+    """The call a start row at timeline *index* opens."""
+    return _Call(index, start.tool_id, start.tool_name, dict(start.arguments), start.intent)
 
 
 def _kept(call: _Call, replayed: Callable[[str], bool]) -> bool:

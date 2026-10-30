@@ -216,6 +216,7 @@ class AIChannel(
         *,
         publish_text_deltas: bool = False,
         serialize_room_turns: bool = False,
+        tool_call_intents: bool = False,
     ) -> None:
         super().__init__(channel_id)
         # Whether the agent speaks on an event (RFC §6.4): none, it answers every one.
@@ -295,7 +296,7 @@ class AIChannel(
         self._tool_search_threshold_tokens = checked_threshold_tokens(tool_search_threshold_tokens)
         self._tool_search_miss_hint = tool_search_miss_hint
 
-        self._init_tool_surface(tool_handler, tools, human_input_handler)
+        self._init_tool_surface(tool_handler, tools, human_input_handler, tool_call_intents)
 
         # Active tool loops for steering (loop_id -> context)
         self._active_loops: dict[str, _ToolLoopContext] = {}
@@ -398,8 +399,12 @@ class AIChannel(
         tool_handler: ToolHandler | None,
         tools: list[AITool | Tool] | None,
         human_input_handler: HumanInputToolHandler | None,
+        tool_call_intents: bool,
     ) -> None:
         """The tools this channel declares and the handlers that serve them."""
+        # Whether its model writes each call's intent, for the person, in a
+        # property its tools' schemas are shown with (RFC §6.4).
+        self._tool_call_intents = tool_call_intents
         # The person's tools, which the channel serves itself, before the
         # host's handler, under their own timeout (RFC §9.3, §21.6).
         self._human_input = ChannelHumanInput(human_input_handler, self.channel_type)

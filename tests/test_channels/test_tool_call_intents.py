@@ -1,0 +1,365 @@
+"""A tool call's intent: the sentence an agent's model writes with a call for
+the person, carried apart from its arguments (RFC §6.4).
+
+With ``tool_call_intents`` on, the model is shown each tool's schema with the
+reserved ``_roomkit_intent`` property; the loop takes it out of the call's
+arguments before anything reads them and carries it as the call's ``intent``:
+on its hooks, its ephemeral START and END, its rows and its replays.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+from typing import Any
+
+import pytest
+
+from roomkit import (
+    ChannelCategory,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    InboundMessage,
+    RoomKit,
+    TextContent,
+    ToolCallEvent,
+)
+from roomkit.channels.ai import AIChannel
+from roomkit.models.enums import EventType
+from roomkit.models.event import ToolCallContent
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall, AIToolCallPart
+from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai.tool_intent import INTENT_MAX_CHARS, normalized_intent
+from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
+from tests.test_framework import SimpleChannel
+
+INTENT = "Je recherche les fichiers texte du projet."
+COMMAND = {"command": "find . -name '*.txt'"}
+_COMMAND_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"command": {"type": "string"}},
+    "required": ["command"],
+}
+SHELL = AITool(name="shell", description="Run a command", parameters=_COMMAND_SCHEMA)
+SHELL_CLOSED = AITool(
+    name="shell_closed",
+    description="Run a command",
+    parameters={**_COMMAND_SCHEMA, "additionalProperties": False},
+)
+
+
+def _calling(*calls: tuple[str, str, dict[str, Any]]) -> AIResponse:
+    return AIResponse(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[AIToolCall(id=i, name=n, arguments=a) for i, n, a in calls],
+    )
+
+
+def _with(intent: Any, **arguments: Any) -> dict[str, Any]:
+    return {**COMMAND, **arguments, "_roomkit_intent": intent}
+
+
+@dataclass
+class _Seen:
+    """What one turn showed: to the provider, the handler, the hooks, the
+    realtime bus and the store."""
+
+    provider: MockAIProvider
+    received: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    before: list[ToolCallEvent] = field(default_factory=list)
+    reported: list[ToolCallEvent] = field(default_factory=list)
+    ephemeral: list[EphemeralEvent] = field(default_factory=list)
+    rows: list[tuple[EventType, ToolCallContent]] = field(default_factory=list)
+
+    def shown(self, name: str) -> dict[str, Any]:
+        """The schema of tool *name* in the first request."""
+        return next(t.parameters for t in self.provider.calls[0].tools if t.name == name)
+
+    def payloads(self, kind: EphemeralEventType) -> list[dict[str, Any]]:
+        return [call for e in self.ephemeral if e.type == kind for call in e.data["tool_calls"]]
+
+    def row_intents(self) -> list[tuple[str, str, str | None]]:
+        return [(kind.value, c.tool_id, c.intent) for kind, c in self.rows]
+
+
+async def _turn(
+    streaming: bool,
+    *responses: AIResponse,
+    tools: list[AITool] = (SHELL, SHELL_CLOSED),  # type: ignore[assignment]
+    intents: bool = True,
+    deny: bool = False,
+    failing: bool = False,
+) -> _Seen:
+    """One message into a room whose agent answers with *responses*."""
+    provider = MockAIProvider(
+        ai_responses=[*responses, AIResponse(content="done")], streaming=streaming
+    )
+    seen = _Seen(provider)
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        seen.received.append((name, dict(arguments)))
+        if failing:
+            raise RuntimeError("broken")
+        return "a.txt"
+
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(
+        AIChannel(
+            "ai1",
+            provider=provider,
+            tools=list(tools),
+            tool_handler=handler,
+            tool_call_intents=intents,
+        )
+    )
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="before")
+    async def before(event: ToolCallEvent, ctx: Any) -> HookResult:
+        seen.before.append(event)
+        return HookResult.block("not now") if deny else HookResult.allow()
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: ToolCallEvent, ctx: Any) -> None:
+        seen.reported.append(event)
+
+    async def listen(event: EphemeralEvent) -> None:
+        seen.ephemeral.append(event)
+
+    await kit.realtime.subscribe_to_room("r1", listen)
+    try:
+        await kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+        )
+        for row in await kit.store.list_events("r1"):
+            if isinstance(row.content, ToolCallContent):
+                seen.rows.append((row.type, row.content))
+    finally:
+        # Closing waits for the async observers the turn started.
+        await kit.close()
+    return seen
+
+
+async def test_off_the_model_sees_and_the_tool_gets_what_they_did_before(streaming: bool) -> None:
+    """Off, nothing is taken: the schemas are the tools', the reserved key is
+    an argument like any other, and no payload or row names an intent."""
+    seen = await _turn(streaming, _calling(("c1", "shell", _with(INTENT))), intents=False)
+
+    assert seen.shown("shell") == _COMMAND_SCHEMA
+    assert seen.received == [("shell", _with(INTENT))]
+    assert all("intent" not in p for p in seen.payloads(EphemeralEventType.TOOL_CALL_START))
+    assert all("intent" not in c.model_dump() for _, c in seen.rows)
+
+
+@pytest.mark.parametrize("tool", [SHELL, SHELL_CLOSED], ids=["open schema", "closed schema"])
+async def test_a_call_s_intent_rides_apart_from_its_arguments(
+    streaming: bool, tool: AITool
+) -> None:
+    seen = await _turn(streaming, _calling(("c1", tool.name, _with(f"  {INTENT}\n"))))
+
+    shown = seen.shown(tool.name)
+    assert shown["properties"]["_roomkit_intent"]["type"] == "string"
+    # Every tool the turn shows, the channel's own included.
+    every = seen.provider.calls[0].tools
+    assert all("_roomkit_intent" in t.parameters["properties"] for t in every)
+    assert shown["required"] == ["command"]
+    assert tool.parameters == {
+        **_COMMAND_SCHEMA,
+        **({"additionalProperties": False} if tool is SHELL_CLOSED else {}),
+    }
+    assert seen.received == [(tool.name, COMMAND)]
+    assert [(e.arguments, e.intent) for e in seen.before] == [(COMMAND, INTENT)]
+    assert [(e.arguments, e.intent, e.is_error) for e in seen.reported] == [
+        (COMMAND, INTENT, False)
+    ]
+    assert [p["intent"] for p in seen.payloads(EphemeralEventType.TOOL_CALL_START)] == [INTENT]
+    assert [p["intent"] for p in seen.payloads(EphemeralEventType.TOOL_CALL_END)] == [INTENT]
+    assert [(c.arguments, c.intent) for _, c in seen.rows] == [(COMMAND, INTENT)] * 2
+
+
+async def test_the_next_round_reads_its_call_as_the_model_wrote_it(streaming: bool) -> None:
+    """The intent goes back among the call's arguments, as the model wrote it
+    (normalized), so its next call keeps the shape it was shown."""
+    seen = await _turn(streaming, _calling(("c1", "shell", _with(INTENT))))
+
+    [replayed] = [
+        part
+        for message in seen.provider.calls[-1].messages
+        if message.role == "assistant" and not isinstance(message.content, str)
+        for part in message.content
+        if isinstance(part, AIToolCallPart)
+    ]
+    assert replayed.arguments == _with(INTENT)
+
+
+async def test_a_tool_that_declares_the_property_keeps_it_as_its_argument(
+    streaming: bool,
+) -> None:
+    owner = AITool(
+        name="label",
+        description="Label a file",
+        parameters={
+            "type": "object",
+            "properties": {"_roomkit_intent": {"type": "string", "enum": ["keep", "drop"]}},
+        },
+    )
+    seen = await _turn(
+        streaming, _calling(("c1", "label", {"_roomkit_intent": "keep"})), tools=[owner]
+    )
+
+    assert seen.shown("label") == owner.parameters
+    assert seen.received == [("label", {"_roomkit_intent": "keep"})]
+    assert [c.intent for _, c in seen.rows] == [None, None]
+
+
+@pytest.mark.parametrize(
+    ("value", "intent"),
+    [
+        (INTENT, INTENT),
+        ("  Je  cherche\n\tles fichiers ", "Je cherche les fichiers"),
+        ("Je\x00cherche\x1b[31m", "Je cherche [31m"),
+        ("\u202eJe cherche\u2066", "Je cherche"),
+        ("é" * (INTENT_MAX_CHARS + 5), "é" * INTENT_MAX_CHARS),
+        ("a" * (INTENT_MAX_CHARS - 1) + " b", "a" * (INTENT_MAX_CHARS - 1)),
+        ("   ", None),
+        ("", None),
+        (None, None),
+        (42, None),
+        (["Je cherche"], None),
+        ({"text": "Je cherche"}, None),
+    ],
+    ids=[
+        "plain",
+        "whitespace",
+        "control characters",
+        "bidi controls",
+        "too long",
+        "cut before a space",
+        "blank",
+        "empty",
+        "null",
+        "number",
+        "list",
+        "object",
+    ],
+)
+def test_an_intent_is_normalized_or_none(value: Any, intent: str | None) -> None:
+    assert normalized_intent(value) == intent
+
+
+async def test_an_unusable_intent_never_fails_the_call(streaming: bool) -> None:
+    seen = await _turn(streaming, _calling(("c1", "shell_closed", _with({"nested": True}))))
+
+    assert seen.received == [("shell_closed", COMMAND)]
+    assert [(c.intent, c.outcome) for kind, c in seen.rows if kind == EventType.TOOL_CALL_END] == [
+        (None, "served")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("call", "outcome", "kwargs"),
+    [
+        (_with(INTENT), "refused", {"deny": True}),
+        (_with(INTENT, command=3), "refused", {}),
+        (_with(INTENT), "failed", {"failing": True}),
+    ],
+    ids=["BEFORE_TOOL_USE denies", "invalid arguments", "handler raises"],
+)
+async def test_a_call_refused_or_failed_keeps_its_intent(
+    streaming: bool, call: dict[str, Any], outcome: str, kwargs: dict[str, Any]
+) -> None:
+    """Its report, its END payload and its end row carry it; its outcome is
+    the engine's, never inferred from the intent."""
+    seen = await _turn(streaming, _calling(("c1", "shell_closed", call)), **kwargs)
+
+    assert [(e.intent, e.is_error) for e in seen.reported] == [(INTENT, True)]
+    assert [p["intent"] for p in seen.payloads(EphemeralEventType.TOOL_CALL_END)] == [INTENT]
+    assert [(c.intent, c.outcome) for kind, c in seen.rows if kind == EventType.TOOL_CALL_END] == [
+        (INTENT, outcome)
+    ]
+    assert "_roomkit_intent" not in str([c.arguments for _, c in seen.rows])
+
+
+async def test_two_calls_under_one_id_keep_their_own_intents(streaming: bool) -> None:
+    """A round's second call under an id another holds is a call of its own
+    (RFC §12.4): refused, with its own intent, matched by place, not by id."""
+    seen = await _turn(
+        streaming,
+        _calling(("c1", "shell", _with("Je liste.")), ("c1", "shell", _with("Je compte."))),
+    )
+
+    assert [p["intent"] for p in seen.payloads(EphemeralEventType.TOOL_CALL_START)] == [
+        "Je liste.",
+        "Je compte.",
+    ]
+    assert [p["intent"] for p in seen.payloads(EphemeralEventType.TOOL_CALL_END)] == [
+        "Je liste.",
+        "Je compte.",
+    ]
+    assert sorted((c.intent, c.outcome) for k, c in seen.rows if k == EventType.TOOL_CALL_END) == [
+        ("Je compte.", "refused"),
+        ("Je liste.", "served"),
+    ]
+
+
+async def test_a_call_cut_while_it_runs_ends_with_its_intent(streaming: bool) -> None:
+    """A turn cancelled while the handler runs closes the call from its start,
+    intent included."""
+    started = asyncio.Event()
+
+    async def slow(name: str, arguments: dict[str, Any]) -> str:
+        started.set()
+        await asyncio.sleep(30)
+        return "late"
+
+    provider = MockAIProvider(
+        ai_responses=[_calling(("c1", "shell", _with(INTENT))), AIResponse(content="done")],
+        streaming=streaming,
+    )
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(
+        AIChannel(
+            "ai1", provider=provider, tools=[SHELL], tool_handler=slow, tool_call_intents=True
+        )
+    )
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    turn = asyncio.create_task(
+        kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+        )
+    )
+    await asyncio.wait_for(started.wait(), 5)
+
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+
+    rows = [
+        (e.type, e.content.intent, e.content.outcome)
+        for e in await kit.store.list_events("r1")
+        if isinstance(e.content, ToolCallContent)
+    ]
+    assert rows == [
+        (EventType.TOOL_CALL_START, INTENT, None),
+        (EventType.TOOL_CALL_END, INTENT, "cancelled"),
+    ]
+    await kit.close()
+
+
+def test_a_row_written_before_intents_reads_without_one() -> None:
+    old = {"type": "tool_call", "tool_name": "shell", "tool_id": "c1", "arguments": COMMAND}
+
+    row = ToolCallContent.model_validate(old)
+
+    assert row.intent is None
+    assert "intent" not in row.model_dump()
+    with_one = row.model_copy(update={"intent": INTENT})
+    assert ToolCallContent.model_validate_json(with_one.model_dump_json()).intent == INTENT

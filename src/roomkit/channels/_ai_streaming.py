@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from functools import partial
@@ -49,7 +49,9 @@ from roomkit.providers.ai.base import (
     AIMessage,
     AIToolResultPart,
     ProviderError,
+    StreamToolCall,
 )
+from roomkit.providers.ai.tool_intent import owning_tools, take_intent
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.context import get_current_span
@@ -166,6 +168,7 @@ async def _unrun_call_ends(calls: list[Any]) -> AsyncGenerator[StreamDelta, None
             status="failed",
             error="cancelled",
             outcome="cancelled",
+            intent=call.intent,
         )
 
 
@@ -197,6 +200,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _thinking_coalesce_ms: float
     _thinking_coalesce_chars: int
     _publish_text_deltas: bool
+    _tool_call_intents: bool
     _text_coalesce_ms: float
     _text_coalesce_chars: int
     _active_loops: dict[str, _ToolLoopContext]
@@ -470,7 +474,9 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             )
         )
         markers = [
-            ToolCallStartMarker(tool_name=call.name, tool_id=call.id, arguments=call.arguments)
+            ToolCallStartMarker(
+                tool_name=call.name, tool_id=call.id, arguments=call.arguments, intent=call.intent
+            )
             for call in calls
         ]
         # Announced before the first start goes out: whatever cuts the round
@@ -528,6 +534,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 results,
                 index,
                 duration_ms=duration_ms,
+                for_calls=calls,
             )
         await self._after_tool_round(context, calls, results, answered, turn, index)
 
@@ -634,7 +641,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     yield turn.end("cancelled")
                     return
                 context = self._prepare_round_context(context, loop_ctx, rules, index)
-                round_ = self._new_stream_round(turn, rules, index, external)
+                round_ = self._new_stream_round(turn, rules, index, external, context)
                 turn.segments.append(round_.state.reported)
                 # What this round declares, as the provider receives it.
                 self._record_declared_tools(loop_ctx, context.tools)
@@ -685,9 +692,10 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         rules: _ToolLoopState,
         index: int,
         external: _ExternalStreamTools,
+        context: AIContext,
     ) -> _StreamRound:
-        """Begin a generation round: its consumer, wired to this channel's
-        windows and hooks, with the ids the previous round held freed."""
+        """Begin a generation round on *context*: its consumer, wired to this
+        channel's windows and hooks, with the ids the previous round held freed."""
         # A provider's id names a call within its round only: one under it
         # in this round is a new call (RFC §12.4).
         turn.loop_ctx.calls.next_round()
@@ -703,7 +711,19 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             record_usage=partial(self._record_stream_usage, turn.usage, rules),
             prefix=turn.dedup_prefix,
             external_tools=external,
+            take_intent=self._intent_taker(context, turn.loop_ctx),
         )
+
+    def _intent_taker(
+        self, context: AIContext, loop_ctx: _ToolLoopContext
+    ) -> Callable[[StreamToolCall], StreamToolCall] | None:
+        """What takes a call's intent out of its arguments, with
+        ``tool_call_intents`` on: a tool of the round or of the turn's
+        catalogue whose own schema declares the property keeps it (RFC §6.4)."""
+        if not self._tool_call_intents:
+            return None
+        owners = owning_tools(context.tools, loop_ctx.all_context_tools)
+        return partial(take_intent, owners=owners)
 
     def _round_outcome(
         self,

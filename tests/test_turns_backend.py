@@ -143,6 +143,9 @@ async def _read_all(output: ChannelOutput) -> list[Any]:
         "a text delta",
         ThinkingDeltaMarker(thinking="hmm"),
         ToolCallStartMarker(tool_name="search", tool_id="c1", arguments={"q": "x"}),
+        ToolCallStartMarker(
+            tool_name="search", tool_id="c1", arguments={"q": "x"}, intent="I search."
+        ),
         ToolCallEndMarker(
             tool_name="search",
             tool_id="c1",
@@ -153,6 +156,7 @@ async def _read_all(output: ChannelOutput) -> list[Any]:
             structured_content={"hits": 1},
             outcome="served",
             refused_but_ran=True,
+            intent="I search.",
         ),
         SegmentBreakMarker(),
         LoopEndMarker(reason="max_rounds", rounds=3, usage={"input_tokens": 5}, max_rounds=3),
@@ -163,6 +167,9 @@ def test_every_stream_item_crosses_as_a_new_equal_object(item: Any) -> None:
     assert rebuilt == item
     if not isinstance(item, str):
         assert rebuilt is not item
+    if getattr(item, "intent", "") is None:
+        # A call without an intent crosses as it did before intents (RFC §6.4).
+        assert "intent" not in encode_item(item)
 
 
 def test_a_stream_item_the_protocol_cannot_carry_is_refused() -> None:

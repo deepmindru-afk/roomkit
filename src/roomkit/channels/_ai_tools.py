@@ -373,6 +373,7 @@ class AIToolsMixin(_AIChannelContract):
             cancelled=cancelled,
             refused=refused,
             error_detail=detail,
+            intent=getattr(tc, "intent", None),
         )
         try:
             await self._tool_observer_hook(event)
@@ -669,6 +670,7 @@ class AIToolsMixin(_AIChannelContract):
                 arguments=arguments,
                 result=None,
                 room_id=room_id,
+                intent=getattr(tc, "intent", None),
             )
             decision = await self._before_tool_call_hook(pre_event)
             if not decision:
@@ -1382,6 +1384,7 @@ class AIToolsMixin(_AIChannelContract):
                 result=result,
                 room_id=room_id,
                 structured_content=structured,
+                intent=getattr(tc, "intent", None),
             ),
             claim=claim,
         )
@@ -1513,4 +1516,5 @@ def call_end_marker(
         error=part.as_text() if is_error else None,
         structured_content=part.structured_content,
         outcome=part.outcome,
+        intent=getattr(tc, "intent", None),
     )

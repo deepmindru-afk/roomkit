@@ -22,6 +22,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
 )
 from roomkit.providers.ai.thinking_blocks import ThinkingBlocks
+from roomkit.providers.ai.tool_intent import with_intent
 
 type AssistantPart = AITextPart | AIThinkingPart | AIToolCallPart
 type RoundCall = StreamToolCall | AIToolCall
@@ -43,9 +44,14 @@ class _Call:
 
 
 def call_part(call: RoundCall) -> AIToolCallPart:
-    """The history part of a call, its metadata (a thought signature) kept."""
+    """The history part of a call as the model wrote it: its intent back in
+    its arguments when it has one (RFC §6.4), its metadata (a thought
+    signature) kept."""
     return AIToolCallPart(
-        id=call.id, name=call.name, arguments=call.arguments, metadata=call.metadata
+        id=call.id,
+        name=call.name,
+        arguments=with_intent(call.arguments, call.intent),
+        metadata=call.metadata,
     )
 
 

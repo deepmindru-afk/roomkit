@@ -113,6 +113,10 @@ class AIToolCall(BaseModel):
     was cut (the output cap or the context window, a content filter or a
     refusal, a stream that ended without a stop reason), and the model reads
     which (RFC §6.4)."""
+    intent: str | None = None
+    """What the call does, in a sentence the model wrote for the person: set
+    by an agent with ``tool_call_intents`` on, taken out of the arguments
+    (RFC §6.4). Display text only; ``None`` when the model wrote none."""
 
 
 class AIToolCallPart(BaseModel):
@@ -749,6 +753,8 @@ class StreamToolCall(BaseModel):
     """As :attr:`AIToolCall.partial`: the call's arguments do not read."""
     garbled: bool = False
     """As :attr:`AIToolCall.garbled`: written unreadable, not cut."""
+    intent: str | None = None
+    """As :attr:`AIToolCall.intent`: what the call does, for the person."""
 
 
 class StreamToolCallDelta(BaseModel):

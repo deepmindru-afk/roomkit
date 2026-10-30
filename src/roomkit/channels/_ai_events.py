@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from roomkit.providers.ai.base import AIToolResultPart
@@ -43,6 +44,7 @@ class AIEventsMixin(_AIChannelContract):
         round_idx: int,
         *,
         duration_ms: int | None = None,
+        for_calls: Sequence[Any] = (),
     ) -> None:
         """Publish a tool call ephemeral event. Best-effort, never breaks the loop.
 
@@ -50,7 +52,8 @@ class AIEventsMixin(_AIChannelContract):
         ``StreamToolCall`` for START, ``AIToolResultPart`` for END, and
         already-built dicts for DELTA — the composition frames are assembled by
         the streaming coalescer, which is the only place that knows a call's
-        running size.
+        running size. An END's *for_calls* are the calls its parts answer, in the
+        same order, for their intents.
         """
         if self._realtime is None or not room_id:
             return
@@ -58,13 +61,11 @@ class AIEventsMixin(_AIChannelContract):
         # this method's docstring.
         try:
             if event_type == EphemeralEventType.TOOL_CALL_START:
-                tc_data = [
-                    {"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in tool_calls
-                ]
+                tc_data = _started_calls(tool_calls)
             elif event_type == EphemeralEventType.TOOL_CALL_DELTA:
                 tc_data = _composing_calls(tool_calls)
             else:  # TOOL_CALL_END — tool_calls are AIToolResultPart
-                tc_data = _ended_calls(tool_calls)
+                tc_data = _ended_calls(tool_calls, for_calls)
             data: dict[str, Any] = {
                 "tool_calls": tc_data,
                 "round": round_idx,
@@ -148,6 +149,24 @@ class AIEventsMixin(_AIChannelContract):
             logger.debug("Failed to publish text event", exc_info=True)
 
 
+def _started_calls(calls: list[Any]) -> list[dict[str, Any]]:
+    """A TOOL_CALL_START's calls: each one's id, name and arguments, and its
+    intent when it has one (RFC §6.4)."""
+    return [
+        _with_intent(
+            {"id": tc.id, "name": tc.name, "arguments": tc.arguments},
+            getattr(tc, "intent", None),
+        )
+        for tc in calls
+    ]
+
+
+def _with_intent(call: dict[str, Any], intent: str | None) -> dict[str, Any]:
+    """A call's payload with its intent, only when it has one: a payload of an
+    agent without intents is the same as before."""
+    return call if intent is None else {**call, "intent": intent}
+
+
 def _composing_calls(calls: list[Any]) -> list[dict[str, Any]]:
     """A TOOL_CALL_DELTA's calls: each one's name and running argument size.
 
@@ -163,21 +182,28 @@ def _composing_calls(calls: list[Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _ended_calls(parts: list[Any]) -> list[dict[str, Any]]:
-    """A TOOL_CALL_END's calls: each one's result preview and status.
+def _ended_calls(parts: list[Any], calls: Sequence[Any]) -> list[dict[str, Any]]:
+    """A TOOL_CALL_END's calls: each one's result preview and status, and the
+    intent of the call in *calls* at its place, when it has one.
 
     ``status`` as the stored row and the ACP channel's END carry it, so a
     live surface tells a failed call from a served one without reading the
     preview. ``as_text()`` flattens a multimodal result, so the preview never
-    carries raw base64 image data.
+    carries raw base64 image data. Matched by place, not by id: two calls of
+    a round can share one (RFC §12.4).
     """
+    intents = [getattr(call, "intent", None) for call in calls]
+    intents += [None] * (len(parts) - len(intents))
     return [
-        {
-            "id": part.tool_call_id,
-            "name": part.name,
-            "result": part.as_text()[:_RESULT_PREVIEW],
-            "status": "failed" if part.is_error else "completed",
-        }
-        for part in parts
+        _with_intent(
+            {
+                "id": part.tool_call_id,
+                "name": part.name,
+                "result": part.as_text()[:_RESULT_PREVIEW],
+                "status": "failed" if part.is_error else "completed",
+            },
+            intent,
+        )
+        for part, intent in zip(parts, intents, strict=False)
         if isinstance(part, AIToolResultPart)
     ]

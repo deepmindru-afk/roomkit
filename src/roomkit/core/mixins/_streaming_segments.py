@@ -463,6 +463,7 @@ class SegmentWriter:
                 tool_id=marker.tool_id,
                 arguments=marker.arguments,
                 status="pending",
+                intent=marker.intent,
             ),
         )
 
@@ -481,6 +482,7 @@ class SegmentWriter:
                 structured_content=structured,
                 outcome=marker.outcome,
                 refused_but_ran=marker.refused_but_ran,
+                intent=marker.intent,
             ),
         )
 

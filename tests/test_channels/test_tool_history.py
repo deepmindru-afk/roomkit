@@ -180,6 +180,7 @@ def _row(
     arguments: dict[str, Any] | None = None,
     result: Any = None,
     outcome: str | None = "served",
+    intent: str | None = None,
 ) -> RoomEvent:
     end = kind == EventType.TOOL_CALL_END
     return RoomEvent(
@@ -195,6 +196,7 @@ def _row(
             result=result if end else None,
             status=("failed" if outcome == "failed" else "completed") if end else "pending",
             outcome=outcome if end else None,
+            intent=intent,
         ),
     )
 
@@ -211,28 +213,46 @@ def _results(rounds: list[ToolRound]) -> list[Any]:
     return [part.result for r in rounds for part in r.results.content]  # type: ignore[union-attr]
 
 
-def _rounds(rows: list[RoomEvent], *, resolves: bool = False, keep: int = 6000) -> list[ToolRound]:
+def _rounds(
+    rows: list[RoomEvent], *, resolves: bool = False, keep: int = 6000, intents: bool = False
+) -> list[ToolRound]:
     return tool_rounds(
         rows,
         replayed=lambda name: name != "find_tools",
         resolves=lambda _: resolves,
         keep_chars=keep,
+        intents=intents,
     )
 
 
-def test_a_round_replays_the_arguments_the_model_wrote() -> None:
+@pytest.mark.parametrize(
+    ("intents", "replayed"),
+    [
+        (False, {"to": "<EMAIL_1>"}),
+        (True, {"to": "<EMAIL_1>", "_roomkit_intent": "I send the mail."}),
+    ],
+    ids=["intents off", "intents on"],
+)
+def test_a_round_replays_the_arguments_the_model_wrote(
+    intents: bool, replayed: dict[str, Any]
+) -> None:
     """The start row's, never the end's, which a BEFORE_TOOL_USE hook may have
-    de-tokenised: the history goes back into the model's prompt."""
+    de-tokenised: the history goes back into the model's prompt. The call's
+    intent goes back among them while the agent asks for one (RFC §6.4)."""
     rows = [
-        _row(EventType.TOOL_CALL_START, 1, "c1", arguments={"to": "<EMAIL_1>"}),
+        _row(
+            EventType.TOOL_CALL_START,
+            1,
+            "c1",
+            arguments={"to": "<EMAIL_1>"},
+            intent="I send the mail.",
+        ),
         _row(EventType.TOOL_CALL_END, 2, "c1", arguments={"to": "a@b.c"}, result="sent"),
     ]
 
-    [r] = _rounds(rows)
+    [r] = _rounds(rows, intents=intents)
 
-    assert r.calls.content == [
-        AIToolCallPart(id="c1", name="lookup", arguments={"to": "<EMAIL_1>"})
-    ]
+    assert r.calls.content == [AIToolCallPart(id="c1", name="lookup", arguments=replayed)]
 
 
 def test_only_the_answers_a_tool_gave_are_replayed() -> None:

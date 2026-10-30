@@ -152,6 +152,11 @@ class ToolCallEvent:
     served (:attr:`refused` and :attr:`is_error` false), and marked so an
     audit sees the refusal the agent went past, with what failed in it on
     :attr:`error_detail` when something did (RFC §9.3)."""
+    intent: str | None = None
+    """What the call does, in the sentence its model wrote for the person,
+    with an agent's ``tool_call_intents`` on (RFC §6.4). Display text: it
+    grants nothing, is not among the :attr:`arguments`, and a hook cannot
+    change it. ``None`` when the model wrote none."""
 
 
 @dataclass(frozen=True)

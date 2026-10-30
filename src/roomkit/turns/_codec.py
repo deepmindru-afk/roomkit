@@ -51,12 +51,13 @@ class _ItemKind:
 
 
 def _encode_start(item: ToolCallStartMarker, start: int | None) -> dict[str, Any]:
-    return {
+    fields = {
         "tool_name": item.tool_name,
         "tool_id": item.tool_id,
         "arguments": item.arguments,
         "ran_with": item.ran_with,
     }
+    return _with_intent(fields, item.intent)
 
 
 def _decode_start(data: dict[str, Any]) -> ToolCallStartMarker:
@@ -65,7 +66,14 @@ def _decode_start(data: dict[str, Any]) -> ToolCallStartMarker:
         tool_id=data["tool_id"],
         arguments=data["arguments"],
         ran_with=data["ran_with"],
+        intent=data.get("intent"),
     )
+
+
+def _with_intent(fields: dict[str, Any], intent: str | None) -> dict[str, Any]:
+    """A call's wire fields with its intent, carried only when it has one: a
+    frame without it reads as before (RFC §6.4)."""
+    return fields if intent is None else {**fields, "intent": intent}
 
 
 def _decode_loop_end(data: dict[str, Any]) -> LoopEndMarker:
@@ -139,7 +147,7 @@ def decode_item(data: dict[str, Any]) -> Any:
 
 def encode_end(end: ToolCallEndMarker) -> dict[str, Any]:
     """A call end's fields, its result in a form that keeps its type."""
-    return {
+    fields = {
         "tool_name": end.tool_name,
         "tool_id": end.tool_id,
         "arguments": end.arguments,
@@ -151,6 +159,7 @@ def encode_end(end: ToolCallEndMarker) -> dict[str, Any]:
         "outcome": end.outcome,
         "refused_but_ran": end.refused_but_ran,
     }
+    return _with_intent(fields, end.intent)
 
 
 def decode_end(data: dict[str, Any]) -> ToolCallEndMarker:
@@ -166,6 +175,7 @@ def decode_end(data: dict[str, Any]) -> ToolCallEndMarker:
         structured_content=data["structured_content"],
         outcome=data["outcome"],
         refused_but_ran=data["refused_but_ran"],
+        intent=data.get("intent"),
     )
 
 

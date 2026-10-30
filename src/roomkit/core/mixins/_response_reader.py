@@ -135,6 +135,7 @@ def _cut_end(start: ToolCallStartMarker, error: str) -> ToolCallEndMarker:
         tool_name=start.tool_name,
         tool_id=start.tool_id,
         arguments=start.ran_with if start.ran_with is not None else start.arguments,
+        intent=start.intent,
         status="failed",
         error=error,
         outcome="cancelled",

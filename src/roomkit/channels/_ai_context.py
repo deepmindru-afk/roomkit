@@ -163,6 +163,7 @@ class AIContextMixin(_AIChannelContract):
 
     _provider: AIProvider
     _fallback_provider: AIProvider | None
+    _tool_call_intents: bool
     _system_prompt: str | None
     _server_instructions: str | None
     _temperature: float
@@ -696,6 +697,7 @@ class AIContextMixin(_AIChannelContract):
             replayed=self._in_tool_memory,
             resolves=self._eviction.holds,
             keep_chars=self._replayed_result_chars,
+            intents=self._tool_call_intents,
         )
 
     async def _tasks_notes(

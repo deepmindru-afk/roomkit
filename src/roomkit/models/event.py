@@ -231,6 +231,10 @@ class ToolCallContent(BaseModel):
     # A call that ran although RoomKit refused it (an ACP agent past a
     # rejected permission): its end row says so, as its report does (RFC §9.3).
     refused_but_ran: bool = False
+    # What the call does, in the sentence its model wrote for the person (an
+    # agent's ``tool_call_intents``, RFC §6.4): display text, apart from the
+    # arguments. Written only when set, so a row without one reads as before.
+    intent: str | None = Field(default=None, exclude_if=lambda intent: intent is None)
 
 
 EventContent = Annotated[

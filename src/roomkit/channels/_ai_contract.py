@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable
+    from collections.abc import AsyncIterator, Iterable, Sequence
 
     from roomkit.channels._ai_resilience import _StreamRetryBoundary
     from roomkit.models.channel import ChannelBinding
@@ -93,6 +93,7 @@ class _AIChannelContract:
         round_idx: int,
         *,
         duration_ms: int | None = None,
+        for_calls: Sequence[Any] = (),
     ) -> None: ...
 
     def _bound_provider_result(self, name: str, result: str, tool_call_id: str) -> str: ...

@@ -33,6 +33,8 @@ class ToolCallStartMarker:
     """The arguments the call runs with once its gate fixed them (a
     ``BEFORE_TOOL_USE`` rewrite), set while it runs: a call the turn cuts is
     closed with them, as its report is (RFC §9.3)."""
+    intent: str | None = None
+    """What the call does, for the person (see ToolCallContent.intent)."""
     ended: ToolCallEndMarker | None = field(default=None, compare=False, repr=False)
     """The call's end, set as soon as it finished: a turn cut before its end
     marker went out closes it with this outcome, not as cancelled."""
@@ -61,6 +63,8 @@ class ToolCallEndMarker:
     outcome: ToolCallOutcome | None = None
     # It ran although RoomKit refused it (see ToolCallContent.refused_but_ran).
     refused_but_ran: bool = False
+    # What the call does, for the person (see ToolCallContent.intent).
+    intent: str | None = None
 
 
 @dataclass(slots=True)

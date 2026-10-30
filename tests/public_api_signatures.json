@@ -54,7 +54,7 @@
     "provides_usage_metadata": ["property"]
   },
   "roomkit.AIChannel": {
-    "__init__": ["def", "channel_id", "provider", "system_prompt=None", "temperature=0.7", "max_tokens=None", "max_context_events=50", "tool_handler=None", "tools=None", "max_tool_rounds=50", "tool_loop_timeout_seconds=300.0", "tool_loop_warn_after=25", "max_empty_retries=1", "continuation=None", "thinking_coalesce_ms=80.0", "thinking_coalesce_chars=256", "retry_policy=None", "fallback_provider=None", "skills=None", "skills_in_prompt=True", "script_executor=None", "sandbox=None", "external_tool_handler=None", "human_input_handler=None", "memory=None", "tool_policy=None", "thinking_budget=None", "enable_thinking=None", "reasoning_effort=None", "response_schema=None", "evict_threshold_tokens=5000", "enable_planning=False", "config_provider=None", "tool_search=None", "tool_search_pinned=None", "tool_search_threshold=20", "tool_search_threshold_pct=10.0", "tool_search_miss_hint=None", "turn_budget_tokens=None", "turn_budget_usd=None", "tool_search_threshold_tokens=8000", "tool_timeout_seconds=30.0", "tool_timeouts=None", "describe_empty_event=None", "max_author_images=4", "speak_policy=None", "speak_timeout=2.0", "thinker=None", "think_wait=1.5", "server_instructions=None", "text_coalesce_ms=80.0", "text_coalesce_chars=256", "*", "publish_text_deltas=False", "serialize_room_turns=False"],
+    "__init__": ["def", "channel_id", "provider", "system_prompt=None", "temperature=0.7", "max_tokens=None", "max_context_events=50", "tool_handler=None", "tools=None", "max_tool_rounds=50", "tool_loop_timeout_seconds=300.0", "tool_loop_warn_after=25", "max_empty_retries=1", "continuation=None", "thinking_coalesce_ms=80.0", "thinking_coalesce_chars=256", "retry_policy=None", "fallback_provider=None", "skills=None", "skills_in_prompt=True", "script_executor=None", "sandbox=None", "external_tool_handler=None", "human_input_handler=None", "memory=None", "tool_policy=None", "thinking_budget=None", "enable_thinking=None", "reasoning_effort=None", "response_schema=None", "evict_threshold_tokens=5000", "enable_planning=False", "config_provider=None", "tool_search=None", "tool_search_pinned=None", "tool_search_threshold=20", "tool_search_threshold_pct=10.0", "tool_search_miss_hint=None", "turn_budget_tokens=None", "turn_budget_usd=None", "tool_search_threshold_tokens=8000", "tool_timeout_seconds=30.0", "tool_timeouts=None", "describe_empty_event=None", "max_author_images=4", "speak_policy=None", "speak_timeout=2.0", "thinker=None", "think_wait=1.5", "server_instructions=None", "text_coalesce_ms=80.0", "text_coalesce_chars=256", "*", "publish_text_deltas=False", "serialize_room_turns=False", "tool_call_intents=False"],
     "active_skill_names": ["def", "room_id"],
     "active_turns": ["property"],
     "capabilities": ["def"],
@@ -2302,10 +2302,10 @@
     "handler": ["async def", "name", "arguments"]
   },
   "roomkit.ToolCallContent": {
-    "__init__": ["def", "*", "type='tool_call'", "tool_name", "tool_id", "arguments=<factory>", "result=None", "status='pending'", "duration_ms=None", "error=None", "structured_content=None", "outcome=None", "refused_but_ran=False"]
+    "__init__": ["def", "*", "type='tool_call'", "tool_name", "tool_id", "arguments=<factory>", "result=None", "status='pending'", "duration_ms=None", "error=None", "structured_content=None", "outcome=None", "refused_but_ran=False", "intent=None"]
   },
   "roomkit.ToolCallEvent": {
-    "__init__": ["def", "channel_id", "channel_type", "tool_call_id", "name", "arguments", "result=None", "room_id=None", "session=None", "timestamp=<factory>", "is_error=False", "cancelled=False", "structured_content=None", "error_detail=None", "refused=False", "refused_but_ran=False"]
+    "__init__": ["def", "channel_id", "channel_type", "tool_call_id", "name", "arguments", "result=None", "room_id=None", "session=None", "timestamp=<factory>", "is_error=False", "cancelled=False", "structured_content=None", "error_detail=None", "refused=False", "refused_but_ran=False", "intent=None"]
   },
   "roomkit.ToolCallResult": {
     "__init__": ["def", "text", "is_error=False", "refused=False"]
@@ -3381,7 +3381,7 @@
     "__init__": ["def", "*", "name", "description", "parameters=<factory>", "tags=<factory>", "defer_loading=False"]
   },
   "roomkit.providers.ai.AIToolCall": {
-    "__init__": ["def", "*", "id", "name", "arguments=<factory>", "metadata=<factory>", "served=None", "partial=False", "garbled=False"]
+    "__init__": ["def", "*", "id", "name", "arguments=<factory>", "metadata=<factory>", "served=None", "partial=False", "garbled=False", "intent=None"]
   },
   "roomkit.providers.ai.AIToolCallPart": {
     "__init__": ["def", "*", "type='tool_call'", "id", "name", "arguments=<factory>", "metadata=<factory>"]
@@ -3444,7 +3444,7 @@
     "__init__": ["def", "*", "type='thinking_delta'", "thinking", "signature=None", "block=None", "redacted=None"]
   },
   "roomkit.providers.ai.StreamToolCall": {
-    "__init__": ["def", "*", "type='tool_call'", "id", "name", "arguments=<factory>", "metadata=<factory>", "served=None", "partial=False", "garbled=False"]
+    "__init__": ["def", "*", "type='tool_call'", "id", "name", "arguments=<factory>", "metadata=<factory>", "served=None", "partial=False", "garbled=False", "intent=None"]
   },
   "roomkit.providers.ai.StreamToolCallDelta": {
     "__init__": ["def", "*", "type='tool_call_delta'", "id", "name", "index=0", "arguments_delta=''"]

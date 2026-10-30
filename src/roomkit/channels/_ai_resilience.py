@@ -24,6 +24,7 @@ from roomkit.providers.ai.base import (
     is_context_overflow_message,
 )
 from roomkit.providers.ai.response_schema import hold_until_checked
+from roomkit.providers.ai.tool_intent import presented_tools
 from roomkit.providers.utils import _aclose_stream
 
 if TYPE_CHECKING:
@@ -67,6 +68,7 @@ class AIResilienceMixin(_AIChannelContract):
     _provider: AIProvider
     _fallback_provider: AIProvider | None
     _eviction: ToolEviction
+    _tool_call_intents: bool
 
     async def _generate_stream_with_retry(
         self, context: AIContext
@@ -197,15 +199,26 @@ class AIResilienceMixin(_AIChannelContract):
         finally:
             await _aclose_stream(stream)
 
-    @staticmethod
-    def _structured_stream(provider: AIProvider, context: AIContext) -> AsyncIterator[StreamEvent]:
-        """The provider's structured stream, its text held back until checked
-        when the turn is constrained to a response schema: the room must never
-        receive an answer the check then refuses (RFC §6.7)."""
-        stream = provider.generate_structured_stream(context)
+    def _structured_stream(
+        self, provider: AIProvider, context: AIContext
+    ) -> AsyncIterator[StreamEvent]:
+        """The provider's structured stream on *context* as the model is shown
+        it, its text held back until checked when the turn is constrained to a
+        response schema: the room must never receive an answer the check then
+        refuses (RFC §6.7)."""
+        stream = provider.generate_structured_stream(self._shown_to_model(context))
         if context.response_schema is None:
             return stream
         return hold_until_checked(stream)
+
+    def _shown_to_model(self, context: AIContext) -> AIContext:
+        """*context* as the request shows it: with ``tool_call_intents`` on,
+        each tool's schema with the reserved intent property (RFC §6.4). A
+        copy: the turn's own tools, which its calls are checked against, stay
+        as their tools declared them; the messages are the same list."""
+        if not self._tool_call_intents or not context.tools:
+            return context
+        return context.model_copy(update={"tools": presented_tools(context.tools)})
 
     @staticmethod
     def _is_context_overflow(exc: ProviderError) -> bool:

@@ -544,6 +544,7 @@ class AIToolLoopRulesMixin(_AIChannelContract):
                     room_id,
                     _aborted_results(tool_calls),
                     round_idx,
+                    for_calls=tool_calls,
                 )
             raise
         duration_ms = int((time.monotonic() - t0) * 1000)
