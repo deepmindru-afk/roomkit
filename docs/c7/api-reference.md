@@ -254,6 +254,8 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 | Symbol | Description |
 |--------|-------------|
 | `RoomKitError` | Base exception |
+| `KitClosedError` | A call made once `kit.close()` started, or one it cut before its commit; also the code (`kit_closed`) of a send it cut (RFC §12.10.4) |
+| `ShutdownCancelledError` | The kit's shutdown was cancelled before it ended, to a caller nobody cancelled (RFC §12.10.4) |
 | `RoomNotFoundError` | Room does not exist |
 | `RoomAlreadyExistsError` | A room created under an id the store holds (RFC §14.3) |
 | `RoomClosedError` | Room's status refuses new events (RFC §5.1) |
@@ -409,7 +411,7 @@ kit = RoomKit(
 | `await add_room_recording_track(room_id, track, *, organization_id=None)` | Declare a track to the room's recordings; returns a `RoomRecordingFeed` (`feed(data, timestamp_ms)`, `close()`), or `None` when the room records nothing; the room read with its scope |
 | `await stop_room_recording(room_id, *, organization_id=None)` | Stop the room's recordings, each result announced (ON_RECORDING_STOPPED) |
 | `get_timeline(room_id, offset?, limit?)` | Query event timeline |
-| `close()` | Shutdown framework |
+| `close()` | Close the kit (RFC §12.10.4): every new call raises `KitClosedError` at once, queued deliveries and model turns are cut at once, the running work gets a 5 s grace then is cut; every call it cut returns `cancellation_reason="kit_closed"` with what it delivered; one shutdown shared by every caller |
 
 ## Provider Subpackage Imports
 

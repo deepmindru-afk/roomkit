@@ -682,3 +682,39 @@ its refusal, not the cancellation. A `kit.steer(Cancel(), ...)` reaches only
 turns that have started; use the delivery to stop one message's turns.
 External effects already committed and tasks detached by application handlers
 are outside this cancellation contract. See `examples/cancel_delivery.py`.
+
+## Closing the kit
+
+`await kit.close()` (or leaving `async with RoomKit()`) closes the kit in one
+shutdown, whoever calls it and however often:
+
+1. **Every new call is refused at once.** From the moment `close()` starts,
+   every call the kit offers raises `KitClosedError`, a `RoomKitError`, reads
+   included (`get_room`, `get_timeline`): from outside, from a hook or a tool
+   still running, or from a channel's own `close()`. Read what is left
+   through `kit.store` after the close.
+2. **What has not started is cut at once**: a delivery queued in a room's lane
+   is dropped and never sent; a call waiting for its room's lock is cut,
+   nothing of it stored (`process_inbound` and `regenerate_response` return
+   `InboundResult(blocked=True, reason="kit_closed")`, `send_event` and
+   `commit_event` raise `KitClosedError`).
+3. **A model turn is cut at once**, its stream and its tool calls. The text it
+   already streamed is stored marked `cancelled`; an open tool call gets its
+   end row, `failed`.
+4. **Other running work gets one grace of five seconds**: a hook, a store
+   write, a transport send. Then what is left is cut, the channels close and
+   the store is released. Nothing is written or delivered after `close()`
+   returns, which takes the grace plus the channels' closes.
+5. **Every call the close cuts returns one result**, its
+   `cancellation_reason` `"kit_closed"` (never `"lane_cancelled"`), with the
+   answers already stored (`response_events`) and each target's delivery: a
+   target already delivered keeps `sent`, a send cut mid-way is `failed` with
+   code `kit_closed`, retryable. A deferred call's `result.delivery.wait()`
+   returns it once its delivery set ended or was cut.
+
+A `close()` from the kit's own work (a tool, a hook, a session's end) does not
+wait for itself, and concurrent `close()` calls share one shutdown and its
+result: a channel that failed to close raises the same `ExceptionGroup` to
+every caller. A shutdown cut itself (every task cancelled, as `asyncio.run`
+does as it ends) raises `ShutdownCancelledError` to a caller nobody
+cancelled. See `examples/close_with_work_in_flight.py`.
