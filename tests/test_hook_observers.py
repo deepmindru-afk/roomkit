@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 
@@ -18,6 +19,7 @@ from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.room import Room
+from roomkit.store.memory import InMemoryStore
 from tests.test_framework import SimpleChannel
 
 
@@ -154,31 +156,51 @@ class TestClose:
 class _SlowRelease(InMemoryLockManager):
     """A room lock whose release, once armed, takes a moment, as a networked
     lock manager's round trip does: an observer started as its section ends
-    calls into the room meanwhile."""
+    calls into the room meanwhile. ``released`` turns true once the armed
+    section's lock is free."""
 
     def __init__(self) -> None:
         super().__init__()
         self.armed = False
+        self.released = False
         self.observer_calls = asyncio.Event()
 
     @contextlib.asynccontextmanager
     async def locked(self, room_id: str) -> AsyncGenerator[None, None]:
+        armed = False
         async with super().locked(room_id):
             yield
             if self.armed:
-                self.armed = False
+                self.armed, armed = False, True
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(self.observer_calls.wait(), 0.05)
+        if armed:
+            self.released = True
+
+
+class _NotingStore(InMemoryStore):
+    """Notes whether the armed section's lock was free when "reaction" committed."""
+
+    def __init__(self, locks: _SlowRelease) -> None:
+        super().__init__()
+        self._locks = locks
+        self.reaction_after_release: bool | None = None
+
+    async def commit_event(self, room_id: str, event: RoomEvent, **kwargs: Any) -> RoomEvent:
+        if isinstance(event.content, TextContent) and event.content.body == "reaction":
+            self.reaction_after_release = self._locks.released
+        return await super().commit_event(room_id, event, **kwargs)
 
 
 class TestTheRoomLock:
     async def test_an_observer_s_call_into_the_room_waits_for_the_section(self) -> None:
         """An ASYNC BEFORE_BROADCAST observer starts as its event's pass ends,
         its lock still held while the release takes a round trip: its call
-        into the room is a new arrival, which waits for the lock and commits
-        after the event (RFC §9, §9.5.1, RMK-1039)."""
+        into the room is a new arrival, which waits for the lock's release
+        and commits after the event (RFC §9, §9.5.1, RMK-1039)."""
         locks = _SlowRelease()
-        kit = RoomKit(lock_manager=locks)
+        store = _NotingStore(locks)
+        kit = RoomKit(store=store, lock_manager=locks)
         for channel_id in ("sms1", "sms2"):
             kit.register_channel(SimpleChannel(channel_id))
         await kit.create_room(room_id="r1")
@@ -208,5 +230,6 @@ class TestTheRoomLock:
                 "reaction",
             ]
             assert locks.observer_calls.is_set()
+            assert store.reaction_after_release is True
         finally:
             await kit.close()

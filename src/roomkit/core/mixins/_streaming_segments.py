@@ -660,6 +660,8 @@ class LaneSink:
             # whatever becomes of the stream's reader (RFC §9.4).
             queued = QueuedInjections()
             await self._kit._store_blocked(room_id, decision, queued)
+            # Its pass is over: observed before its injected events' passes.
+            await observed.start(self._kit._hook_engine, room_id)
             handed = self._kit._hand_off_queued(queued, room_id, self._cascade)
             await self._kit._finish_queued(handed)
             logger.info(

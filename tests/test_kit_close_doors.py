@@ -604,7 +604,8 @@ def _noting_commits(store: type[ConversationStore]) -> type[ConversationStore]:
 async def _a_door(kit: RoomKit, room_id: str, door: str) -> None:
     """Send ``Hi.`` into *room_id* through *door*: a message, a direct send,
     a host's post, or a message whose answer or injected event takes a pass
-    of its own (an agent's row, a channel's response, a hook's injection)."""
+    of its own (an agent's row, streamed or not, a regenerated answer, a
+    channel's response, a hook's injection)."""
     if door == "send":
         await kit.send_event(room_id, "sms", TextContent(body="Hi."))
         return
@@ -613,11 +614,16 @@ async def _a_door(kit: RoomKit, room_id: str, door: str) -> None:
         await kit.attach_channel(room_id, "host")
         await kit.post(room_id, "Hi.")
         return
-    if door in ("agent", "response"):
+    if door in ("agent", "agent-stream", "regenerate", "response"):
         answers = (
-            Agent("ai", provider=MockAIProvider(responses=["Hello."]))
-            if door == "agent"
-            else AILikeChannel("ai", response="Hello.")
+            AILikeChannel("ai", response="Hello.")
+            if door == "response"
+            else Agent(
+                "ai",
+                provider=MockAIProvider(
+                    responses=["Hello.", "Again."], streaming=door == "agent-stream"
+                ),
+            )
         )
         kit.register_channel(answers)
         await kit.attach_channel(room_id, "ai", category=ChannelCategory.INTELLIGENCE)
@@ -637,6 +643,8 @@ async def _a_door(kit: RoomKit, room_id: str, door: str) -> None:
             )
 
     await kit.process_inbound(_said("Hi."), room_id=room_id)
+    if door == "regenerate":
+        await kit.regenerate_response(room_id)
 
 
 @pytest.mark.parametrize(
@@ -647,10 +655,22 @@ async def _a_door(kit: RoomKit, room_id: str, door: str) -> None:
         ("send", "memory", ["Hi."]),
         ("post", "memory", ["Hi."]),
         ("agent", "memory", ["Hi.", "Hello."]),
+        ("agent-stream", "memory", ["Hi.", "Hello."]),
+        ("regenerate", "memory", ["Hi.", "Hello.", "Again."]),
         ("response", "memory", ["Hi.", "Hello."]),
         ("injected", "memory", ["Hi.", "Note."]),
     ],
-    ids=["inbound", "inbound-sqlite", "send", "post", "agent", "response", "injected"],
+    ids=[
+        "inbound",
+        "inbound-sqlite",
+        "send",
+        "post",
+        "agent",
+        "agent-stream",
+        "regenerate",
+        "response",
+        "injected",
+    ],
 )
 async def test_a_before_broadcast_observer_starts_once_its_pass_is_over(
     door: str, store: str, observed: list[str], tmp_path: Any
@@ -658,9 +678,9 @@ async def test_a_before_broadcast_observer_starts_once_its_pass_is_over(
     """The ASYNC BEFORE_BROADCAST observers of a pass start once it is over,
     its event committed and its set placed in the room's lane, though the
     store's commit suspends, never during it, on every pass: a message, a
-    direct send, a host's post, an agent's row, a channel's response, a
-    hook's injected event. They observe the event as the SYNC hooks left it
-    (RMK-1039)."""
+    direct send, a host's post, an agent's row, streamed or not, a
+    regenerated answer, a channel's response, a hook's injected event. They
+    observe the event as the SYNC hooks left it (RMK-1039)."""
     noting = _noting_commits(InMemoryStore if store == "memory" else SQLiteStore)
     recording: Any = noting() if store == "memory" else noting(tmp_path / "r.db")
     kit = RoomKit(store=recording)

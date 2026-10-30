@@ -722,7 +722,7 @@ class RoomDeliveryLane:
 
     def enqueue(self, entry: ExecEntry | CursorEntry) -> None:
         """Accept an entry. Synchronous — runs under the room lock."""
-        if self._closed:
+        if self._closed and not (isinstance(entry, CursorEntry) and self._runs_on):
             self._drop_entry(entry, "lane_closed")
             return
         self._note_placement(entry)
@@ -737,11 +737,17 @@ class RoomDeliveryLane:
     def _note_placement(self, entry: ExecEntry | CursorEntry) -> None:
         """Note *entry* as running from its placement when the lane is idle,
         no round under way and nothing queued (RFC §12.10.4); a set placed
-        behind another is queued. One placed later that the room's order
-        runs first takes the lead: the entry noted is queued behind it."""
+        behind another is queued. A set placed later that the room's order
+        runs first takes the lead: the entry noted is queued behind it. A
+        cursor entry runs nothing and the close keeps it, so the index it
+        fills never costs the noted entry its place."""
         if not self._busy and not self._indexed and not self._unindexed:
             self._placed_idle = entry if isinstance(entry, ExecEntry) else None
-        elif self._placed_idle is not None and _runs_before(entry, self._placed_idle):
+        elif (
+            isinstance(entry, ExecEntry)
+            and self._placed_idle is not None
+            and _runs_before(entry, self._placed_idle)
+        ):
             self._placed_idle = None
 
     @property
@@ -801,9 +807,11 @@ class RoomDeliveryLane:
             entry.cascade.release()
 
     def _abort_pending(self, reason: str, *, keep: ExecEntry | None = None) -> None:
-        """Drop every queued entry with *reason*, but *keep*."""
+        """Drop every queued entry with *reason*, but *keep* and, while it is
+        kept, the cursor entries: they run nothing, and *keep* may wait on
+        an index one of them fills."""
         for index, entry in list(self._indexed.items()):
-            if entry is not keep:
+            if entry is not keep and not (keep is not None and isinstance(entry, CursorEntry)):
                 del self._indexed[index]
                 self._drop_entry(entry, reason)
         unindexed, self._unindexed = self._unindexed, deque()
@@ -1126,6 +1134,10 @@ class RoomLaneRegistry:
                 )
                 entry.cascade.cancel(KitClosedError.code)
                 entry.cascade.release()
+            elif (lane := self._lanes.get(room_id)) is not None:
+                # A committed index still fills the cursor of a lane running
+                # the set it keeps (RFC §12.10.4); it opens no lane.
+                lane.enqueue(entry)
             return
         self.lane(room_id).enqueue(entry)
 

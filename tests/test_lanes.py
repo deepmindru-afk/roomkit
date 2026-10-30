@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from roomkit.core.lanes import (
+    CursorEntry,
     DeliveryCascade,
     DeliveryPlan,
     ExecEntry,
@@ -551,3 +552,26 @@ async def test_close_drops_the_queued_work_it_did_not_start(
     for i, cascade in cascades.items():
         await asyncio.wait_for(cascade.wait(), timeout=0.5)
         assert cascade.cancelled == (None if f"e{i}" in runs else "kit_closed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filled", ["before-seal", "after-seal"])
+async def test_close_runs_the_entry_it_keeps_once_its_index_hole_is_filled(filled: str) -> None:
+    """The entry placed in the idle lane waits on an earlier index noted
+    later (another process's, or a row committed off the lock): the close
+    keeps the cursor entry that fills it, noted before the seal or after,
+    so the kept entry runs at once instead of being dropped, or waiting the
+    whole grace for an index the close threw away (RMK-1039)."""
+    store, host, registry, _ = await make_rig(close_grace=5.0)
+    cascade = DeliveryCascade(ROOM, reentry_budget=10)
+    enqueue_exec(registry, cascade, "e1", 1)
+    closing = asyncio.ensure_future(registry.aclose())
+    if filled == "before-seal":
+        registry.enqueue(ROOM, CursorEntry(0))
+    await asyncio.sleep(0)
+    if filled == "after-seal":
+        registry.enqueue(ROOM, CursorEntry(0))
+    await asyncio.wait_for(closing, timeout=1.0)
+    await asyncio.wait_for(cascade.wait(), timeout=0.5)
+    assert host.executed == ["e1"]
+    assert cascade.cancelled is None

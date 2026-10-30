@@ -35,6 +35,15 @@ class Observed:
         """The chain allowed *event*, read in *context*."""
         self.owed = (event, context)
 
+    async def start(self, hooks: HookEngine, room_id: str) -> None:
+        """Start what the chain owes, once: a pass whose end comes before its
+        section's (a row stored ``BLOCKED`` whose injected events run their
+        passes next) starts them there, as every pass does before those."""
+        owed, self.owed = self.owed, None
+        if owed is not None:
+            event, context = owed
+            await hooks.run_observers(room_id, HookTrigger.BEFORE_BROADCAST, event, context)
+
 
 @contextlib.asynccontextmanager
 async def observed_once_over(hooks: HookEngine, room_id: str) -> AsyncGenerator[Observed]:
@@ -45,6 +54,4 @@ async def observed_once_over(hooks: HookEngine, room_id: str) -> AsyncGenerator[
     try:
         yield observed
     finally:
-        if observed.owed is not None:
-            event, context = observed.owed
-            await hooks.run_observers(room_id, HookTrigger.BEFORE_BROADCAST, event, context)
+        await observed.start(hooks, room_id)
