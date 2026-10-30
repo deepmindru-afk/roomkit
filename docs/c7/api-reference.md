@@ -411,7 +411,7 @@ kit = RoomKit(
 | `await add_room_recording_track(room_id, track, *, organization_id=None)` | Declare a track to the room's recordings; returns a `RoomRecordingFeed` (`feed(data, timestamp_ms)`, `close()`), or `None` when the room records nothing; the room read with its scope |
 | `await stop_room_recording(room_id, *, organization_id=None)` | Stop the room's recordings, each result announced (ON_RECORDING_STOPPED) |
 | `get_timeline(room_id, offset?, limit?)` | Query event timeline |
-| `close()` | Close the kit (RFC §12.10.4): every new call but a read or a teardown call raises `KitClosedError` at once, queued deliveries, lock waiters and model turns are cut at once, the running work gets a 5 s grace then is cut (1 s more, twice, for work ignoring its cut, then abandoned); every call it cut returns `cancellation_reason="kit_closed"` with what it delivered, its event when its commit landed; one shutdown shared by every caller |
+| `close()` | Close the kit (RFC §12.10.4): every new call but a read or a teardown call, synchronous or not, raises `KitClosedError` at once, queued deliveries, lock waiters and model turns are cut at once, the running work gets a 5 s grace then is cut (1 s more, twice, for work ignoring its cut, then abandoned and logged); every call it cut returns `cancellation_reason="kit_closed"` with what it delivered, its event when its commit landed; one shutdown shared by every caller |
 
 ## Provider Subpackage Imports
 
