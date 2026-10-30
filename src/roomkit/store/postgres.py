@@ -30,6 +30,7 @@ from roomkit.models.store_filter import EventFilter, RoomFilter, includes_blocke
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
+from roomkit.store._pg_pool import close_own_pool
 from roomkit.store.base import (
     ConversationStore,
     address_linked,
@@ -490,6 +491,7 @@ class PostgresStore(ConversationStore):
             return tag == "UPDATE 1"
 
     _acquire_timeout: float = 5.0
+    _close_timeout: float = 1.0
 
     def _ensure_pool(self) -> Any:
         """Return the pool or raise if not initialized."""
@@ -800,10 +802,12 @@ class PostgresStore(ConversationStore):
             return {"action": "dropped"}
 
     async def close(self) -> None:
-        """Release the connection pool if we own it."""
+        """Release the connection pool if we own it: the connections still
+        in use get ``_close_timeout`` seconds to come back, then are
+        terminated. A pool handed in stays its owner's."""
         if self._pool is not None and self._owns_pool:
-            await self._pool.close()
-            self._pool = None
+            pool, self._pool = self._pool, None
+            await close_own_pool(pool, self._close_timeout, "PostgresStore")
 
     async def __aenter__(self) -> PostgresStore:
         await self.init()

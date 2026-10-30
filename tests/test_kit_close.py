@@ -75,10 +75,14 @@ from roomkit.sources.base import SourceProvider
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
+from roomkit.turns import owner as turns_owner
+from roomkit.turns.base import TurnTimeouts
+from roomkit.turns.memory import InMemoryTurnBackend
 from roomkit.video.backends.mock import MockVideoBackend
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from roomkit.voice.stt.mock import MockSTTProvider
+from tests import redis_turn_mode
 from tests.test_framework import AILikeChannel, SimpleChannel
 
 
@@ -1160,8 +1164,14 @@ async def test_work_ignoring_its_cut_is_abandoned_once_the_unwind_ran_out(
     log once. A source whose ``stop()`` ignores its cut has its receive task
     cut all the same (RFC §12.10.4)."""
     # A channel's own close waits on a budget of its own (an agent's, for
-    # its turns), under test as short as the kit's unwind.
+    # its turns), and so does the turn backend across Redis (its cancel
+    # bound): under test as short as the kit's unwind.
     monkeypatch.setattr(_ai_steering, "CLOSE_WAIT_S", cut_unwind)
+    if redis_turn_mode.ENABLED:
+        short = TurnTimeouts(cancel=cut_unwind)
+        monkeypatch.setattr(
+            turns_owner, "InMemoryTurnBackend", lambda: redis_turn_mode.backend(short)
+        )
     work = _Stubborn()
     kit, call = await _stubborn_kit(case, work)
     if case in ("source-stop", "on-complete"):
@@ -1187,6 +1197,54 @@ async def test_work_ignoring_its_cut_is_abandoned_once_the_unwind_ran_out(
         assert (cut.status, cut.error.code, cut.error.retryable) == ("failed", "kit_closed", True)
     if isinstance(call, asyncio.Future):
         await asyncio.gather(call, return_exceptions=True)
+
+
+async def test_a_turn_left_running_logs_nothing_once_the_close_returned(
+    close_grace: float,
+    cut_unwind: float,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model turn whose tool ignores its cut, left running by the close,
+    watches its owner no more: nothing of the kit logs after ``close()``
+    returned, not an owner fallen silent (RFC §12.10.4)."""
+    monkeypatch.setattr(_ai_steering, "CLOSE_WAIT_S", cut_unwind)
+    backend = InMemoryTurnBackend()
+    # An owner's silence noticed once the close has returned.
+    backend.timeouts = TurnTimeouts(heartbeat_interval=0.01, heartbeat_timeout=0.3)
+    work = _Stubborn()
+    tool = {"name": "lookup", "description": "Look up.", "parameters": {"type": "object"}}
+    provider = MockAIProvider(
+        ai_responses=[
+            AIResponse(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[AIToolCall(id="c1", name="lookup", arguments={})],
+            ),
+            AIResponse(content="Found it.", finish_reason="stop"),
+        ]
+    )
+
+    async def lookup(name: str, arguments: dict[str, Any]) -> str:
+        await work.run()
+        return "late"
+
+    kit = await _kit(_Transport("ws"), turn_backend=backend)
+    kit.register_channel(Agent("agent", provider=provider, tools=[tool], tool_handler=lookup))
+    await kit.attach_channel("r", "agent", category=ChannelCategory.INTELLIGENCE)
+    call = asyncio.ensure_future(kit.process_inbound(_message("Go."), room_id="r"))
+    await work.started.wait()
+    try:
+        await asyncio.wait_for(kit.close(), 1)
+        with caplog.at_level(logging.DEBUG, logger="roomkit"):
+            caplog.clear()
+            for _ in range(50):  # past the owner's heartbeat timeout
+                await asyncio.sleep(0.01)
+    finally:
+        work.release.set()
+        await asyncio.gather(call, return_exceptions=True)
+
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 class _Source(SourceProvider):
@@ -1380,6 +1438,77 @@ async def test_the_work_outlasting_the_grace_is_cut_before_the_channels_close(
     await kit.close()
 
     assert transport.steps == ["send cut", "closed"]
+
+
+def _postgres_dsn() -> str:
+    dsn = os.environ.get("POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("POSTGRES_DSN not set")
+    return dsn
+
+
+async def test_a_connection_held_past_the_unwind_does_not_hold_the_close_of_the_kit_s_pool(
+    close_grace: float, cut_unwind: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store operation that holds a connection of the pool the store opened
+    and ignores its cut: the close gives the pool's connections a moment to
+    come back, then terminates them, and returns (RFC §12.10.4)."""
+    from roomkit.store.postgres import PostgresStore
+
+    monkeypatch.setattr(PostgresStore, "_close_timeout", cut_unwind)
+    room = f"stuck-{uuid4().hex[:8]}"
+    work = _Stubborn()
+
+    class Stuck(PostgresStore):
+        async def load_room_context(self, room_id: str) -> Any:
+            if room_id == room and work.steps == ["armed"]:
+                async with self._ensure_pool().acquire() as conn:
+                    await conn.fetchval("SELECT 1")
+                    await work.run()
+            return await super().load_room_context(room_id)
+
+    store = Stuck(dsn=_postgres_dsn())
+    await store.init(min_size=1, max_size=3)
+    kit = await _kit(_Transport("ws"), rooms=(room,), store=store)
+    work.steps.append("armed")
+    call = asyncio.ensure_future(kit.process_inbound(_message("hi"), room_id=room))
+    await work.started.wait()
+
+    try:
+        await asyncio.wait_for(kit.close(), 2)
+    finally:
+        work.release.set()
+        await asyncio.gather(call, return_exceptions=True)
+
+
+async def test_a_room_lock_held_past_the_unwind_does_not_hold_the_close_of_its_pool(
+    close_grace: float, cut_unwind: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hook that holds its room's advisory lock and ignores its cut: the
+    lock manager's own pool is closed within its moment, its connection
+    terminated, and the close returns (RFC §12.10.4)."""
+    from roomkit.store.postgres_lock import PostgresAdvisoryLockManager
+
+    monkeypatch.setattr(PostgresAdvisoryLockManager, "_close_timeout", cut_unwind)
+    locks = PostgresAdvisoryLockManager(_postgres_dsn(), min_size=1, max_size=3)
+    await locks.init()
+    room = f"locked-{uuid4().hex[:8]}"
+    kit = await _kit(_Transport("ws"), rooms=(room,), lock_manager=locks)
+    work = _Stubborn()
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="stubborn")
+    async def stubborn(event: RoomEvent, ctx: Any) -> HookResult:
+        await work.run()
+        return HookResult.allow()
+
+    call = asyncio.ensure_future(kit.process_inbound(_message("hi"), room_id=room))
+    await work.started.wait()
+
+    try:
+        await asyncio.wait_for(kit.close(), 2)
+    finally:
+        work.release.set()
+        await asyncio.gather(call, return_exceptions=True)
 
 
 # -- 5. One result per cut call, kit_closed, with what it delivered ---------------

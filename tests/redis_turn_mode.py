@@ -22,6 +22,7 @@ try:
     import redis
 except ImportError:  # this mode only runs with the redis extra
     redis = None  # type: ignore[assignment]
+from roomkit.turns.base import TurnTimeouts
 from roomkit.turns.redis import RedisTurnBackend
 
 ENABLED = os.environ.get("ROOMKIT_TEST_TURN_BACKEND") == "redis"
@@ -29,10 +30,12 @@ ENABLED = os.environ.get("ROOMKIT_TEST_TURN_BACKEND") == "redis"
 SESSION_PREFIX = f"roomkit:test:{uuid4().hex[:12]}"
 
 
-def _backend() -> RedisTurnBackend:
+def backend(timeouts: TurnTimeouts | None = None) -> RedisTurnBackend:
+    """A backend of this session's, keeping *timeouts* when given."""
     return RedisTurnBackend(
         os.environ["REDIS_URL"],
         key_prefix=f"{SESSION_PREFIX}:{uuid4().hex[:12]}",
+        timeouts=timeouts,
         _loop_back=True,
     )
 
@@ -64,7 +67,7 @@ def install(config: pytest.Config) -> None:
     """Give every kit built with no turn backend one across Redis."""
     if not os.environ.get("REDIS_URL"):
         raise pytest.UsageError("ROOMKIT_TEST_TURN_BACKEND=redis needs REDIS_URL")
-    turns_owner.InMemoryTurnBackend = _backend  # type: ignore[misc, assignment]
+    turns_owner.InMemoryTurnBackend = backend  # type: ignore[misc, assignment]
     # A test that never closes its kit leaves its backend's connection pool to
     # the collector, whose release redis-py never awaits: noise of this mode.
     config.addinivalue_line(

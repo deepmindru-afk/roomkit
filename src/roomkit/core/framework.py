@@ -995,17 +995,24 @@ class RoomKit(
         that returns the committed event, raises :class:`KitClosedError`;
         one cut as its commit landed reads its event back and returns it.
 
-        Then the channels close, one at a time and shielded from one another,
-        each on its own bounded budgets — a conference channel's bot is out
-        of its meeting when this phase ends, whatever the store is doing.
-        What their closes started is cut at once. Then the framework waits
-        for the operations the store and the lock manager already have
-        (each runs under a resource lease), within the last unwind, seals
-        both, and releases them. Nothing is written or delivered after
-        close() returns by work that honours its cut: it takes the grace,
-        plus the channels' and the kit's own backends' closes, plus at most
-        :data:`CUT_UNWIND_S` more, twice, for cut work that ignores its
-        cancellation, abandoned then and named in the log once.
+        What is left after the grace is given :data:`CUT_UNWIND_S` to
+        unwind. Then the turn backend closes, its turns and the calls they
+        made cut and waited for on its own budget (one unwind in process,
+        its ``TurnTimeouts.cancel`` across Redis). Then the channels close,
+        one at a time and shielded from one another, each on its own bounded
+        budgets — a conference channel's bot is out of its meeting when this
+        phase ends, whatever the store is doing. What their closes started
+        is cut at once and given the second unwind, within which the
+        framework waits for the operations the store and the lock manager
+        already have (each runs under a resource lease); then it seals and
+        releases them, a pool the store or the lock manager opened closed
+        within a second, its connections still in use terminated. Nothing is
+        written or delivered after close() returns by work that honours its
+        cut: it takes the grace, plus the turn backend's budget, plus the
+        channels' and the kit's own backends' closes, each on its own
+        budget, plus at most :data:`CUT_UNWIND_S` more, twice, for cut work
+        that ignores its cancellation, abandoned then and named in one line
+        of the log.
 
         Raises:
             ExceptionGroup: one or more channels failed to close. Raised only

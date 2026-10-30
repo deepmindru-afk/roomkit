@@ -149,12 +149,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     channel runs for a session's start or end get the grace too. What a
     channel's close starts is cut at once.
   - The close takes the grace, plus the turn backend's close (its turns and
-    the calls they made, cut and waited for 1 s at most), plus the channels'
-    closes and the kit's own backends' closes (voice, realtime, the store,
-    the lock managers, the status bus), each on its own budget, plus at
-    most 1 s more, twice: after the grace and after the channels, for cut
-    work that ignores its cancellation. The operations the store or the
-    lock manager still runs are waited for within the second one. With a send, a write, an observer and a hook that never end, it
+    the calls they made, cut and waited for one unwind, 1 s, in process, and
+    its cancel bound, `TurnTimeouts.cancel`, across Redis), plus the
+    channels' closes and the kit's own backends' closes (voice, realtime,
+    the store, the lock managers, the status bus), each on its own budget,
+    plus at most 1 s more, twice: after the grace and after the channels,
+    for cut work that ignores its cancellation. The operations the store or
+    the lock manager still runs are waited for within the second one. A
+    `PostgresStore` or a `PostgresAdvisoryLockManager` closing the pool it
+    opened gives the connections still in use 1 s to come back, then
+    terminates them; a pool handed in stays its owner's. With a send, a write, an observer and a hook that never end, it
     took 19.8 s; it takes 5 s.
   - Nothing is written or delivered after `close()` returns by work that
     honours its cut. Work that ignores it past the unwind is abandoned and
@@ -178,6 +182,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that awaits a close it started on a task of its own is cut with its turn,
   and the close runs on. Migration: let a turn whose answer you need end
   before `close()`.
+
+- **`TurnClient.close()` waits for the turns of its own executor, and for
+  the calls they made, 1 s at most** (RFC 12.10.4, RMK-1030). It waited for
+  them with no deadline, so a tool handler that ignored its cut held the
+  kit's close for good. What still runs then is left running, named in the
+  log, and watches its owner no more. `TurnExecutor.close()` called alone
+  waits as before.
 
 - **BREAKING — a call `kit.close()` cuts reads `kit_closed`, never
   `lane_cancelled`, with what it delivered** (RFC 12.10.4, RMK-1030). A
@@ -220,6 +231,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The turns a close runs under, the realtime call its handler serves, the
     conference activity and participant callback it runs inside are now read
     for every caller, and the waits read them again as a caller joins.
+  - The model turn such a close runs in is cut all the same (RMK-1030), the
+    call awaiting `close()` itself left to run; a call awaiting a close it
+    started on a task of its own is cut with its turn.
 
 - **`kit.close()` returns while calls keep arriving** (RMK-1016). The close
   waited for the work started after it began, and calls were taken until
@@ -258,7 +272,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ShutdownCancelledError` (a `RoomKitError`) saying so. A `close()` from the kit's own work (a tool's
   call, a hook's body) still runs on once the shutdown has ended: the
   shutdown neither waits for it nor cuts it, whether that call started the
-  shutdown or joined one under way.
+  shutdown or joined one under way. The model turn such a call runs in is
+  cut all the same (RMK-1030), the call awaiting `close()` itself left to
+  run; a call awaiting a close it started on a task of its own is cut with
+  its turn.
 - **A `kit.close()` from a delivery's hook, from a session's end, or from a
   discussion's `ON_SPEAK_QUEUE` hook returns and closes the kit**
   (RMK-1015). An ASYNC `AFTER_BROADCAST` hook runs in its room's delivery

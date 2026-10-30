@@ -325,6 +325,9 @@ class TurnExecutor:
             for task in done:
                 if not task.cancelled() and (error := task.exception()) is not None:
                     logger.debug("Turn %s ended with %r as it closed", task.get_name(), error)
+            for task in left:
+                # Left running past its cut: nothing of it is heard again.
+                self._turns[task].stop_watching()
         await self._channels.close()
         return left
 

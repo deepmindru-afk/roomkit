@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from roomkit.core.locks import RoomLockManager, _has_room_lock, _mark_room_locked
+from roomkit.store._pg_pool import close_own_pool
 
 
 def _advisory_key(room_id: str) -> int:
@@ -41,6 +42,8 @@ class PostgresAdvisoryLockManager(RoomLockManager):
     a tool handler that re-enters the pipeline under the same room lock does not
     deadlock.
     """
+
+    _close_timeout: float = 1.0
 
     def __init__(
         self,
@@ -72,10 +75,13 @@ class PostgresAdvisoryLockManager(RoomLockManager):
             )
 
     async def close(self) -> None:
-        """Release the connection pool if we own it. Idempotent."""
+        """Release the connection pool if we own it: the connections still in
+        use (a lock held past its holder's cut) get ``_close_timeout`` seconds
+        to come back, then are terminated. A pool handed in stays its
+        owner's. Idempotent."""
         if self._pool is not None and self._owns_pool:
-            await self._pool.close()
-            self._pool = None
+            pool, self._pool = self._pool, None
+            await close_own_pool(pool, self._close_timeout, "PostgresAdvisoryLockManager")
 
     @asynccontextmanager
     async def locked(self, room_id: str) -> AsyncGenerator[None, None]:

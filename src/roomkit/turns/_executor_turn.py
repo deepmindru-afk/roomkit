@@ -119,6 +119,8 @@ class ExecutorTurn:
         # hears nothing more of it (RFC §12.10.4).
         self._let_go = False
         self._letting_go: asyncio.Future[None] | None = None
+        # Its owner's controls read, and its owner's silence watched.
+        self._watchers: tuple[asyncio.Task[None], ...] = ()
         self._mark: dict[str, Any] | None = None
         # Every frame goes in order, the stream's text deltas by burst.
         self._frames = FrameSender(link.send)
@@ -147,6 +149,7 @@ class ExecutorTurn:
         """Run the turn to its end, which the owner is always told."""
         watch = asyncio.create_task(self._read_controls())
         beat = asyncio.create_task(self._beat())
+        self._watchers = (watch, beat)
         try:
             await self._send(Accepted(executor_id=self._executor_id))
             await self._turn()
@@ -495,6 +498,17 @@ class ExecutorTurn:
             await self._frames.send(End())
         except Exception:  # noqa: BLE001 - an owner gone needs no end
             logger.debug("Turn %s: its owner is gone", self._request.turn_id)
+        self.stop_watching()
+
+    def stop_watching(self) -> None:
+        """Watch its owner no more: an owner that let the turn go, or an
+        executor closed under a turn left running (RFC §12.10.4), is no
+        owner fallen silent."""
+        for watcher in self._watchers:
+            if watcher is not asyncio.current_task():
+                watcher.cancel()
+        self._heard = True
+        self._watchers = ()
 
     def _cut_turn(self, reason: str) -> None:
         """Cut the turn: its work is cancelled once, so a later cut never

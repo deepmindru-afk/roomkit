@@ -181,8 +181,20 @@ async def run_to_its_end[T](
         return task.result()
     if not task.cancelled() and (error := task.exception()) is not None:
         level = logging.DEBUG if isinstance(error, expected) else logging.ERROR
-        logger.log(level, "Writes a cancelled caller left failed: %s", error, exc_info=error)
+        logger.log(
+            level,
+            "Writes a cancelled caller left failed: %s",
+            describe_error(error),
+            exc_info=error,
+        )
     raise cancelled
+
+
+def describe_error(error: BaseException) -> str:
+    """*error* for a log line: its type, and its message when it has one (a
+    ``TimeoutError`` often has none)."""
+    message = str(error)
+    return f"{type(error).__name__}: {message}" if message else type(error).__name__
 
 
 def close_unstarted(*works: object) -> None:

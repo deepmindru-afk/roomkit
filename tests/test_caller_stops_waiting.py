@@ -324,6 +324,45 @@ class TestARoomAnotherCallCreatedFirst:
             await kit.close()
 
 
+class _AnswerTimesOut(_SlowAnswer):
+    """A commit whose answer never comes back: it times out, as a database
+    round trip does, with a ``TimeoutError`` that carries no message."""
+
+    async def commit_event(self, room_id: str, event: RoomEvent, **kw: Any) -> RoomEvent:
+        if _body(event) == "first":
+            self.written.set()
+            await self.answer.wait()
+            raise TimeoutError
+        return await super().commit_event(room_id, event, **kw)
+
+
+class TestAWriteThatFailsAfterItsCallerLeft:
+    async def test_its_failure_is_logged_by_its_type(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A decided write fails once its caller was cancelled: the line it
+        is logged under names the failure, its type when it has no message."""
+        store = _AnswerTimesOut()
+        kit = RoomKit(store=store)
+        kit.register_channel(SimpleChannel("sms1"))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "sms1")
+        try:
+            caller = asyncio.create_task(kit.process_inbound(_msg("first"), room_id="r1"))
+            await _cancelled_while(caller, store.written)
+            with caplog.at_level(logging.ERROR, logger="roomkit"):
+                store.answer.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await caller
+        finally:
+            await kit.close()
+
+        lines = [
+            r.getMessage() for r in caplog.records if "a cancelled caller left" in r.getMessage()
+        ]
+        assert lines == ["Writes a cancelled caller left failed: TimeoutError"]
+
+
 class TestTheKitsClose:
     async def test_the_writes_a_cancelled_caller_left_land_within_the_grace(
         self, close_grace: float
