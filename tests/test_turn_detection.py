@@ -119,6 +119,7 @@ class TestTurnDetection:
         # Mock framework
         mock_fw = AsyncMock()
         mock_fw._build_context = AsyncMock(return_value=AsyncMock())
+        mock_fw._hold_channel_work = MagicMock()
         mock_fw.hook_engine.has_hooks = MagicMock(return_value=True)
         mock_fw.hook_engine.run_async_hooks = AsyncMock()
         mock_fw.hook_engine.run_sync_hooks = AsyncMock(
@@ -176,6 +177,7 @@ class TestTurnDetection:
 
         mock_fw = AsyncMock()
         mock_fw._build_context = AsyncMock(return_value=AsyncMock())
+        mock_fw._hold_channel_work = MagicMock()
         mock_fw.hook_engine.has_hooks = MagicMock(return_value=True)
         mock_fw.hook_engine.run_async_hooks = AsyncMock()
         mock_fw.hook_engine.run_sync_hooks = AsyncMock(
@@ -241,6 +243,7 @@ class TestTurnDetection:
 
         mock_fw = AsyncMock()
         mock_fw._build_context = AsyncMock(return_value=AsyncMock())
+        mock_fw._hold_channel_work = MagicMock()
         mock_fw.hook_engine.has_hooks = MagicMock(return_value=True)
         mock_fw.hook_engine.run_async_hooks = AsyncMock()
         mock_fw.hook_engine.run_sync_hooks = AsyncMock(
@@ -312,6 +315,7 @@ def _wired_channel(detector, vad_events, transcripts, *, stt=None, **config_kwar
     channel = VoiceChannel("ch1", stt=stt, backend=backend, pipeline=config)
     fw = AsyncMock()
     fw._build_context = AsyncMock(return_value=AsyncMock())
+    fw._hold_channel_work = MagicMock()
     fw.hook_engine.has_hooks = MagicMock(return_value=True)
     fw.hook_engine.run_async_hooks = AsyncMock()
     fw.hook_engine.run_sync_hooks = AsyncMock(
