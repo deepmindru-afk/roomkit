@@ -493,6 +493,10 @@ concurrently, fire-and-forget, errors logged. Registration mode is forgiving in
 both directions: ASYNC-registered hooks on a SYNC trigger fire as observers
 after the sync pass, in the background: the operation goes on without waiting
 for them, so a hook whose work it needs first is registered SYNC (RMK-903).
+The ASYNC hooks of `BEFORE_BROADCAST` start once the event's pass is over: the
+event stored and its delivery placed in the room's lane, whatever the store,
+for every pass (a message, a send, a post, an agent's answer, an injected
+event); one the SYNC hooks blocked has no observer (RMK-1039).
 Fired from the room's work, such an observer is that cascade's work: what it
 sends into the room draws one of the cascade's hook calls, as an
 `AFTER_BROADCAST` body's does, so one that posts on every event it observes
@@ -513,7 +517,7 @@ are not fired by any built-in code.
 
 | Trigger | Execution | Signature | Description |
 |---------|-----------|-----------|-------------|
-| `BEFORE_BROADCAST` | SYNC | `(event, ctx) -> HookResult` | Before event is stored and broadcast. Can block/modify. |
+| `BEFORE_BROADCAST` | SYNC | `(event, ctx) -> HookResult` | Before event is stored and broadcast. Can block/modify. Its ASYNC observers start once the event is stored and its delivery placed. |
 | `AFTER_BROADCAST` | ASYNC | `(event, ctx) -> None` | After event is broadcast. Fire-and-forget side effects. |
 
 ### Event Mutation (edit/delete)

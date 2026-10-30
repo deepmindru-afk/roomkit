@@ -715,7 +715,8 @@ shutdown, whoever calls it and however often:
 2. **What has not started is cut at once**: a delivery queued in a room's lane
    behind another is dropped and never sent (one placed in the lane while it
    was idle runs from its placement, and gets the grace of rule 4, whatever
-   the store), the kit's background runs and its verification
+   the store: an ASYNC `BEFORE_BROADCAST` observer that closes the kit finds
+   its event's delivery placed), the kit's background runs and its verification
    timers are cut, and a call waiting for its room's lock is cut, nothing of
    it stored (`process_inbound` and `regenerate_response` return
    `InboundResult(blocked=True, reason="kit_closed")`; `send_event`,
