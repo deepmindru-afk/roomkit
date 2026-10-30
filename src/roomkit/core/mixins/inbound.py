@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.channels._runtime_record import RUNTIME_RECORD
 from roomkit.channels.addressing import read_recipient
 from roomkit.core._changes import for_channels
-from roomkit.core._closing import Cascades, DoorRuns, cut_by_close
+from roomkit.core._closing import Cascades, DoorRuns
 from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
 from roomkit.core._instructions import FINGERPRINT, names_an_agent
 from roomkit.core._publication_keys import admitted_key
@@ -27,7 +27,6 @@ from roomkit.core._reentrance import (
 )
 from roomkit.core.exceptions import (
     ChannelNotRegisteredError,
-    KitClosedError,
     RoomAlreadyExistsError,
     RoomNotFoundError,
 )
@@ -248,17 +247,10 @@ class InboundMixin(HelpersMixin):
         refuse_too_deep(message.content)
         # The message's key names its delivery from the call's start, before
         # anything is awaited (RFC §10.1): the read of its room's scope too.
-        # The kit's close cuts it before its commit (RFC §12.10.4).
-        try:
-            with (
-                self._door_runs.run("message"),
-                self._delivery_keys.naming(message.delivery_key, organization_id) as named,
-            ):
-                return await self._process_named_inbound(
-                    message, room_id, defer_delivery, organization_id, named
-                )
-        except KitClosedError:
-            return cut_by_close()
+        with self._delivery_keys.naming(message.delivery_key, organization_id) as named:
+            return await self._process_named_inbound(
+                message, room_id, defer_delivery, organization_id, named
+            )
 
     async def _process_named_inbound(
         self,
@@ -790,7 +782,7 @@ class InboundMixin(HelpersMixin):
                             room_id, event, context, budget=entry.budget, adopted=entry.adopted
                         )
                     )
-                    await self._door_runs.enter_lock(stack, self._lock_manager.locked(room_id))
+                    await stack.enter_async_context(self._lock_manager.locked(room_id))
             except TimeoutError:
                 return await self._refuse_on_timeout(room_id, channel_id=message.channel_id)
             try:
@@ -1396,7 +1388,7 @@ class InboundMixin(HelpersMixin):
         :class:`_RoutingTimeoutError` naming the room."""
         await _by(
             deadline,
-            self._door_runs.enter_lock(stack, self._lock_manager.locked(room_id)),
+            stack.enter_async_context(self._lock_manager.locked(room_id)),
             room_id=room_id,
         )
 

@@ -13,23 +13,23 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import logging
 import weakref
-from collections.abc import Generator
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 from typing import Any
 
+from roomkit.core import task_utils
 from roomkit.core._reentrance import ReentryBudget
 from roomkit.core.exceptions import KitClosedError
 from roomkit.core.lanes import DeliveryCascade
+from roomkit.core.locks import _has_room_lock
 from roomkit.models.delivery import InboundResult
+from roomkit.models.enums import EventStatus
+from roomkit.models.event import RoomEvent
+
+logger = logging.getLogger("roomkit.framework")
 
 KIT_CLOSED = KitClosedError.code
-
-_NESTED: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "roomkit_nested_call", default=False
-)
-"""Whether the current call into a room runs inside another call of the same
-task (a hook's), whose run it is."""
 
 
 def cut_by_close() -> InboundResult:
@@ -73,88 +73,166 @@ class Cascades:
             if cascade.in_flight:
                 cascade.cancel(KIT_CLOSED, spared=spared, wake=False)
 
-    def turn_work(self) -> set[asyncio.Task[Any]]:
-        """The turn work of the cascades the close cut, still unwinding: a
-        cut turn stores what it streamed, its open tool calls closed."""
+    def running(self) -> set[asyncio.Task[Any]]:
+        """The work of the cascades the close cut, still running: a cut turn
+        storing what it streamed, a delivery set or its aftermath unwinding
+        (a send, an observer that ignores its cut)."""
         return {
             task
             for cascade in list(self._live)
             if cascade.cancelled is not None
-            for task in cascade.unwinding()
+            for task in cascade.running()
         }
 
 
-class DoorRuns:
-    """The calls into a room under way (``process_inbound``,
-    ``send_event``, ``commit_event``, a regeneration), from the call's start
-    to its commit: what ``close()`` cuts. One waiting for its room's lock is
-    cut at once; one still running (its hooks, its writes) once the close's
-    grace ran out. A cut call ends with :class:`KitClosedError`, never a
-    ``CancelledError`` its caller did not ask for."""
+class CallCutError(KitClosedError):
+    """A call into a room the kit's close cut (RFC §12.10.4). *committed*
+    is the event its commit stored, read back once it was cut, or ``None``
+    when nothing of it is stored; *blocked_reason*, the reason its hooks
+    blocked it for, when its commit was the block's record."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        message: str,
+        committed: RoomEvent | None = None,
+        blocked_reason: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.committed = committed
+        self.blocked_reason = blocked_reason
+
+
+class _Run:
+    """One call into a room under way, the event its commit writes and, for
+    a block's record, the reason its hooks blocked it for."""
+
+    __slots__ = ("blocked_reason", "committing", "task")
+
+    def __init__(self, task: asyncio.Task[Any]) -> None:
+        self.task = task
+        self.committing: RoomEvent | None = None
+        self.blocked_reason: str | None = None
+
+
+_RUN: contextvars.ContextVar[_Run | None] = contextvars.ContextVar(
+    "roomkit_call_run", default=None
+)
+"""The call the current code runs for, the one its commit is; ``None`` in a
+call made from inside another in the same task (a hook's), whose commit is
+not the outer call's."""
+
+
+class DoorRuns:
+    """The calls the kit takes that write or deliver, from the call's start
+    to its commit: what ``close()`` cuts (RFC §12.10.4). One waiting for a
+    room's lock is cut at once; one still running (its hooks, its writes)
+    once the close's grace ran out. A cut call ends with :class:`CallCutError`,
+    never a ``CancelledError`` its caller did not ask for; one whose commit
+    landed as it was cut names the event stored.
+
+    *read_event* reads a stored event back by its id; *spared* names the
+    work the close is called from."""
+
+    def __init__(
+        self,
+        read_event: Callable[[str], Awaitable[RoomEvent | None]],
+        spared: Callable[[], set[asyncio.Task[Any]]],
+    ) -> None:
+        self._read_event = read_event
+        self._spared = spared
+        self._runs: dict[asyncio.Task[Any], _Run] = {}
         self._running: set[asyncio.Task[Any]] = set()
         self._waiting: set[asyncio.Task[Any]] = set()
+        self._unwinding: set[asyncio.Task[Any]] = set()
         self._cut: set[asyncio.Task[Any]] = set()
         self.closed = False
 
-    @contextlib.contextmanager
-    def run(self, what: str = "call") -> Generator[None]:
-        """Within it, the current task runs a call into a room, cut as the
-        kit closes. A call made from inside another in the same task (a
-        hook's) is the outer call's run. Refused on a closing kit.
+    @contextlib.asynccontextmanager
+    async def run(self, what: str = "call", *, own: bool = False) -> AsyncGenerator[None]:
+        """Within it, the current task runs a call, cut as the kit closes.
+        One made inside another in the same task is part of the outer call's
+        run: its commit is the outer call's when it carries out that call
+        (``send_event`` writing through the framework's own door), not when
+        it is a call of its *own* (a hook's, made from the outer call's
+        pipeline). Refused on a closing kit.
 
         Raises:
-            KitClosedError: the kit is closing, or its close cut the call.
+            KitClosedError: the kit is closing.
+            CallCutError: the close cut the call.
         """
         refuse_closed(self.closed, what)
         task = asyncio.current_task()
-        nested = task is None or task in self._running or task in self._waiting
+        nested = task is None or task in self._runs
+        record = None
         if not nested:
             assert task is not None
+            record = _Run(task)
+            self._runs[task] = record
             self._running.add(task)
-        token = _NESTED.set(nested)
+        token = _RUN.set(record) if record is not None or own else None
         try:
             yield
         except asyncio.CancelledError:
-            if nested or not self._was_cut(task):
+            if record is None or not self._was_cut(task):
                 raise
-            raise KitClosedError(
-                f"The kit closed before this {what} was committed: nothing of it is stored"
+            # Its unwind: a commit that landed as it was cut is read back,
+            # so the call reports it stored (RFC §10.1, §12.10.4).
+            self._unwinding.add(record.task)
+            committed = await self._read_back(record)
+            raise CallCutError(
+                f"The kit closed before this {what} ended"
+                + ("" if committed is not None else ": nothing of it is stored"),
+                committed,
+                record.blocked_reason,
             ) from None
         finally:
-            _NESTED.reset(token)
-            if not nested:
-                self._leave(task)
+            if token is not None:
+                _RUN.reset(token)
+            if record is not None:
+                self._leave(record.task)
+
+    def committing(self, event: RoomEvent, *, blocked_reason: str | None = None) -> None:
+        """The current call writes *event* as its commit, the record of a
+        block for *blocked_reason* when given: cut from now on, it reads the
+        event back to report it stored."""
+        record = _RUN.get()
+        if record is not None:
+            record.committing = event
+            record.blocked_reason = blocked_reason
 
     def committed(self) -> None:
         """The current call is past its commit: the close no longer cuts it,
         its delivery is its cascade's. A nested call's commit is not its
         outer call's."""
-        task = asyncio.current_task()
-        if task is not None and not _NESTED.get():
-            self._running.discard(task)
+        record = _RUN.get()
+        if record is not None:
+            self._running.discard(record.task)
 
-    async def enter_lock(
-        self, stack: AsyncExitStack, lock: AbstractAsyncContextManager[Any]
-    ) -> None:
-        """Wait for the room's *lock* as a call into the room: cut at once
-        if the kit closes meanwhile, refused if it is closing already."""
+    @contextlib.contextmanager
+    def waiting_for_lock(self, room_id: str) -> Generator[None]:
+        """Around the current code's wait for *room_id*'s lock: a call
+        waiting so is cut at once as the kit closes, and one that reaches
+        it once the close started is refused, but the work the close is
+        called from. A lock the code already holds is no wait.
+
+        Raises:
+            KitClosedError: the kit is closing.
+        """
         task = asyncio.current_task()
-        if self.closed:
-            raise KitClosedError(
+        if task is None or task not in self._running or _has_room_lock(room_id):
+            yield
+            return
+        if self.closed and task not in self._spared():
+            raise CallCutError(
                 "The kit closed before this call took its room's lock: nothing of it is stored"
             )
-        if task is None or task not in self._running:
-            await stack.enter_async_context(lock)
-            return
         self._running.discard(task)
         self._waiting.add(task)
         try:
-            await stack.enter_async_context(lock)
+            yield
         finally:
             self._waiting.discard(task)
-            if not task.done():
+            if task in self._runs:
                 self._running.add(task)
 
     def cut_waiting(self, spared: set[asyncio.Task[Any]]) -> None:
@@ -166,14 +244,32 @@ class DoorRuns:
 
     def cut_running(self, spared: set[asyncio.Task[Any]]) -> None:
         """Cut every call still running before its commit, but the ones
-        *spared* (a call the close runs under)."""
+        *spared* (a call the close runs under) and the ones unwinding."""
         self.closed = True
-        for task in list((self._running | self._waiting) - spared):
+        for task in list((self._running | self._waiting) - spared - self._unwinding):
             self._cut_task(task)
 
     def running(self) -> set[asyncio.Task[Any]]:
-        """The calls still running before their commit."""
-        return {task for task in self._running | self._waiting if not task.done()}
+        """The calls still running before their commit, or unwinding."""
+        return {
+            task for task in self._running | self._waiting | self._unwinding if not task.done()
+        }
+
+    async def _read_back(self, record: _Run) -> RoomEvent | None:
+        """The event *record*'s commit stored, read by its id within the
+        unwind; ``None`` when it is not stored, or cannot be read."""
+        event = record.committing
+        if event is None:
+            return None
+        try:
+            async with asyncio.timeout(task_utils.CUT_UNWIND_S):
+                stored = await self._read_event(event.id)
+        except Exception:  # noqa: BLE001 - a read that fails reports nothing stored
+            logger.debug("Reading back the event %s a cut call committed failed", event.id)
+            return None
+        if stored is None or stored.room_id != event.room_id:
+            return None
+        return stored
 
     def _cut_task(self, task: asyncio.Task[Any]) -> None:
         if task in self._cut or task.done():
@@ -190,14 +286,43 @@ class DoorRuns:
         self._cut.discard(task)
         return task.uncancel() == 0 if task.cancelling() else True
 
-    def _leave(self, task: asyncio.Task[Any] | None) -> None:
+    def _leave(self, task: asyncio.Task[Any]) -> None:
         """The call *task* ran ended: a cut that never reached it (the call
         ended first) is taken back, so it cuts nothing of its caller's."""
-        if task is None:
-            return
+        self._runs.pop(task, None)
         self._running.discard(task)
         self._waiting.discard(task)
+        self._unwinding.discard(task)
         if task in self._cut:
             self._cut.discard(task)
             if task.cancelling():
                 task.uncancel()
+
+
+def inbound_cut_result(cut: KitClosedError) -> InboundResult:
+    """What a call returning an ``InboundResult`` reads once the kit's close
+    cut it (RFC §12.10.4): its event when its commit landed, ``kit_closed``;
+    else a refusal, nothing stored."""
+    if not isinstance(cut, CallCutError) or cut.committed is None:
+        return cut_by_close()
+    stored = cut.committed
+    blocked = stored.status == EventStatus.BLOCKED
+    return InboundResult(
+        event=stored,
+        blocked=blocked,
+        reason=(cut.blocked_reason or stored.blocked_by) if blocked else None,
+        cancellation_reason=KIT_CLOSED,
+    )
+
+
+def event_cut_result(cut: KitClosedError) -> RoomEvent:
+    """What a call returning the committed event reads once the kit's close
+    cut it (RFC §12.10.4): its event when its commit landed.
+
+    Raises:
+        KitClosedError: nothing of the call is stored.
+    """
+    stored = cut.committed if isinstance(cut, CallCutError) else None
+    if stored is None:
+        raise cut
+    return stored

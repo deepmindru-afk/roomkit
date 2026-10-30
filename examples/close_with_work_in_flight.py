@@ -1,8 +1,9 @@
 """Close a kit while work is in flight, and read what each call got back.
 
-``kit.close()`` refuses every new call that writes or delivers at once, cuts what has not started
-and every model turn at once, gives the rest of the running work one grace
-of five seconds, then cuts what is left. Each call it cut returns one result,
+``kit.close()`` refuses every new call at once (but the reads, and the
+teardown calls, which return doing nothing), cuts what has not started and
+every model turn at once, gives the rest of the running work one grace of
+five seconds, then cuts what is left. Each call it cut returns one result,
 ``cancellation_reason == "kit_closed"``, with what it delivered.
 
 This example closes a kit that holds, all at once:
@@ -16,7 +17,8 @@ This example closes a kit that holds, all at once:
   grace: stored, its delivery dropped), and one waiting for that room's lock
   (cut at once, nothing stored);
 - a call made once the close started (refused with ``KitClosedError``),
-  while reads stay open: the timelines are read through the kit after it.
+  while the reads answer: the timelines are read through the kit after it,
+  its in-memory store still open.
 
 It takes about five seconds: the grace. Run with:
     uv run python examples/close_with_work_in_flight.py

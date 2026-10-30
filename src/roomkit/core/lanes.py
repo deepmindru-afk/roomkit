@@ -36,6 +36,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core import task_utils
 from roomkit.core._reentrance import ReentryBudget, delivering
 from roomkit.core.exceptions import KitClosedError
 from roomkit.core.locks import _has_room_lock, _held_rooms
@@ -62,10 +63,6 @@ logger = logging.getLogger("roomkit.lanes")
 # a disjoint key space, so the ContextVar reentrancy of ``locked()`` can never
 # confuse "I hold the delivery claim" with "I hold the room lock".
 DELIVERY_CLAIM_PREFIX = "__delivery__:"
-
-# How long a cut lane's task is given to unwind once cancelled.
-_TASK_GRACE_S = 1.0
-
 
 # Room id whose lane executor the current task belongs to. Lets
 # ``DeliveryCascade.wait()`` refuse to wait on itself: integrator code running
@@ -143,10 +140,11 @@ class DeliveryPlan:
     defers_solicitation: bool = False
     turn_for: str | None = None
     max_chain_depth: int | None = None
-    # What its delivery set had done when the kit's close cut it (RFC
-    # §12.10.4): the targets delivered, the one cut mid-send failed; its
-    # caller reads it as the set's result.
-    cut_result: Any = None
+    # What its delivery set has done so far, set by the set as it starts and
+    # read when the kit's close cuts it (RFC §12.10.4): the targets
+    # delivered, the ones still sending failed; its caller reads it as the
+    # set's result.
+    partial_result: Callable[[], Any] | None = None
 
     @property
     def answers_caller(self) -> bool:
@@ -318,10 +316,11 @@ class DeliveryCascade:
                 task.cancel()
             raise
 
-    def unwinding(self) -> set[asyncio.Task[Any]]:
-        """Its turn work still running, once cancelled: a cut turn storing
-        what it streamed. Its cleanup, which waits for that work, is not."""
-        return {task for task in self._turn_work if not task.done()}
+    def running(self) -> set[asyncio.Task[Any]]:
+        """The work it owns still running (:meth:`run`): its turns, the
+        reading of its streams, its delivery sets and their aftermath. Its
+        cleanup, which waits for that work, is not."""
+        return {task for task in self._tasks if not task.done()}
 
     async def wait_drained(self) -> None:
         """Join its turn work, including its asynchronous finalizers."""
@@ -661,6 +660,9 @@ class RoomDeliveryLane:
         # round took, end with.
         self._reason = "lane_cancelled"
         self._cut = False
+        # The work the close is called from (RFC §12.10.4): the turn work of
+        # a cascade the seal drops that it holds is left to end.
+        self._spared: Callable[[], set[asyncio.Task[Any]]] = set
 
     @property
     def idle(self) -> bool:
@@ -708,12 +710,15 @@ class RoomDeliveryLane:
         """The lane's executor, while it runs."""
         return self._task
 
-    def seal(self, reason: str) -> None:
+    def seal(self, reason: str, spared: Callable[[], set[asyncio.Task[Any]]] = set) -> None:
         """Take no more work (RFC §12.10.4): the queued entries are dropped
-        with *reason*, their cascades cancelled, and the round under way ends
-        after the entry it runs; what it ran is then finished as usual."""
+        with *reason*, their cascades cancelled but for the turn work in
+        *spared* (the work the close is called from), and the round under
+        way ends after the entry it runs; what it ran is then finished as
+        usual."""
         self._closed = True
         self._reason = reason
+        self._spared = spared
         self._wakeup.set()
         self._abort_pending(reason)
 
@@ -739,7 +744,7 @@ class RoomDeliveryLane:
                 self.room_id,
                 entry.index,
             )
-            entry.cascade.cancel(reason)
+            entry.cascade.cancel(reason, spared=self._spared())
             entry.cascade.release()
 
     def _abort_pending(self, reason: str) -> None:
@@ -838,9 +843,15 @@ class RoomDeliveryLane:
 
     def _report_cut(self, entry: ExecEntry, result: Any) -> None:
         """What a cut entry delivered, to its caller: the result of its
-        delivery set, or what the set had delivered when it was cut."""
-        if result is None:
-            result = entry.plan.cut_result
+        delivery set, or what the set had delivered when the kit's close cut
+        it, the sends still under way failed."""
+        partial = entry.plan.partial_result
+        if (
+            result is None
+            and partial is not None
+            and entry.cascade.cancelled == KitClosedError.code
+        ):
+            result = partial()
         if result is not None:
             self._host._report_cut(entry.plan, result, entry.cascade)
 
@@ -939,14 +950,13 @@ class RoomDeliveryLane:
         """
         run = _Executed(entry)
         executed.append(run)
-        delivery: list[asyncio.Task[Any]] = []
         try:
-            run.result = await entry.cascade.run(self._execute(entry), on_task=delivery.append)
+            run.result = await entry.cascade.run(self._execute(entry))
         except asyncio.CancelledError:
             if self._cut:
-                # The set reports what it delivered as it unwinds: waited
-                # for, at most the cut's grace, before the entry reports.
-                await asyncio.wait(delivery, timeout=_TASK_GRACE_S)
+                # The entry reports what its set has done (partial_result);
+                # the set unwinds as the cascade's work, which the kit's
+                # close waits for within its unwind.
                 raise
             if entry.cascade.cancelled is None:
                 raise
@@ -1027,6 +1037,7 @@ class RoomLaneRegistry:
         self._config = config
         self._lanes: dict[str, RoomDeliveryLane] = {}
         self._sealed = False
+        self._spared: Callable[[], set[asyncio.Task[Any]]] = set
 
     def lane(self, room_id: str) -> RoomDeliveryLane:
         """Get or create (and start) the room's lane."""
@@ -1053,7 +1064,7 @@ class RoomLaneRegistry:
                     room_id,
                     entry.index,
                 )
-                entry.cascade.cancel(KitClosedError.code)
+                entry.cascade.cancel(KitClosedError.code, spared=self._spared())
                 entry.cascade.release()
             return
         self.lane(room_id).enqueue(entry)
@@ -1070,13 +1081,18 @@ class RoomLaneRegistry:
             del self._lanes[lane.room_id]
         return True
 
-    def seal(self, reason: str = "kit_closed") -> None:
+    def seal(
+        self, reason: str = "kit_closed", spared: Callable[[], set[asyncio.Task[Any]]] = set
+    ) -> None:
         """Take no more work (RFC §12.10.4): every entry queued or enqueued
-        from now on is dropped with *reason*, its cascade cancelled; the
-        rounds under way end after the entry each runs. Idempotent."""
+        from now on is dropped with *reason*, its cascade cancelled but for
+        the turn work in *spared* (the work the close is called from, read
+        at each drop); the rounds under way end after the entry each runs.
+        Idempotent."""
         self._sealed = True
+        self._spared = spared
         for lane in self._lanes.values():
-            lane.seal(reason)
+            lane.seal(reason, spared)
 
     def running(self) -> set[asyncio.Task[None]]:
         """The executors still running, the rounds under way included."""
@@ -1096,7 +1112,8 @@ class RoomLaneRegistry:
     async def aclose(self) -> None:
         """Seal the registry, give the rounds under way the lanes'
         ``close_grace`` to end, then cut what is left and let it unwind, at
-        most ``_TASK_GRACE_S``. A lane whose work runs this close is neither
+        most :data:`~roomkit.core.task_utils.CUT_UNWIND_S`. A lane whose work
+        runs this close is neither
         waited for nor cut. Idempotent. The kit's close runs these steps
         itself, on the one grace it gives all its work."""
         self.seal()
@@ -1106,4 +1123,4 @@ class RoomLaneRegistry:
 
         await wait_for_unspared(unspared, timeout=self._config.close_grace)
         self.cut(spared_by_close())
-        await wait_for_unspared(unspared, timeout=_TASK_GRACE_S)
+        await wait_for_unspared(unspared, timeout=task_utils.CUT_UNWIND_S)

@@ -11,7 +11,6 @@ from typing import Any
 
 import pytest
 
-from roomkit.core import lanes
 from roomkit.core.lanes import (
     DeliveryCascade,
     DeliveryPlan,
@@ -258,10 +257,7 @@ async def test_execution_failure_resolves_wait_and_records_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_aborts_pending_work_and_wakes_waiters(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(lanes, "_TASK_GRACE_S", 0.01)  # the hung task is cut at once
+async def test_close_aborts_pending_work_and_wakes_waiters(cut_unwind: float) -> None:
     store, host, registry, _ = await make_rig(close_grace=0.05)
     host.execute_gate = asyncio.Event()  # never set: execution hangs
     cascade = DeliveryCascade(ROOM, reentry_budget=10)
@@ -276,9 +272,7 @@ async def test_close_aborts_pending_work_and_wakes_waiters(
 
 
 @pytest.mark.asyncio
-async def test_close_releases_the_delivery_it_cancelled_mid_execution(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_close_releases_the_delivery_it_cancelled_mid_execution(cut_unwind: float) -> None:
     """One in-flight delivery and nothing else queued.
 
     The entry is off the queues while it executes, so ``_abort_pending`` can
@@ -286,7 +280,6 @@ async def test_close_releases_the_delivery_it_cancelled_mid_execution(
     With a sibling entry still queued the bug hides: aborting the sibling
     sets the cascade's event for everyone.
     """
-    monkeypatch.setattr(lanes, "_TASK_GRACE_S", 0.01)  # the hung task is cut at once
     store, host, registry, _ = await make_rig(close_grace=0.05)
     host.execute_gate = asyncio.Event()  # never set: execution hangs
     cascade = DeliveryCascade(ROOM, reentry_budget=10)

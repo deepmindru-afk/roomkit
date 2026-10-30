@@ -621,6 +621,7 @@ class VoiceChannel(
             self._schedule(
                 self._fire_session_started_hook(session, room_id),
                 name=f"session_started:{session.id}",
+                kit_work=True,
             )
 
     # -------------------------------------------------------------------------
@@ -1169,7 +1170,9 @@ class VoiceChannel(
     # Helpers
     # -------------------------------------------------------------------------
 
-    def _schedule(self, coro: Coroutine[Any, Any, Any], *, name: str) -> None:
+    def _schedule(
+        self, coro: Coroutine[Any, Any, Any], *, name: str, kit_work: bool = False
+    ) -> None:
         """Schedule *coro* as a fire-and-forget task.
 
         Works from both the event-loop thread and foreign threads (e.g.
@@ -1182,19 +1185,26 @@ class VoiceChannel(
             # Foreign thread — dispatch via cached event loop.
             cached = self._event_loop
             if cached is not None and cached.is_running():
-                cached.call_soon_threadsafe(self._create_task, coro, name)
+                cached.call_soon_threadsafe(self._create_task, coro, name, kit_work)
             else:
                 coro.close()
             return
         # Cache the loop for future cross-thread calls.
         self._event_loop = loop
-        self._create_task(coro, name)
+        self._create_task(coro, name, kit_work)
 
-    def _create_task(self, coro: Coroutine[Any, Any, Any], name: str) -> None:
-        """Create and track an asyncio task (must be called on the event loop thread)."""
+    def _create_task(
+        self, coro: Coroutine[Any, Any, Any], name: str, kit_work: bool = False
+    ) -> None:
+        """Create and track an asyncio task (must be called on the event
+        loop thread). *kit_work* (a session's framework event, its hook) is
+        held by the kit too: its close gives it the grace, then cuts it (RFC
+        §12.10.4)."""
         task = asyncio.get_running_loop().create_task(coro, name=name)
         task.add_done_callback(self._task_done)
         self._scheduled_tasks.add(task)
+        if kit_work and self._framework is not None:
+            self._framework._hold_channel_work(task)
 
     def _task_done(self, task: asyncio.Task[Any]) -> None:
         """Done-callback for scheduled tasks: log exceptions and remove from set."""
@@ -1328,12 +1338,14 @@ class VoiceChannel(
             self._schedule(
                 self._emit_session_started(session, room_id),
                 name=f"session_started:{session.id}",
+                kit_work=True,
             )
         # Dual-signal: if backend already signalled ready, fire hook now
         if was_ready_pending and self._framework:
             self._schedule(
                 self._fire_session_started_hook(session, room_id),
                 name=f"session_started:{session.id}",
+                kit_work=True,
             )
 
     async def connect_session(
@@ -1464,6 +1476,7 @@ class VoiceChannel(
             self._schedule(
                 self._emit_session_ended(session, room_id),
                 name=f"session_ended:{session.id}",
+                kit_work=True,
             )
 
     def _forget_speech_state(self, session_id: str) -> None:

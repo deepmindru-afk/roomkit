@@ -625,6 +625,12 @@ class EventRouter:
 
         # Collect per-target results to avoid concurrent mutation
         target_results: list[_TargetResult] = []
+        # What the set has done so far, read when the kit's close cuts it:
+        # each target delivered keeps its result, a send under way is failed,
+        # even one that ignores its cut (RFC §12.10.4).
+        plan.partial_result = lambda: _merged(
+            event, target_results + _cut_sends(plan, target_results, self._channels)
+        )
 
         async def _process_target(binding: ChannelBinding) -> None:
             if binding.category == ChannelCategory.INTELLIGENCE:
@@ -855,12 +861,6 @@ class EventRouter:
             for tr in target_results:
                 if tr.streaming_response is not None:
                     drop_unread(tr.streaming_response.stream)
-            if cascade is not None and cascade.cancelled == KitClosedError.code:
-                # The kit's close cut the set: each target delivered keeps
-                # its result, the ones cut mid-send failed (RFC §12.10.4).
-                plan.cut_result = _merged(
-                    event, target_results + _cut_sends(plan, target_results, self._channels)
-                )
             raise
 
         # Merge per-target results into BroadcastResult (single-threaded), in

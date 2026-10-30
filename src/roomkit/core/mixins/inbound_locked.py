@@ -470,9 +470,13 @@ class InboundLockedMixin(HelpersMixin):
         """Every durable write of a decided event: its BLOCKED record or its
         commit, enqueued on the room's lane, and what its hooks injected
         queued on *queued*."""
+        # Read back if the kit's close cuts these writes as they land: the
+        # call then reports its event stored (RFC §12.10.4).
         if isinstance(decision, _Blocked):
+            self._door_runs.committing(decision.event, blocked_reason=decision.reason)
             blocked_event = await self._store_blocked(room_id, decision, queued)
             return InboundResult(event=blocked_event, blocked=True, reason=decision.reason)
+        self._door_runs.committing(decision.event)
         outcome = await self._run_commit(decision, room_id, cascade)
         # Injected events from allow/modify hooks: queued, each committed
         # after the trigger once its section has released the lock (the

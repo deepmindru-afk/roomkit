@@ -83,7 +83,7 @@ from roomkit.conference.models import (
     TrackKind,
 )
 from roomkit.core._voice_delivery import injection_silent
-from roomkit.core.task_utils import callers_read, wait_for_unspared
+from roomkit.core.task_utils import callers_read, check_open, wait_for_unspared
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -1075,6 +1075,10 @@ class ConferenceChannel(
     async def _on_participant_joined(
         self, room_id: str, participant: ConferenceParticipant
     ) -> None:
+        if self._framework is not None:
+            # A closing kit takes no arrival: no member written, no
+            # conference started (RFC §12.10.4).
+            check_open(self._framework, "participant arrival")
         room = self._attached_room(room_id)
         if room is None:
             return

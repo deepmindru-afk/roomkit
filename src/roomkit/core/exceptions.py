@@ -173,10 +173,11 @@ class KitClosedError(RoomKitError):
     """The kit's ``close()`` has started: the call is refused, nothing
     written (RFC §12.10.4).
 
-    Raised by every call that writes or delivers made once ``close()``
-    started, whoever makes it: an outside caller, or the kit's own work still
-    running (a hook, a tool, a channel's close). Reads stay open. Raised too
-    by a call that returns the committed
+    Raised by every call made once ``close()`` started, whoever makes it:
+    an outside caller, or the kit's own work still running (a hook, a tool,
+    a channel's close); but the reads answer while the store is open, and
+    the teardown calls return doing nothing. Raised by a read once the kit
+    closed its store. Raised too by a call that returns the committed
     ``RoomEvent`` and was cut before its commit (it waited for its room's
     lock, or its hooks outlasted the close's grace); ``process_inbound`` and
     ``regenerate_response``, whose result can say so, return

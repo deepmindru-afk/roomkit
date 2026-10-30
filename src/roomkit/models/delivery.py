@@ -312,7 +312,9 @@ class InboundResult(BaseModel):
     (``CancelledError``) after draining; a turn cut from elsewhere (the
     kit's ``close()``, a lane that dropped the delivery) is returned
     instead, its end under ``turns``, as a deferred caller reads it (RFC
-    §10.1 step 18).
+    §10.1 step 18). ``kit_closed`` for every call the kit's ``close()``
+    found under way, whether it ran a turn or not, cut or not (RFC
+    §12.10.4).
     """
     response_metadata: ResponseMetadata = Field(default_factory=ResponseMetadata)
     """The turn's response-metadata record; empty when no turn ran."""

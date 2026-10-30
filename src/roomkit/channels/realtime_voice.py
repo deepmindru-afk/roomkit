@@ -96,6 +96,7 @@ from roomkit.core.task_utils import (
     CLOSE_WAIT_S,
     _finish_cleanup,
     acting_tasks,
+    check_open,
     close_unstarted,
     wait_for_unspared,
 )
@@ -1318,6 +1319,9 @@ class RealtimeVoiceChannel(
         organization_id: str | None,
     ) -> VoiceSession:
         """Start the session on a task of its own, once its room is checked."""
+        if self._framework is not None:
+            # A closing kit starts no session (RFC §12.10.4).
+            check_open(self._framework, "realtime session")
         if self._closing:
             raise RuntimeError("Realtime voice channel is closing")
         await _check_room_scope(self._framework, room_id, organization_id)

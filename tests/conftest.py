@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from roomkit.core import framework
+from roomkit.core import framework, task_utils
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities
 from roomkit.models.enums import ChannelMediaType, ChannelType
 from roomkit.models.event import (
@@ -56,8 +56,19 @@ def close_grace(monkeypatch: pytest.MonkeyPatch) -> float:
     work a test leaves running as the kit closes is cut then, not after the
     production 5 s (RFC §12.10.4)."""
     grace = 0.05
-    monkeypatch.setattr(framework, "CLOSE_GRACE_S", grace, raising=False)
+    monkeypatch.setattr(framework, "CLOSE_GRACE_S", grace)
     return grace
+
+
+@pytest.fixture
+def cut_unwind(monkeypatch: pytest.MonkeyPatch) -> float:
+    """How long the kit's close lets the work it cut unwind, 30 ms under
+    test: work that ignores its cut is abandoned then, not after the
+    production 1 s (RFC §12.10.4)."""
+    unwind = 0.03
+    monkeypatch.setattr(framework, "CUT_UNWIND_S", unwind)
+    monkeypatch.setattr(task_utils, "CUT_UNWIND_S", unwind)
+    return unwind
 
 
 @pytest.fixture

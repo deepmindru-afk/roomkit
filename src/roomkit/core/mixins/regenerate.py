@@ -9,11 +9,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._changes import withdrawn
-from roomkit.core._closing import Cascades, DoorRuns, cut_by_close
+from roomkit.core._closing import Cascades, DoorRuns
 from roomkit.core._reentrance import ReentryBudget, chain_floor, charge_direct_change
 from roomkit.core._room_timers import due_transitions
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
-from roomkit.core.exceptions import KitClosedError, RoomClosedError
+from roomkit.core.exceptions import RoomClosedError
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan, anchor_index
 from roomkit.core.locks import collecting_release_failures, failed_release
 from roomkit.core.mixins.helpers import _REFUSING_STATUSES, HelpersMixin
@@ -264,16 +264,11 @@ class RegenerateMixin(HelpersMixin):
             await self.get_room(room_id, organization_id=organization_id)
         change = self._room_work.direct_change(room_id)
         charge_direct_change(change, room_id, "regenerate_response")
-        # The kit's close cuts it before its turn is queued (RFC §12.10.4).
-        try:
-            with self._door_runs.run("regeneration"):
-                discussion = self._discussions.get(room_id)
-                if discussion is not None:
-                    return await self._regenerate_in_discussion(discussion, room_id, trigger_id)
-                with collecting_release_failures() as failed_releases:
-                    result = await self._regenerate_alone(room_id, trigger_id, change.budget)
-        except KitClosedError:
-            return cut_by_close()
+        discussion = self._discussions.get(room_id)
+        if discussion is not None:
+            return await self._regenerate_in_discussion(discussion, room_id, trigger_id)
+        with collecting_release_failures() as failed_releases:
+            result = await self._regenerate_alone(room_id, trigger_id, change.budget)
         if result is not None and result.error is None and failed_releases:
             # A failed release of the room lock, as on the inbound path (RFC §13.5).
             result.error = failed_releases[0]
@@ -364,7 +359,7 @@ class RegenerateMixin(HelpersMixin):
         async with AsyncExitStack() as stack:
             try:
                 async with asyncio.timeout(self._process_timeout):
-                    await self._door_runs.enter_lock(stack, self._lock_manager.locked(room_id))
+                    await stack.enter_async_context(self._lock_manager.locked(room_id))
                     context, found = await self._regenerate_target(room_id)
             except TimeoutError:
                 return await self._refuse_on_timeout(room_id, operation="regenerate")
@@ -384,7 +379,7 @@ class RegenerateMixin(HelpersMixin):
         async with AsyncExitStack() as stack:
             try:
                 async with asyncio.timeout(self._process_timeout):
-                    await self._door_runs.enter_lock(stack, self._lock_manager.locked(room_id))
+                    await stack.enter_async_context(self._lock_manager.locked(room_id))
                     context, found = await self._regenerate_target(room_id)
             except TimeoutError:
                 return await self._refuse_on_timeout(room_id, operation="regenerate")

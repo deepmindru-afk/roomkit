@@ -7,8 +7,8 @@ import contextvars
 import logging
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Generator
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncGenerator, Callable, Generator
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager, nullcontext
 from dataclasses import dataclass
 
 logger = logging.getLogger("roomkit.locks")
@@ -272,13 +272,21 @@ class ReleaseTolerantLockManager(RoomLockManager):
     section asks it for the lock again.
     """
 
-    def __init__(self, inner: RoomLockManager) -> None:
+    def __init__(
+        self,
+        inner: RoomLockManager,
+        waiting: Callable[[str], AbstractContextManager[None]] | None = None,
+    ) -> None:
         self.inner = inner
+        # Around each wait for a lock: the kit's close cuts a call waiting
+        # for its room's lock at once (RFC §12.10.4).
+        self._waiting = waiting or (lambda _room_id: nullcontext())
 
     @asynccontextmanager
     async def locked(self, room_id: str) -> AsyncGenerator[None, None]:
         lock = self.inner.locked(room_id)
-        await lock.__aenter__()
+        with self._waiting(room_id):
+            await lock.__aenter__()
         try:
             yield
         except BaseException as exc:

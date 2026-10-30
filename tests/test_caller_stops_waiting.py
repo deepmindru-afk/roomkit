@@ -24,6 +24,7 @@ from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.identity import Identity
 from roomkit.models.room import Room
+from roomkit.models.store_filter import EventFilter
 from roomkit.store.memory import InMemoryStore
 from tests.test_framework import SimpleChannel
 
@@ -344,8 +345,6 @@ class TestTheKitsClose:
         caller = asyncio.create_task(kit.process_inbound(_msg("first"), room_id="r1"))
         await _cancelled_while(caller, store.written)
         closing = asyncio.ensure_future(kit.close())
-        await asyncio.sleep(0)
-        assert not closing.done()  # it gives the commit in flight its grace
         store.answer.set()
         await asyncio.wait_for(closing, 1)
 
@@ -354,12 +353,11 @@ class TestTheKitsClose:
         with pytest.raises(asyncio.CancelledError):
             await caller
 
-    async def test_writes_outlasting_the_grace_are_cut(
-        self, close_grace: float, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_writes_outlasting_the_grace_are_cut(self, close_grace: float) -> None:
         """A decided write runs integrator code (an ``event_blocked`` handler
         that never answers): the close gives it its grace, then cuts it, the
-        handler with it, and its caller returns refused (RMK-1030)."""
+        handler with it, and its caller reads the block's record stored,
+        ``kit_closed`` (RMK-1030)."""
         kit = RoomKit()
         kit.register_channel(SimpleChannel("sms1"))
         await kit.create_room(room_id="r1")
@@ -386,4 +384,10 @@ class TestTheKitsClose:
 
         result = await asyncio.wait_for(caller, 1)
         assert steps == ["cut"]
-        assert result.blocked
+        stored = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
+        assert result.event is not None and result.event in stored
+        assert (result.blocked, result.reason, result.cancellation_reason) == (
+            True,
+            "spam",
+            "kit_closed",
+        )

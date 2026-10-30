@@ -1,11 +1,17 @@
-"""``kit.close()`` ends a turn someone awaits as it ends the same turn on the
-neighbouring door (RMK-526, RFC §23.3, §10.1 step 18).
+"""``kit.close()`` and the kit's own work (RMK-526, RMK-1015, RMK-1019,
+RFC §12.10.4, §23.3).
 
-An inline delegation ends ``cancelled``, ON_TASK_COMPLETED fired before the
-store is sealed, as a background one does. An awaited room turn returns its
-``cancelled`` turn, as a deferred one does, never a ``CancelledError`` its
-caller did not ask for. A ``close()`` called from inside work the kit holds
-does not wait for that work.
+A turn someone awaits ends ``cancelled`` as on the neighbouring door: an
+inline delegation ends ``cancelled``, its ON_TASK_COMPLETED fired before the
+store is sealed, as a background one does; an awaited room turn returns its
+``cancelled`` turn, never a ``CancelledError`` its caller did not ask for. A
+``close()`` called from inside work the kit holds (a tool, a delivery, a
+session's end, an announcement) does not wait for that work, and one that
+joins a running close is spared by its own markers. What the kit holds as it
+closes (a background run, a hook task a channel's close starts, a timer
+check) ends with the close.
+
+The close's rules, one by one, are in ``tests/test_kit_close.py``.
 """
 
 from __future__ import annotations
@@ -52,6 +58,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
+from roomkit.store.sqlite import SQLiteStore
 from roomkit.tasks.posting import send_posted
 from roomkit.video.backends.mock import MockVideoBackend
 from roomkit.voice.backends.mock import MockVoiceBackend
@@ -288,6 +295,67 @@ async def test_a_close_from_a_tool_returns_and_seals_the_kit(door: str) -> None:
     await asyncio.wait_for(asyncio.gather(call, return_exceptions=True), timeout=5.0)
 
     assert kit._closed
+
+
+class _SlowCursor(InMemoryStore):
+    """A store whose delivery cursor read takes a moment, as a networked
+    store's does: a turn's rows still wait in the room's lane as its tool
+    runs."""
+
+    async def get_delivered_index(self, room_id: str) -> int:
+        await asyncio.sleep(0.01)
+        return await super().get_delivered_index(room_id)
+
+
+@pytest.mark.in_process(
+    "the kit closes from a tool in its own turn: an executor elsewhere holds no kit"
+)
+@pytest.mark.parametrize("store", ["slow-cursor", "sqlite"])
+async def test_a_close_from_a_tool_whose_lane_is_busy_returns(store: str, tmp_path: Any) -> None:
+    """A tool closes the kit while its turn's rows still wait in the room's
+    lane: the close spares the lane's work the tool runs under, so the
+    tool's close returns, and the call reads its cut, ``kit_closed``, never
+    that cut as its error (RMK-1030)."""
+    kit = RoomKit(
+        store=_SlowCursor() if store == "slow-cursor" else SQLiteStore(tmp_path / "r.db")
+    )
+    ended = asyncio.Event()
+    steps: list[str] = []
+
+    async def shutdown(name: str, arguments: dict[str, Any]) -> str:
+        try:
+            await kit.close()
+            steps.append("closed")
+        except BaseException as error:
+            steps.append(type(error).__name__)
+            raise
+        finally:
+            ended.set()
+        return "closed"
+
+    tool = {"name": "shutdown", "description": "Shut down.", "parameters": {"type": "object"}}
+    provider = MockAIProvider(
+        ai_responses=[
+            AIResponse(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[AIToolCall(id="c1", name="shutdown", arguments={})],
+            ),
+            AIResponse(content="done", finish_reason="stop"),
+        ]
+    )
+    kit.register_channel(Agent("agent", provider=provider, tools=[tool], tool_handler=shutdown))
+    kit.register_channel(SimpleChannel("sms"))
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "sms")
+    await kit.attach_channel("r", "agent", category=ChannelCategory.INTELLIGENCE)
+    message = InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Go."))
+
+    result = await asyncio.wait_for(kit.process_inbound(message, room_id="r"), 5)
+    await asyncio.wait_for(ended.wait(), 1)
+
+    assert steps == ["closed"]
+    assert (result.cancellation_reason, result.error) == ("kit_closed", None)
 
 
 # -- a close from a delivery, a session's end, an announcement -----------------
@@ -590,33 +658,16 @@ async def test_two_sessions_ending_at_once_each_close_the_kit() -> None:
     assert witness.closed
 
 
-@pytest.mark.in_process(
-    "the kit closes from a tool in its own turn: an executor elsewhere holds no kit"
-)
-async def test_a_close_from_a_cut_tool_joins_the_close_that_cut_it() -> None:
-    """A close() cuts an agent's turn while its tool waits, and the tool's
-    cleanup closes the kit too: that close joins the running one, which
-    neither waits for the tool's turn nor cuts it again, and returns once the
-    kit is closed (RMK-1019)."""
-    kit = RoomKit()
-    witness = _Witness("witness")
-    entered = asyncio.Event()
-    steps: list[str] = []
+async def _close_by(kit: RoomKit, how: str) -> None:
+    """Close *kit* from the current task, or from a task it starts."""
+    if how == "itself":
+        await kit.close()
+    else:
+        await asyncio.create_task(kit.close())
 
-    async def shutdown(name: str, arguments: dict[str, Any]) -> str:
-        entered.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            steps.append("cut")
-        try:
-            await kit.close()
-            steps.append("closed")
-        except asyncio.CancelledError:
-            steps.append("its close cut")
-            raise
-        return "closed"
 
+async def _a_cut_tool_door(kit: RoomKit, handler: Any) -> Any:
+    """An agent's turn whose tool runs *handler*: the call that runs it."""
     tool = {"name": "shutdown", "description": "Shut down.", "parameters": {"type": "object"}}
     provider = MockAIProvider(
         ai_responses=[
@@ -628,35 +679,43 @@ async def test_a_close_from_a_cut_tool_joins_the_close_that_cut_it() -> None:
             AIResponse(content="done", finish_reason="stop"),
         ]
     )
-    kit.register_channel(Agent("agent", provider=provider, tools=[tool], tool_handler=shutdown))
+    kit.register_channel(Agent("agent", provider=provider, tools=[tool], tool_handler=handler))
     kit.register_channel(SimpleChannel("sms"))
-    kit.register_channel(witness)
     await kit.create_room(room_id="r")
     await kit.attach_channel("r", "sms")
     await kit.attach_channel("r", "agent", category=ChannelCategory.INTELLIGENCE)
-    call = asyncio.ensure_future(
-        kit.process_inbound(
-            InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Go.")),
-            room_id="r",
-        )
+    message = InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Go."))
+    return asyncio.ensure_future(kit.process_inbound(message, room_id="r"))
+
+
+async def _a_cut_realtime_door(kit: RoomKit, handler: Any) -> Any:
+    """A realtime model's tool call running *handler*: the call that runs it."""
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rt", provider=provider, transport=MockRealtimeTransport(), tool_handler=handler
     )
-    await asyncio.wait_for(entered.wait(), 5)
-
-    await asyncio.wait_for(kit.close(), 1)
-    await asyncio.wait_for(asyncio.gather(call, return_exceptions=True), 1)
-
-    assert steps == ["cut", "closed"]
-    assert witness.closed
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "rt")
+    session = await channel.start_session("r", "p", "fake-ws")
+    return asyncio.ensure_future(provider.simulate_tool_call(session, "c1", "shutdown", {}))
 
 
-async def test_a_close_from_a_cut_realtime_call_joins_the_close_that_cut_it() -> None:
-    """A realtime model's tool call runs as the kit closes: the realtime
-    channel's close cuts it, and the handler's cleanup closes the kit too.
-    That close joins the running one, which stops waiting for the call it
-    cut, and returns at once (RMK-1019)."""
+@pytest.mark.in_process(
+    "the kit closes from a tool in its own turn: an executor elsewhere holds no kit"
+)
+@pytest.mark.parametrize(
+    ("door", "how"),
+    [("agent-tool", "itself"), ("realtime-tool", "itself"), ("realtime-tool", "from-a-task")],
+)
+async def test_a_close_from_a_cut_tool_joins_the_close_that_cut_it(door: str, how: str) -> None:
+    """A close() cuts a tool call (an agent's turn, a realtime model's call)
+    while it waits, and the tool's cleanup closes the kit too, from its own
+    task or from a task it starts: that close joins the running one, which
+    neither waits for the tool nor cuts it again, and both return once the
+    kit is closed (RMK-1019)."""
     kit = RoomKit()
-    provider, transport = MockRealtimeProvider(), MockRealtimeTransport()
-    entered, closed = asyncio.Event(), asyncio.Event()
+    entered, ended = asyncio.Event(), asyncio.Event()
     steps: list[str] = []
 
     async def handler(*args: Any, **kwargs: Any) -> str:
@@ -665,25 +724,24 @@ async def test_a_close_from_a_cut_realtime_call_joins_the_close_that_cut_it() ->
             await asyncio.Event().wait()
         except asyncio.CancelledError:
             steps.append("cut")
-        await kit.close()
-        steps.append("closed")
-        closed.set()
+        try:
+            await _close_by(kit, how)
+            steps.append("closed")
+        except asyncio.CancelledError:
+            steps.append("its close cut")
+            raise
+        finally:
+            ended.set()
         return "closed"
 
-    channel = RealtimeVoiceChannel(
-        "rt", provider=provider, transport=transport, tool_handler=handler
-    )
     witness = _Witness("witness")
-    kit.register_channel(channel)
     kit.register_channel(witness)
-    await kit.create_room(room_id="r")
-    await kit.attach_channel("r", "rt")
-    session = await channel.start_session("r", "p", "fake-ws")
-    call = asyncio.ensure_future(provider.simulate_tool_call(session, "c1", "shutdown", {}))
+    opens = _a_cut_tool_door if door == "agent-tool" else _a_cut_realtime_door
+    call = await opens(kit, handler)
     await asyncio.wait_for(entered.wait(), 5)
 
     await asyncio.wait_for(kit.close(), 1)
-    await asyncio.wait_for(closed.wait(), 1)
+    await asyncio.wait_for(ended.wait(), 1)
     await asyncio.wait_for(asyncio.gather(call, return_exceptions=True), 1)
 
     assert steps == ["cut", "closed"]
@@ -758,48 +816,6 @@ async def test_a_task_announced_as_the_kit_closes_ends_cancelled(
 
 
 # -- what the kit holds as it closes --------------------------------------------
-
-
-async def test_a_call_an_observer_makes_as_the_kit_closes_is_refused(close_grace: float) -> None:
-    """An observer still running as the kit closes commits into a room whose
-    timer fell due: the call is refused (RMK-1030), no timer hook starts,
-    and close() returns with nothing of the kit left running."""
-    kit = RoomKit()
-    kit.register_channel(SimpleChannel("sms"))
-    await kit.create_room(room_id="r1")
-    await kit.attach_channel("r1", "sms")
-    await kit.create_room(room_id="r2", timers=RoomTimers(inactive_after_seconds=0))
-    closing = asyncio.Event()
-    refused: list[str] = []
-
-    @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="audit")
-    async def audit(event: RoomEvent, ctx: RoomContext) -> None:
-        await closing.wait()
-        record = RoomEvent(
-            room_id="r2",
-            source=EventSource(channel_id="sms", channel_type="sms"),
-            content=TextContent(body="audit record"),
-        )
-        try:
-            await kit.commit_event("r2", record)
-        except KitClosedError:
-            refused.append("commit_event")
-
-    @kit.hook(HookTrigger.ON_ROOM_PAUSED, name="paused")
-    async def paused(event: RoomEvent, ctx: RoomContext) -> None:
-        await asyncio.Event().wait()
-
-    await kit.process_inbound(
-        InboundMessage(channel_id="sms", sender_id="u1", content=TextContent(body="hi")),
-        room_id="r1",
-    )
-    closed = asyncio.ensure_future(kit.close())
-    closing.set()
-    await closed
-
-    assert refused == ["commit_event"]
-    running = [t.get_name() for t in asyncio.all_tasks() if not t.done()]
-    assert [name for name in running if name.startswith("roomkit-")] == []
 
 
 async def test_a_background_run_started_in_the_close_s_grace_ends_with_its_close() -> None:
@@ -979,40 +995,6 @@ async def test_a_hook_task_started_as_a_channel_closes_ends_with_the_close(its_e
     assert store.in_flight_at_close == [0]
 
 
-class _SaysByeAsItCloses(SimpleChannel):
-    """A channel whose close sends a last message into its room."""
-
-    kit: RoomKit | None = None
-    refused: BaseException | None = None
-
-    async def close(self) -> None:
-        assert self.kit is not None
-        try:
-            await self.kit.send_event("r1", self.channel_id, TextContent(body="bye"))
-        except KitClosedError as refusal:
-            self.refused = refusal
-        await super().close()
-
-
-async def test_a_call_a_channel_s_close_makes_is_refused() -> None:
-    """A channel's close sends a last message into its room: the call is
-    refused, as every call once close() started (RMK-1030), and nothing is
-    stored."""
-    kit = RoomKit()
-    channel = _SaysByeAsItCloses("sms")
-    channel.kit = kit
-    kit.register_channel(channel)
-    await kit.create_room(room_id="r1")
-    await kit.attach_channel("r1", "sms")
-
-    await kit.close()
-
-    assert isinstance(channel.refused, KitClosedError)
-    assert "bye" not in [
-        getattr(e.content, "body", None) for e in await kit.store.list_events("r1")
-    ]
-
-
 async def test_a_caller_waiting_for_its_injected_events_returns_when_the_close_cuts_them(
     close_grace: float,
 ) -> None:
@@ -1054,12 +1036,11 @@ async def test_a_caller_waiting_for_its_injected_events_returns_when_the_close_c
     assert result.event is not None and result.event.content == TextContent(body="hello")
 
 
-async def test_a_timer_check_waiting_for_its_hooks_returns_when_the_close_cuts_them(
-    close_grace: float,
-) -> None:
+async def test_a_timer_check_whose_hooks_outlast_the_grace_is_cut(close_grace: float) -> None:
     """check_room_timers() paused the room and waits for its ON_ROOM_PAUSED
-    hook when the kit closes and cuts it: the check returns the room as
-    stored, never a CancelledError its caller did not ask for."""
+    hook when the kit closes: a room change is running work, so once the
+    grace ran out the check is cut, KitClosedError, never a CancelledError
+    its caller did not ask for; the room stays as stored (RMK-1030)."""
     kit = RoomKit()
     await kit.create_room(room_id="r1", timers=RoomTimers(inactive_after_seconds=0))
     in_hook = asyncio.Event()
@@ -1073,7 +1054,9 @@ async def test_a_timer_check_waiting_for_its_hooks_returns_when_the_close_cuts_t
     await asyncio.wait_for(in_hook.wait(), 1)
     await kit.close()
 
-    room = await asyncio.wait_for(check, 1)
+    with pytest.raises(KitClosedError):
+        await asyncio.wait_for(check, 1)
+    room = await kit.get_room("r1")
     assert room.status is RoomStatus.PAUSED
 
 

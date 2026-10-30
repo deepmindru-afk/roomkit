@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._authors import with_committed_record
@@ -108,17 +107,15 @@ class EventOpsMixin(HelpersMixin):
         refuse_reserved(event.idempotency_key)
         # No event holding a sixth composite level is committed (RFC §5.3).
         refuse_too_deep(event.content)
-        # The kit's close cuts it before its commit (RFC §12.10.4).
-        with self._door_runs.run("record"):
-            async with AsyncExitStack() as stack:
-                await self._door_runs.enter_lock(stack, self._lock_manager.locked(room_id))
-                room = await self.get_room(room_id, organization_id=organization_id)
-                room = await self._room_timers.apply_due(room)
-                if _refuses_writes(room):
-                    raise RoomClosedError(f"Room {room_id} does not accept new events")
-                return await self._commit_indexed(
-                    room_id, await self._with_thread_root(room_id, event)
-                )
+        async with self._lock_manager.locked(room_id):
+            room = await self.get_room(room_id, organization_id=organization_id)
+            room = await self._room_timers.apply_due(room)
+            if _refuses_writes(room):
+                raise RoomClosedError(f"Room {room_id} does not accept new events")
+            record = await self._with_thread_root(room_id, event)
+            # Read back if the kit's close cuts it as it lands (RFC §12.10.4).
+            self._door_runs.committing(record)
+            return await self._commit_indexed(room_id, record)
 
     async def update_event(
         self,
