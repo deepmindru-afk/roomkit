@@ -234,19 +234,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raised again by the block's exit; drop that call and handle the failure
   around the block.
 
-- **An ASYNC `BEFORE_BROADCAST` hook starts once its event is stored and
-  its delivery placed in the room's lane** (RFC 9.2, 10.1, RMK-1039). It
-  started as the SYNC hooks ended, before the commit. On a store whose
-  commit waits on its I/O (SQLite, Postgres), it then ran while the event
-  was being written: an observer reading the store could miss its event,
-  and one that closed the kit made the close drop the event's own
-  delivery, placed after the close started, where an `InMemoryStore`
-  delivered it. It now starts as its pass ends, on every store and every
-  pass: a message, a `send_event`, a `post`, an agent's answer, a
-  channel's response, a hook's injected event. It still observes the event
-  as the SYNC hooks left it, in the same context, and an event they
-  blocked still has none; one they allowed whose source may not write is
-  observed, as before.
+- **An ASYNC `BEFORE_BROADCAST` hook starts once its event's pass is
+  over: the event stored and its delivery placed in the room's lane** (RFC
+  9.2, 10.1, RMK-1039). It started as the SYNC hooks ended, before the
+  commit. On a store whose commit waits on its I/O (SQLite, Postgres), it
+  then ran while the event was being written: an observer reading the
+  store could miss its event, and one that closed the kit made the close
+  drop the event's own delivery, placed after the close started, where an
+  `InMemoryStore` delivered it. It now starts as its pass ends, on every
+  store and every pass: a message, a `send_event`, a `post`, an agent's
+  answer or a regenerated one, a channel's response, a hook's injected
+  event. It still observes the event as the SYNC hooks left it, in the
+  same context, and an event they blocked still has none. As before, one
+  they allowed is observed even when its pass then ends without storing
+  it as sent: its source may not write (stored `BLOCKED`), the room closed
+  or an edit's target was refused meanwhile, `process_timeout` ran out, or
+  the commit failed.
 
 ### Fixed
 
