@@ -22,7 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Off by default: schemas, arguments, events and rows are unchanged. A row
     or a turn frame carries `intent` only when it has one.
   - `AIToolCall` and `StreamToolCall` gain `intent`. Realtime sessions, ACP
-    agents and provider-served calls carry none.
+    agents and provider-served calls carry none; an agent a realtime session
+    delegates to takes the property out but reports through the session,
+    without it.
 
 - **`KitClosedError` and `ShutdownCancelledError`, both `RoomKitError`s**
   (RFC 12.10.4, RMK-1030).
