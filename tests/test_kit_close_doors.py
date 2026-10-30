@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import time
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from types import FrameType
@@ -111,7 +112,12 @@ class _LoopNeverYieldedError(Exception):
 def loop_keeps_turning() -> Iterator[None]:
     """Fail, not hang, when the close loops without ever yielding to the
     event loop (RMK-1038): no ``asyncio`` deadline fires then, so an alarm
-    interrupts the code where it is, and the test fails."""
+    interrupts the code where it is, and the test fails. No guard where
+    there is no alarm (Windows). A timer set before is set again after,
+    less the time the test took."""
+    if not hasattr(signal, "SIGALRM"):
+        yield
+        return
     interrupted: list[str] = []
 
     def interrupt(signum: int, frame: FrameType | None) -> None:
@@ -119,12 +125,16 @@ def loop_keeps_turning() -> Iterator[None]:
         raise _LoopNeverYieldedError(interrupted[0])
 
     previous = signal.signal(signal.SIGALRM, interrupt)
-    signal.setitimer(signal.ITIMER_REAL, _LOOP_DEADLINE_S)
+    started = time.monotonic()
+    delay, interval = signal.setitimer(signal.ITIMER_REAL, _LOOP_DEADLINE_S)
     try:
         yield
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
+        if delay:
+            left = max(delay - (time.monotonic() - started), 1e-6)
+            signal.setitimer(signal.ITIMER_REAL, left, interval)
     assert not interrupted, f"interrupted after {_LOOP_DEADLINE_S} s at:\n{interrupted[0]}"
 
 
@@ -198,8 +208,10 @@ async def test_the_close_waits_for_the_end_of_a_task_being_cancelled(
     cancel = asyncio.ensure_future(kit.cancel_task(task.id))
     await asyncio.wait_for(completing.wait(), 1)
     closing = asyncio.ensure_future(kit.close())
-    for _ in range(5):  # the close reaches the delegated tasks
+    # Long enough for a close waiting for no end to return (7 turns).
+    for _ in range(20):
         await asyncio.sleep(0)
+    assert not closing.done()
     release.set()
 
     await asyncio.wait_for(closing, 1)

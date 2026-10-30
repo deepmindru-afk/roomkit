@@ -218,13 +218,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A `kit.close()` while a cancelled task is still ending returns**
-  (RFC 12.10.4, RFC 23.3, RMK-1038). `cancel_task()` ends its task once the
-  task's work has ended, its `on_complete` included. A `kit.close()` in the
-  meantime, or one called from that `on_complete`, looped for ever without
-  yielding to the event loop: the end it waited for never ran, and the
-  process sat at full CPU. The close now waits for that end, within its
-  grace, and a close called from the end spares it. 0.110.0 is not affected.
+- **A `kit.close()` while a cancelled task is still ending waits for it
+  without spinning, and one called from that end returns** (RFC 12.10.4,
+  RFC 23.3, RMK-1038). `cancel_task()` ends its task once the task's work
+  has ended, its `on_complete` included. A `kit.close()` called from that
+  `on_complete` never returned, the process at full CPU. A `kit.close()`
+  while it ran kept a CPU busy until it was over: 1.9 s of CPU for a 2 s
+  `on_complete`. The close now waits for that end idle, within its grace;
+  one called from that end does not wait for the end it runs in, and
+  returns once the kit is closed.
 
 - **A `kit.close()` that joins a running one from the kit's own work no
   longer waits for that work or cuts it** (RFC 12.10.4, RMK-1019). The

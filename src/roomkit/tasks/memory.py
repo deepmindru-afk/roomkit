@@ -104,9 +104,22 @@ class InMemoryTaskRunner(TaskRunner):
 
     def _unspared(self) -> list[str]:
         """The tasks running but the ones the current close runs under: their
-        work, or the end a cancel took (an on_complete closing the kit)."""
+        work, or the end a cancel took (an on_complete closing the kit). One
+        whose end was taken and whose runs are all over has nothing left to
+        wait for, whatever is left of its entry: listed, it would be listed
+        again at every pass, the close never yielding."""
         spared = spared_by_close()
-        return [task_id for task_id in self._tasks if not self._runs(task_id) & spared]
+        return [
+            task_id
+            for task_id in self._tasks
+            if self._still_runs(task_id) and not self._runs(task_id) & spared
+        ]
+
+    def _still_runs(self, task_id: str) -> bool:
+        """Whether *task_id* has its end still to take, or a run not over."""
+        if task_id in self._cancelled_ends:
+            return True
+        return any(not run.done() for run in self._runs(task_id))
 
     def _runs(self, task_id: str) -> set[asyncio.Task[None]]:
         """The runs of *task_id*: its work and, once a cancel took it, its
