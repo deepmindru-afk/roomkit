@@ -40,6 +40,7 @@ from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns._codec import decode_item, encode_item, request_json
 from roomkit.turns._error_codec import ROOMKIT_ERRORS, error_record
+from roomkit.turns._owner_stream import StreamCopies
 from roomkit.turns.base import MessageOrder, OwnerTools, TurnBackend
 from roomkit.turns.owner import turn_request
 from roomkit.turns.wire import CommittedEvent, OwnerTool, TurnRequest
@@ -168,8 +169,21 @@ def test_every_stream_item_crosses_as_a_new_equal_object(item: Any) -> None:
     if not isinstance(item, str):
         assert rebuilt is not item
     if getattr(item, "intent", "") is None:
-        # A call without an intent crosses as it did before intents (RFC §6.4).
+        # A call without an intent has no ``intent`` key on the wire (RFC §6.4).
         assert "intent" not in encode_item(item)
+
+
+def test_a_call_its_turn_left_open_ends_cancelled_as_it_started() -> None:
+    """The owner closes it with its arguments and its intent (RFC §6.4)."""
+    copies = StreamCopies()
+    start = ToolCallStartMarker(
+        tool_name="search", tool_id="c1", arguments={"q": "x"}, intent="I search."
+    )
+    copies.item(1, encode_item(start))
+
+    [end] = copies.open_call_ends()
+
+    assert (end.arguments, end.intent, end.outcome) == ({"q": "x"}, "I search.", "cancelled")
 
 
 def test_a_stream_item_the_protocol_cannot_carry_is_refused() -> None:

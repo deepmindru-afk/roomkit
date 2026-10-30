@@ -643,7 +643,8 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 context = self._prepare_round_context(context, loop_ctx, rules, index)
                 round_ = self._new_stream_round(turn, rules, index, external, context)
                 turn.segments.append(round_.state.reported)
-                # What this round declares, as the provider receives it.
+                # What this round declares: its tools' own schemas, which the
+                # request shows with the intent property when asked (RFC §6.4).
                 self._record_declared_tools(loop_ctx, context.tools)
                 async with aclosing(
                     self._stream_generation(round_, context, turn, index)

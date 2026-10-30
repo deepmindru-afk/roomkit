@@ -126,7 +126,7 @@ def take_intent(call: StreamToolCall, owners: Container[str]) -> StreamToolCall:
 
 def with_intent_field(fields: dict[str, Any], intent: str | None) -> dict[str, Any]:
     """A call's payload *fields* with its ``intent``, only when it has one: a
-    payload, a row or a frame of a call without one is the same as before."""
+    payload or a frame of a call without one has no ``intent`` key."""
     return fields if intent is None else {**fields, "intent": intent}
 
 
