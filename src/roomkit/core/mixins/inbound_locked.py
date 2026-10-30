@@ -30,6 +30,7 @@ from roomkit.core._changes import (
     target_refusal,
     with_target,
 )
+from roomkit.core._observed import Observed, observed_once_over
 from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core._reentrance import section
 from roomkit.core._room_timers import due_transitions
@@ -401,18 +402,22 @@ class InboundLockedMixin(HelpersMixin):
         # The section of this pass: what its hooks send into the room is
         # nested here, on the cascade's budget, its injected events queued
         # on *queued* (RFC §9.5.1 Reentrance, §9.4).
+        # Its BEFORE_BROADCAST observers start once it is over, its event's
+        # set placed in the room's lane (RFC §10.1).
         with section(room_id, cascade.budget, queued):
-            return await self._decide_and_commit(
-                event,
-                room_id,
-                context,
-                cascade,
-                queued=queued,
-                resolved_identity=resolved_identity,
-                pending_id_result=pending_id_result,
-                deadline=deadline,
-                precheck=precheck,
-            )
+            async with observed_once_over(self._hook_engine, room_id) as observed:
+                return await self._decide_and_commit(
+                    event,
+                    room_id,
+                    context,
+                    cascade,
+                    queued=queued,
+                    observed=observed,
+                    resolved_identity=resolved_identity,
+                    pending_id_result=pending_id_result,
+                    deadline=deadline,
+                    precheck=precheck,
+                )
 
     async def _decide_and_commit(
         self,
@@ -422,6 +427,7 @@ class InboundLockedMixin(HelpersMixin):
         cascade: DeliveryCascade,
         *,
         queued: QueuedInjections,
+        observed: Observed,
         resolved_identity: Identity | None,
         pending_id_result: IdentityResult | None,
         deadline: float,
@@ -435,6 +441,7 @@ class InboundLockedMixin(HelpersMixin):
             room_id,
             context,
             cascade,
+            observed=observed,
             resolved_identity=resolved_identity,
             pending_id_result=pending_id_result,
             precheck=precheck,
@@ -494,6 +501,7 @@ class InboundLockedMixin(HelpersMixin):
         context: RoomContext | None,
         cascade: DeliveryCascade,
         *,
+        observed: Observed,
         resolved_identity: Identity | None = None,
         pending_id_result: IdentityResult | None = None,
         precheck: SyncPipelineResult | None = None,
@@ -611,7 +619,9 @@ class InboundLockedMixin(HelpersMixin):
         if check.refusal is not None:
             return InboundResult(blocked=True, reason=check.refusal)
 
-        decision = await self._gate_commit(room_id, event, context, precheck, change=check)
+        decision = await self._gate_commit(
+            room_id, event, context, precheck, change=check, observed=observed
+        )
         if isinstance(decision, _Refused):
             return InboundResult(blocked=True, reason=decision.reason)
         return decision
@@ -623,6 +633,7 @@ class InboundLockedMixin(HelpersMixin):
         context: RoomContext,
         precheck: SyncPipelineResult | None = None,
         *,
+        observed: Observed,
         source_check: bool = True,
         change: ChangeCheck = NO_CHANGE,
         under_lock: bool = True,
@@ -651,12 +662,17 @@ class InboundLockedMixin(HelpersMixin):
         Decides only: a :class:`_Blocked` carries what the hooks decided, for
         :meth:`_store_blocked`; a :class:`_Ready` carries the event as the
         hooks left it, with its source's binding as the hooks left it
-        (:meth:`_after_hooks`).
+        (:meth:`_after_hooks`). A chain that allowed the event owes its ASYNC
+        observers that event, as its SYNC hooks left it, on *observed*: its
+        pass starts them once it is over (RFC §10.1).
         """
         ran = self._hooks_run_here(room_id, event, precheck)
         # Run sync hooks (before_broadcast). After an off-lock check (RFC
         # §9.5.1) its outcome comes first and only the locked hooks run here.
         sync_result = await self._run_before_broadcast(room_id, event, context, precheck)
+        if sync_result.allowed:
+            final = sync_result.event if isinstance(sync_result.event, RoomEvent) else event
+            observed.owe(final, context)
         await self._announce_hook_errors(room_id, event, sync_result)
         after = await self._after_hooks(
             room_id, event, context, ran=ran, under_lock=under_lock, operation=operation
@@ -785,11 +801,12 @@ class InboundLockedMixin(HelpersMixin):
         event skip it. With one, a block stands as decided; otherwise the
         locked hooks see the (possibly modified) event, and the side effects
         of both phases are collected together. The off-lock hooks' unusable
-        results were reported when met, before the lock (§9.5.1).
+        results were reported when met, before the lock (§9.5.1). Its ASYNC
+        observers are its pass's to start (:meth:`_gate_commit`).
         """
         if precheck is None:
             return await self._hook_engine.run_sync_hooks(
-                room_id, HookTrigger.BEFORE_BROADCAST, event, context
+                room_id, HookTrigger.BEFORE_BROADCAST, event, context, fire_observers=False
             )
         if not precheck.allowed:
             return precheck
@@ -799,7 +816,12 @@ class InboundLockedMixin(HelpersMixin):
             # locked section decided of it (RFC §9.4, §9.5.1).
             event = kept_identity(event, precheck.event, context.bindings)
         locked = await self._hook_engine.run_sync_hooks(
-            room_id, HookTrigger.BEFORE_BROADCAST, event, context, needs_lock=True
+            room_id,
+            HookTrigger.BEFORE_BROADCAST,
+            event,
+            context,
+            needs_lock=True,
+            fire_observers=False,
         )
         locked.injected_events[:0] = precheck.injected_events
         locked.tasks[:0] = precheck.tasks

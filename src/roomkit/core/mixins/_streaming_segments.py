@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.core._closing import KIT_CLOSED, ended_by_close
 from roomkit.core._instructions import response_metadata
+from roomkit.core._observed import Observed, observed_once_over
 from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core.event_router import stream_record
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
@@ -592,11 +593,14 @@ class LaneSink:
         if await self._room_refuses_writes():
             logger.debug("Room %s refuses writes; %s not committed", self._room_id, event.type)
             return None
-        gated = await self._gate(event)
-        if gated is None:
-            return None
-        event, hook_result = gated
-        return await self._lane(event, exclude=exclude, hook_result=hook_result)
+        # The row's BEFORE_BROADCAST observers start once it is laned, or
+        # refused (RFC §10.1).
+        async with observed_once_over(self._kit._hook_engine, self._room_id) as observed:
+            gated = await self._gate(event, observed)
+            if gated is None:
+                return None
+            event, hook_result = gated
+            return await self._lane(event, exclude=exclude, hook_result=hook_result)
 
     async def _room_refuses_writes(self) -> bool:
         """Whether the room refuses this row (RFC §5.1).
@@ -614,7 +618,9 @@ class LaneSink:
             self._close_epoch = epoch
         return self._refusing
 
-    async def _gate(self, event: RoomEvent) -> tuple[RoomEvent, SyncPipelineResult] | None:
+    async def _gate(
+        self, event: RoomEvent, observed: Observed
+    ) -> tuple[RoomEvent, SyncPipelineResult] | None:
         """Pass a row through the commit gate before it commits: its
         BEFORE_BROADCAST sync hooks, then its source's right to write.
 
@@ -635,7 +641,9 @@ class LaneSink:
         room_id = self._room_id
         # The row carries its cascade's scope (TurnScope), before its hooks.
         scope = event.response_visibility
-        decision = await self._kit._gate_commit(room_id, event, self._context, under_lock=False)
+        decision = await self._kit._gate_commit(
+            room_id, event, self._context, under_lock=False, observed=observed
+        )
         # The hooks ran without the room lock: a close meanwhile refuses the
         # row, which is then neither committed nor recorded as blocked.
         if await self._room_refuses_writes():

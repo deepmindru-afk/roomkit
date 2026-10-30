@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import time
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from types import FrameType
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -33,6 +35,7 @@ from roomkit import (
     ConferenceChannel,
     HookExecution,
     HookTrigger,
+    HostChannel,
     KitClosedError,
     MockConferenceBackend,
     RealtimeVoiceChannel,
@@ -72,7 +75,7 @@ from roomkit.voice.stt.mock import MockSTTProvider
 from tests.orchestration.test_strategy_discussion import _provider, _say
 from tests.orchestration.test_strategy_discussion import _room as _discussion
 from tests.tasks.test_cancel_task import _Endless
-from tests.test_framework import SimpleChannel
+from tests.test_framework import AILikeChannel, SimpleChannel
 
 
 class _SlowWords(MockAIProvider):
@@ -513,25 +516,52 @@ async def test_a_tool_closing_the_kit_gets_its_end_row_before_the_close_returns(
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
 
 
+async def _a_store(name: str, tmp_path: Any) -> ConversationStore:
+    """A kit's store by name, as :data:`_STORES` makes it, or ``postgres``,
+    which needs ``POSTGRES_DSN``: the test skips without it."""
+    if name != "postgres":
+        return _STORES[name](tmp_path)
+    dsn = os.environ.get("POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("POSTGRES_DSN not set")
+    from roomkit.store.postgres import PostgresStore  # the postgres extra
+
+    store = PostgresStore(dsn=dsn)
+    await store.init(min_size=1, max_size=2)
+    return store
+
+
+async def _a_room(kit: RoomKit, *targets: SimpleChannel) -> str:
+    """A room of its own (a Postgres store is shared), its messages coming
+    from ``sms`` and delivered to *targets*."""
+    room_id = f"r-{uuid4().hex[:8]}"
+    kit.register_channel(SimpleChannel("sms"))
+    await kit.create_room(room_id=room_id)
+    await kit.attach_channel(room_id, "sms")
+    for target in targets:
+        kit.register_channel(target)
+        await kit.attach_channel(room_id, target.channel_id)
+    return room_id
+
+
+def _said(body: str) -> InboundMessage:
+    return InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body=body))
+
+
 @pytest.mark.parametrize("lane", ["idle", "busy"])
-# On SQLite the commit's write suspends, and the observer closes the kit
-# before its message's set is placed: no lane holds it then.
-@pytest.mark.parametrize("store", ["memory", "slow-cursor"])
+@pytest.mark.parametrize("store", ["memory", "slow-cursor", "sqlite", "postgres"])
 async def test_an_observer_closing_the_kit_finds_a_set_placed_in_an_idle_lane_running(
     store: str, lane: str, tmp_path: Any, close_grace: float
 ) -> None:
-    """An ASYNC BEFORE_BROADCAST observer closes the kit as its message's set
-    waits in the room's lane, the lane reading its cursor before it takes
-    it: placed in the idle lane, the set runs from its placement and is
-    delivered (RMK-1039); queued behind a send still under way, it is
-    dropped, never sent. The call reads ``kit_closed`` either way."""
-    kit = RoomKit(store=_STORES[store](tmp_path))
+    """An ASYNC BEFORE_BROADCAST observer closes the kit: it starts once its
+    message's set has its place in the room's lane, whatever the store's
+    commit takes, and placed in the idle lane, the set runs from its
+    placement, untaken or not, and is delivered (RMK-1039); queued behind a
+    send still under way, it is dropped, never sent. The call reads
+    ``kit_closed`` either way."""
+    kit = RoomKit(store=await _a_store(store, tmp_path))
     holds = _HoldsForEver("ws")
-    kit.register_channel(SimpleChannel("sms"))
-    kit.register_channel(holds)
-    await kit.create_room(room_id="r")
-    await kit.attach_channel("r", "sms")
-    await kit.attach_channel("r", "ws")
+    room_id = await _a_room(kit, holds)
 
     @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="quit")
     async def quit(event: RoomEvent, ctx: RoomContext) -> None:
@@ -540,11 +570,9 @@ async def test_an_observer_closing_the_kit_finds_a_set_placed_in_an_idle_lane_ru
 
     held: list[asyncio.Future[Any]] = []
     if lane == "busy":
-        message = InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="hold"))
-        held.append(asyncio.ensure_future(kit.process_inbound(message, room_id="r")))
+        held.append(asyncio.ensure_future(kit.process_inbound(_said("hold"), room_id=room_id)))
         await holds.holding.wait()
-    message = InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Bye."))
-    result = await asyncio.wait_for(kit.process_inbound(message, room_id="r"), 1)
+    result = await asyncio.wait_for(kit.process_inbound(_said("Bye."), room_id=room_id), 1)
     await asyncio.wait_for(asyncio.gather(*held), 1)
 
     sent = {"ws": "sent"} if lane == "idle" else {}
@@ -552,6 +580,109 @@ async def test_an_observer_closing_the_kit_finds_a_set_placed_in_an_idle_lane_ru
     assert {channel: r.status for channel, r in result.delivery_results.items()} == sent
     delivered = [event.content.body for event in holds.delivered]
     assert delivered == (["Bye."] if lane == "idle" else [])
+
+
+def _noting_commits(store: type[ConversationStore]) -> type[ConversationStore]:
+    """*store*, its commit suspending, as a networked store's does, and
+    noting each message it committed in ``steps``."""
+
+    class Noting(store):  # type: ignore[valid-type, misc]
+        def __init__(self, *args: Any) -> None:
+            super().__init__(*args)
+            self.steps: list[str] = []
+
+        async def commit_event(self, room_id: str, event: RoomEvent, **kw: Any) -> RoomEvent:
+            await asyncio.sleep(0.005)
+            stored = await super().commit_event(room_id, event, **kw)
+            if isinstance(event.content, TextContent):
+                self.steps.append(f"committed {event.content.body}")
+            return stored
+
+    return Noting
+
+
+async def _a_door(kit: RoomKit, room_id: str, door: str) -> None:
+    """Send ``Hi.`` into *room_id* through *door*: a message, a direct send,
+    a host's post, or a message whose answer or injected event takes a pass
+    of its own (an agent's row, a channel's response, a hook's injection)."""
+    if door == "send":
+        await kit.send_event(room_id, "sms", TextContent(body="Hi."))
+        return
+    if door == "post":
+        kit.register_channel(HostChannel("host"))
+        await kit.attach_channel(room_id, "host")
+        await kit.post(room_id, "Hi.")
+        return
+    if door in ("agent", "response"):
+        answers = (
+            Agent("ai", provider=MockAIProvider(responses=["Hello."]))
+            if door == "agent"
+            else AILikeChannel("ai", response="Hello.")
+        )
+        kit.register_channel(answers)
+        await kit.attach_channel(room_id, "ai", category=ChannelCategory.INTELLIGENCE)
+    if door == "injected":
+        note = RoomEvent(
+            room_id=room_id,
+            source=EventSource(channel_id="system", channel_type=ChannelType.SYSTEM),
+            content=TextContent(body="Note."),
+        )
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="inject")
+        async def inject(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if event.content.body != "Hi. (labelled)":
+                return HookResult.allow()
+            return HookResult.allow(
+                injected=[InjectedEvent(event=note, target_channel_ids=["ws"])]
+            )
+
+    await kit.process_inbound(_said("Hi."), room_id=room_id)
+
+
+@pytest.mark.parametrize(
+    ("door", "store", "observed"),
+    [
+        ("inbound", "memory", ["Hi."]),
+        ("inbound", "sqlite", ["Hi."]),
+        ("send", "memory", ["Hi."]),
+        ("post", "memory", ["Hi."]),
+        ("agent", "memory", ["Hi.", "Hello."]),
+        ("response", "memory", ["Hi.", "Hello."]),
+        ("injected", "memory", ["Hi.", "Note."]),
+    ],
+    ids=["inbound", "inbound-sqlite", "send", "post", "agent", "response", "injected"],
+)
+async def test_a_before_broadcast_observer_starts_once_its_pass_is_over(
+    door: str, store: str, observed: list[str], tmp_path: Any
+) -> None:
+    """The ASYNC BEFORE_BROADCAST observers of a pass start once it is over,
+    its event committed and its set placed in the room's lane, though the
+    store's commit suspends, never during it, on every pass: a message, a
+    direct send, a host's post, an agent's row, a channel's response, a
+    hook's injected event. They observe the event as the SYNC hooks left it
+    (RMK-1039)."""
+    noting = _noting_commits(InMemoryStore if store == "memory" else SQLiteStore)
+    recording: Any = noting() if store == "memory" else noting(tmp_path / "r.db")
+    kit = RoomKit(store=recording)
+    room_id = await _a_room(kit, SimpleChannel("ws"))
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="label")
+    async def label(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        content = TextContent(body=f"{event.content.body} (labelled)")
+        return HookResult.modify(event.model_copy(update={"content": content}))
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: RoomEvent, ctx: RoomContext) -> None:
+        recording.steps.append(f"observed {event.content.body}")
+
+    await _a_door(kit, room_id, door)
+    await kit.close()
+
+    steps = recording.steps
+    seen = [step.removeprefix("observed ") for step in steps if step.startswith("observed ")]
+    assert seen == [f"{body} (labelled)" for body in observed]
+    for body in seen:
+        assert steps.index(f"committed {body}") < steps.index(f"observed {body}"), steps
 
 
 # -- a close from a delivery, a session's end, an announcement -----------------

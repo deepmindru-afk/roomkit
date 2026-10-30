@@ -1193,7 +1193,9 @@ class HookEngine:
             fire_observers: ``False`` leaves the ASYNC observers to the
                 caller, for a firing whose observers must see something other
                 than the event the chain left: a served tool call's result as
-                the model reads it, or a report no SYNC hook can change.
+                the model reads it, or a report no SYNC hook can change; or
+                must start later: a pass's ``BEFORE_BROADCAST`` observers,
+                once its event is committed and laned (RFC §10.1).
         """
         if (engine := self._turn_engine(trigger)) is not None:
             return await engine.run_sync_hooks(

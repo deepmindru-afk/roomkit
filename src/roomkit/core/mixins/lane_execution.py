@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._changes import with_target
 from roomkit.core._failure_log import needs_reporting
+from roomkit.core._observed import Observed, observed_once_over
 from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core._reentrance import section
 from roomkit.core.event_router import (
@@ -1222,7 +1223,10 @@ class LaneExecutionMixin(HelpersMixin):
         queued = QueuedInjections()
         async with self._lock_manager.locked(room_id):
             with section(room_id, cascade.budget, queued):
-                await self._reentry_section(room_id, reentry, response_visibility, cascade, queued)
+                async with observed_once_over(self._hook_engine, room_id) as observed:
+                    await self._reentry_section(
+                        room_id, reentry, response_visibility, cascade, queued, observed
+                    )
         await self._run_queued(queued, room_id, cascade)
 
     async def _reentry_section(
@@ -1232,9 +1236,11 @@ class LaneExecutionMixin(HelpersMixin):
         response_visibility: str | None,
         cascade: DeliveryCascade,
         queued: QueuedInjections,
+        observed: Observed,
     ) -> None:
         """A response's locked section: its gates and its commit, the
-        events its hooks inject queued on *queued*."""
+        events its hooks inject queued on *queued*, what its chain owes its
+        observers on *observed*."""
         # One read of what the lock protects (RFC §10.1 steps 6 and 12):
         # the status gate, the source's right to write and the delivery
         # plan all read this context, fresh under the lock, since
@@ -1257,7 +1263,7 @@ class LaneExecutionMixin(HelpersMixin):
         # _routed_to here, and a muted or read-only agent's answer is
         # stored BLOCKED with what its hooks decided kept (§7.5 rule 3).
         decision = await self._gate_commit(
-            room_id, reentry, reentry_ctx, change=check, operation="reentry"
+            room_id, reentry, reentry_ctx, change=check, operation="reentry", observed=observed
         )
         if isinstance(decision, _Refused):
             return

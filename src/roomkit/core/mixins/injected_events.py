@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.core._changes import with_target
 from roomkit.core._instructions import without_fingerprint
+from roomkit.core._observed import Observed, observed_once_over
 from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core._reentrance import Entry, Placement, section
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
@@ -238,7 +239,10 @@ class InjectedEventsMixin(HelpersMixin):
         queued = QueuedInjections()
         async with self._lock_manager.locked(room_id):
             with section(room_id, cascade.budget, queued):
-                await self._injected_section(room_id, injected, cascade, queued, cause=cause)
+                async with observed_once_over(self._hook_engine, room_id) as observed:
+                    await self._injected_section(
+                        room_id, injected, cascade, queued, observed, cause=cause
+                    )
         await self._run_queued(queued, room_id, cascade)
 
     async def _injected_section(
@@ -247,11 +251,13 @@ class InjectedEventsMixin(HelpersMixin):
         injected: InjectedEvent,
         cascade: DeliveryCascade,
         queued: QueuedInjections,
+        observed: Observed,
         *,
         cause: RoomEvent,
     ) -> None:
         """An injected event's locked section: its gates and its commit,
-        the events its hooks inject queued on *queued*."""
+        the events its hooks inject queued on *queued*, what its chain owes
+        its observers on *observed*."""
         event = _as_injected(injected.event, cause)
         room_context = await self._open_pass(room_id, event)
         if room_context is None:
@@ -271,7 +277,13 @@ class InjectedEventsMixin(HelpersMixin):
         if check.refusal is not None:
             return
         decision = await self._gate_commit(
-            room_id, event, context, source_check=False, change=check, operation="reentry"
+            room_id,
+            event,
+            context,
+            source_check=False,
+            change=check,
+            operation="reentry",
+            observed=observed,
         )
         if isinstance(decision, _Refused):
             return
