@@ -28,10 +28,20 @@ from roomkit import (
 from roomkit.channels.ai import AIChannel
 from roomkit.models.enums import EventType
 from roomkit.models.event import ToolCallContent
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall, AIToolCallPart
+from roomkit.models.steering import Cancel
+from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIMessage,
+    AIResponse,
+    AITool,
+    AIToolCall,
+    AIToolCallPart,
+)
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.ai.tool_intent import INTENT_MAX_CHARS, normalized_intent
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
+from roomkit.tools.context import _ToolLoopContext
 from tests.test_framework import SimpleChannel
 
 INTENT = "Je recherche les fichiers texte du projet."
@@ -145,7 +155,7 @@ async def _turn(
     return seen
 
 
-async def test_off_the_model_sees_and_the_tool_gets_what_they_did_before(streaming: bool) -> None:
+async def test_off_nothing_is_taken_from_a_call(streaming: bool) -> None:
     """Off, nothing is taken: the schemas are the tools', the reserved key is
     an argument like any other, and no payload or row names an intent."""
     seen = await _turn(streaming, _calling(("c1", "shell", _with(INTENT))), intents=False)
@@ -182,19 +192,96 @@ async def test_a_call_s_intent_rides_apart_from_its_arguments(
     assert [(c.arguments, c.intent) for _, c in seen.rows] == [(COMMAND, INTENT)] * 2
 
 
-async def test_the_next_round_reads_its_call_as_the_model_wrote_it(streaming: bool) -> None:
-    """The intent goes back among the call's arguments, as the model wrote it
-    (normalized), so its next call keeps the shape it was shown."""
-    seen = await _turn(streaming, _calling(("c1", "shell", _with(INTENT))))
-
-    [replayed] = [
-        part
-        for message in seen.provider.calls[-1].messages
+def _replayed_calls(context: Any) -> list[dict[str, Any]]:
+    """The arguments of each call a request replays."""
+    return [
+        part.arguments
+        for message in context.messages
         if message.role == "assistant" and not isinstance(message.content, str)
         for part in message.content
         if isinstance(part, AIToolCallPart)
     ]
-    assert replayed.arguments == _with(INTENT)
+
+
+async def test_the_next_round_reads_its_call_with_its_intent(streaming: bool) -> None:
+    """The intent goes back among the call's arguments, normalized, so its
+    next call keeps the shape it was shown."""
+    seen = await _turn(streaming, _calling(("c1", "shell", _with(f" {INTENT} "))))
+
+    assert _replayed_calls(seen.provider.calls[-1]) == [_with(INTENT)]
+
+
+@pytest.mark.parametrize("intents", [True, False], ids=["intents on", "intents off"])
+async def test_a_later_turn_reads_the_call_with_its_intent_while_asked(
+    streaming: bool, intents: bool
+) -> None:
+    """From its rows, as the turn that made it read it; the arguments alone
+    once the agent no longer asks for intents."""
+    provider = MockAIProvider(
+        ai_responses=[
+            _calling(("c1", "shell", _with(INTENT))),
+            AIResponse(content="done"),
+            AIResponse(content="again"),
+        ],
+        streaming=streaming,
+    )
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        return "a.txt"
+
+    def agent(on: bool) -> AIChannel:
+        return AIChannel(
+            "ai1", provider=provider, tools=[SHELL], tool_handler=handler, tool_call_intents=on
+        )
+
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(agent(True))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    message = InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+    await kit.process_inbound(message)
+    # The agent restarted with the option as the test sets it, its rows kept.
+    gone = kit.unregister_channel("ai1")
+    assert gone is not None
+    await gone.close()
+    kit.register_channel(agent(intents))
+    await kit.process_inbound(message.model_copy(update={"content": TextContent(body="more")}))
+    await kit.close()
+
+    assert _replayed_calls(provider.calls[-1]) == [_with(INTENT) if intents else COMMAND]
+
+
+async def test_a_call_a_stop_kept_from_running_ends_with_its_intent(streaming: bool) -> None:
+    """A stop while the round's calls are announced: none runs, each ends
+    with its intent."""
+    channel = AIChannel(
+        "ai1",
+        provider=MockAIProvider(
+            ai_responses=[_calling(("c1", "shell", _with(INTENT))), AIResponse(content="done")],
+            streaming=streaming,
+        ),
+        tools=[SHELL],
+        tool_call_intents=True,
+    )
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    loop = _ToolLoopContext(room_id="r1")
+    loop.all_context_tools = [SHELL]
+    context = AIContext(messages=[AIMessage(role="user", content="go")], tools=[SHELL])
+
+    ends = []
+    async for delta in channel._run_streaming_tool_loop(context, parent_loop_ctx=loop):
+        if isinstance(delta, ToolCallStartMarker):
+            channel.steer(Cancel(reason="user stopped"))
+        elif isinstance(delta, ToolCallEndMarker):
+            ends.append((delta.intent, delta.outcome))
+    await kit.close()
+
+    assert ends == [(INTENT, "cancelled")]
 
 
 async def test_a_tool_that_declares_the_property_keeps_it_as_its_argument(
@@ -331,6 +418,12 @@ async def test_a_call_cut_while_it_runs_ends_with_its_intent(streaming: bool) ->
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "sms1")
     await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    published: list[EphemeralEvent] = []
+
+    async def listen(event: EphemeralEvent) -> None:
+        published.append(event)
+
+    await kit.realtime.subscribe_to_room("r1", listen)
     turn = asyncio.create_task(
         kit.process_inbound(
             InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
@@ -352,6 +445,11 @@ async def test_a_call_cut_while_it_runs_ends_with_its_intent(streaming: bool) ->
         (EventType.TOOL_CALL_END, INTENT, "cancelled"),
     ]
     await kit.close()
+    # The live END the cut round publishes for the call it aborted.
+    ended = [e for e in published if e.type == EphemeralEventType.TOOL_CALL_END]
+    assert [(c["intent"], c["status"]) for e in ended for c in e.data["tool_calls"]] == [
+        (INTENT, "failed")
+    ]
 
 
 def test_a_row_written_before_intents_reads_without_one() -> None:

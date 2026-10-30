@@ -6,7 +6,14 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from roomkit._media_url import is_data_uri, is_link, is_safe_reference, lowercase_scheme
 from roomkit.models._keys import IdempotencyKey
@@ -233,8 +240,16 @@ class ToolCallContent(BaseModel):
     refused_but_ran: bool = False
     # What the call does, in the sentence its model wrote for the person (an
     # agent's ``tool_call_intents``, RFC §6.4): display text, apart from the
-    # arguments. Written only when set, so a row without one reads as before.
-    intent: str | None = Field(default=None, exclude_if=lambda intent: intent is None)
+    # arguments. Written only when set: a call without one has no ``intent``
+    # key, on a row as on the wire.
+    intent: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _intent_only_when_set(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        fields: dict[str, Any] = handler(self)
+        if self.intent is None:
+            fields.pop("intent", None)
+        return fields
 
 
 EventContent = Annotated[
