@@ -185,6 +185,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the close runs on. Migration: let a turn whose answer you need end
   before `close()`.
 
+- **`TurnExecutor.close()` spares the task it is called from** (RFC
+  12.10.4, RMK-1030). A close called from inside one of the executor's
+  turns used to cut its own caller along with the rest. It now leaves that
+  task to run, as the kit's close does. When the owner then cuts a turn the
+  close spared, that turn ends for its owner at once and stops watching it;
+  it used to run on and keep speaking to its owner. A close called from
+  outside every turn behaves as before.
+
 - **BREAKING — a call `kit.close()` cuts reads `kit_closed`, never
   `lane_cancelled`, with what it delivered** (RFC 12.10.4, RMK-1030). A
   close gave `lane_cancelled` to the deliveries its lane's round had taken
