@@ -683,6 +683,10 @@ class RoomDeliveryLane:
         self._wakeup = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._busy = False
+        # Whether a round's sets are sending: once their targets answered,
+        # their aftermath (AFTER_BROADCAST, the responses' passes) leaves the
+        # lane idle to a set placed meanwhile (RFC §12.10.4).
+        self._sending = False
         self._closed = False
         # Set by seal(): the reason the entries it drops, and the ones a cut
         # round took, end with.
@@ -736,12 +740,15 @@ class RoomDeliveryLane:
 
     def _note_placement(self, entry: ExecEntry | CursorEntry) -> None:
         """Note *entry* as running from its placement when the lane is idle,
-        no round under way and nothing queued (RFC §12.10.4); a set placed
-        behind another is queued. A set placed later that the room's order
-        runs first takes the lead: the entry noted is queued behind it. A
-        cursor entry runs nothing and the close keeps it, so the index it
-        fills never costs the noted entry its place."""
-        if not self._busy and not self._indexed and not self._unindexed:
+        no set sending and nothing queued (RFC §12.10.4): a set ahead whose
+        targets all answered leaves the lane idle while its AFTER_BROADCAST
+        hooks and its responses' passes run, so an answer placed then runs
+        from its placement. A set placed behind another is queued. A set
+        placed later that the room's order runs first takes the lead: the
+        entry noted is queued behind it. A cursor entry runs nothing and the
+        close keeps it, so the index it fills never costs the noted entry its
+        place."""
+        if not self._sending and not self._indexed and not self._unindexed:
             self._placed_idle = entry if isinstance(entry, ExecEntry) else None
         elif (
             isinstance(entry, ExecEntry)
@@ -789,6 +796,23 @@ class RoomDeliveryLane:
             return
         self._cut = True
         task.cancel()
+
+    def drop_kept(self) -> None:
+        """Once sealed, drop the entry kept as running from its placement and
+        not taken yet: this lane's round runs the close, which can give it no
+        turn before it releases the store (RFC §12.10.4). The lane then ends
+        with its round."""
+        kept = self._placed_idle
+        if not self._closed or kept is None:
+            return
+        self._placed_idle = None
+        if kept.index is None:
+            if kept in self._unindexed:
+                self._unindexed.remove(kept)
+        elif self._indexed.get(kept.index) is kept:
+            del self._indexed[kept.index]
+        self._drop_entry(kept, self._reason)
+        self._wakeup.set()
 
     def _drop_entry(self, entry: ExecEntry | CursorEntry, reason: str) -> None:
         if entry is self._placed_idle:
@@ -892,14 +916,15 @@ class RoomDeliveryLane:
             return progressed
 
         executed: list[_Executed] = []
-        self._busy = True
+        self._busy = self._sending = True
         try:
             progressed |= await self._claimed_round(executed, force_skip=force_skip)
+            self._sending = False
             while executed:
                 run = executed.pop(0)
                 await self._finish(run.entry, run.result)
         finally:
-            self._busy = False
+            self._busy = self._sending = False
             # A cancellation mid-round must not leak cascade units: every
             # entry pulled off the queues but not finished reports what it
             # delivered and is dropped here.
@@ -1173,10 +1198,13 @@ class RoomLaneRegistry:
 
     def cut(self, spared: set[asyncio.Task[Any]]) -> None:
         """Cut every round still under way but those *spared* (a lane whose
-        work runs the close, RFC §12.10.4)."""
+        work runs the close, RFC §12.10.4), which drop the entry they kept
+        instead."""
         for lane in self._lanes.values():
             if lane.task not in spared:
                 lane.cut()
+            else:
+                lane.drop_kept()
 
     async def aclose(self) -> None:
         """Seal the registry, give the rounds under way the lanes'

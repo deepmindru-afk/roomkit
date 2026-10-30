@@ -21,7 +21,12 @@ from roomkit.core._reentrance import (
 )
 from roomkit.core.exceptions import ReentryLoopCapError
 from roomkit.core.locks import lent_while_it_runs, unlocked_context
-from roomkit.core.task_utils import spared_by_close, start_named, wait_for_unspared
+from roomkit.core.task_utils import (
+    spared_by_close,
+    start_named,
+    under_no_held_run,
+    wait_for_unspared,
+)
 from roomkit.core.visibility import answer_scope, narrower_scope
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -1482,7 +1487,9 @@ class HookEngine:
         that work is over, read here as the trigger fires: a hook that tells
         an agent again from its body ends at the depth limit (RMK-1004).
         Named in :func:`held_runs`, so a ``close()`` it runs spares it rather
-        than wait for itself.
+        than wait for itself, and under none of the runs that fired it: they
+        do not wait for it, so such a ``close()`` waits for them, and cuts
+        them, as for any other work (RFC §12.10.4).
         """
         if not hooks:
             return
@@ -1494,7 +1501,7 @@ class HookEngine:
         task = start_named(
             work,
             name=f"roomkit-observers-{trigger}",
-            context=unlocked_context(),
+            context=under_no_held_run(unlocked_context()),
         )
         self._observers.add(task)
         task.add_done_callback(self._observers.discard)

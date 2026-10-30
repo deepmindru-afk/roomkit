@@ -582,6 +582,73 @@ async def test_an_observer_closing_the_kit_finds_a_set_placed_in_an_idle_lane_ru
     assert delivered == (["Bye."] if lane == "idle" else [])
 
 
+@pytest.mark.parametrize("door", ["response", "after-broadcast"])
+@pytest.mark.parametrize("store", ["memory", "sqlite", "postgres"])
+async def test_an_answer_s_observer_closing_the_kit_finds_the_answer_running(
+    store: str, door: str, tmp_path: Any, close_grace: float
+) -> None:
+    """An answer placed while the message it answers is past its sends,
+    its AFTER_BROADCAST hooks and its responses' passes still running: a
+    channel's response, or a ``send_event`` from an AFTER_BROADCAST hook.
+    The lane counts as idle once the sends ahead have answered, so the
+    answer's set runs from its placement, and an ASYNC BEFORE_BROADCAST
+    observer of the answer that closes the kit finds it delivered, never
+    dropped (RFC §12.10.4, RMK-1039)."""
+    kit = RoomKit(store=await _a_store(store, tmp_path))
+    ws = SimpleChannel("ws")
+    room_id = await _a_room(kit, ws)
+    if door == "response":
+        kit.register_channel(AILikeChannel("ai", response="Hello."))
+        await kit.attach_channel(room_id, "ai", category=ChannelCategory.INTELLIGENCE)
+    else:
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="reply")
+        async def reply(event: RoomEvent, ctx: RoomContext) -> None:
+            if event.content.body == "Hi.":
+                await kit.send_event(room_id, "sms", TextContent(body="Hello."))
+
+    closed = asyncio.Event()
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="quit")
+    async def quit(event: RoomEvent, ctx: RoomContext) -> None:
+        if event.content.body == "Hello.":
+            await kit.close()
+            closed.set()
+
+    await asyncio.wait_for(kit.process_inbound(_said("Hi."), room_id=room_id), 1)
+    await asyncio.wait_for(closed.wait(), 1)
+
+    assert [event.content.body for event in ws.delivered] == ["Hi.", "Hello."]
+
+
+@pytest.mark.parametrize("store", ["memory", "sqlite"])
+async def test_a_close_from_the_lane_s_own_work_drops_what_it_kept_and_the_lane_ends(
+    store: str, tmp_path: Any, close_grace: float, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An AFTER_BROADCAST hook, which the room's lane runs as the
+    aftermath of its message, sends an answer, placed in the idle lane,
+    then closes the kit: the close waits for none of the lane's work, so
+    it drops the answer it kept, and the lane ends with its round instead
+    of running on over a released store (RFC §12.10.4, RMK-1039)."""
+    kit = RoomKit(store=await _a_store(store, tmp_path))
+    ws = SimpleChannel("ws")
+    room_id = await _a_room(kit, ws)
+
+    @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="reply")
+    async def reply(event: RoomEvent, ctx: RoomContext) -> None:
+        if event.content.body == "Hi.":
+            await kit.send_event(room_id, "sms", TextContent(body="Hello."))
+            await kit.close()
+
+    with caplog.at_level(logging.WARNING, logger="roomkit"):
+        await asyncio.wait_for(kit.process_inbound(_said("Hi."), room_id=room_id), 1)
+        await asyncio.wait_for(kit.close(), 1)
+        await asyncio.sleep(0.05)
+
+    assert [event.content.body for event in ws.delivered] == ["Hi."]
+    assert not [r for r in caplog.records if "failed a round" in r.getMessage()]
+
+
 def _noting_commits(store: type[ConversationStore]) -> type[ConversationStore]:
     """*store*, its commit suspending, as a networked store's does, and
     noting each message it committed in ``steps``."""

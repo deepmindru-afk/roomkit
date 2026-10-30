@@ -334,6 +334,15 @@ def cancel_reason(cancelled: BaseException) -> str | None:
     return reason if isinstance(reason, str) and reason else None
 
 
+def under_no_held_run(context: contextvars.Context) -> contextvars.Context:
+    """*context*, its code under no kit-held run: a task started in it is
+    not the work of the run that started it, which does not wait for it,
+    and a ``close()`` it calls waits for that run as for any other
+    (RFC §12.10.4): an observer's, fired and forgotten."""
+    context.run(_HELD_RUNS.set, ())
+    return context
+
+
 def held_runs() -> tuple[asyncio.Task[Any], ...]:
     """The kit-held runs (:func:`hold_task`) the current code runs under: a
     ``close()`` called from one of them must not wait for it."""
