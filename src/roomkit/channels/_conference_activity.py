@@ -43,6 +43,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
+from roomkit.core.task_utils import callers_read, wait_for_unspared
+
 logger = logging.getLogger("roomkit.channels.conference")
 
 # Activities the current context is nested inside — the ones a drain running
@@ -52,6 +54,14 @@ _enclosing: ContextVar[frozenset[int]] = ContextVar(
 )
 
 _ids = itertools.count()
+
+
+def _enclosing_ids() -> frozenset[int]:
+    """The activities the current code runs inside and, inside the kit's
+    shutdown, those every ``close()`` it answers was called inside
+    (RMK-1019)."""
+    return frozenset().union(*callers_read(_enclosing))
+
 
 # How long a teardown waits, in total, before going ahead without whatever is
 # left. Bounded because the work ends in code the channel does not own — a
@@ -171,7 +181,7 @@ class RoomActivity:
         the rest of that work's observers. What it can do is close admission now
         and finish destroying later, once these are set.
         """
-        ids = _enclosing.get()
+        ids = _enclosing_ids()
         return [a.done for a in self._rooms.get(room_id, set()) if a.id in ids]
 
     async def drain(self, room_id: str, *, timeout: float | None = None) -> None:
@@ -191,20 +201,12 @@ class RoomActivity:
         but the chunk already in the backend's hands is beyond recall until a
         conference backend offers cancellation.
         """
-        enclosing = _enclosing.get()
-        pending = [a.done for a in self._rooms.get(room_id, set()) if a.id not in enclosing]
-        await self._wait_all(pending, _budget(timeout), room_id)
+        await self._drain(list(self._rooms.get(room_id, set())), _budget(timeout), room_id)
 
     async def drain_all(self, *, timeout: float | None = None) -> None:
         """Wait for every room's in-flight work, on one shared budget."""
-        enclosing = _enclosing.get()
-        pending = [
-            a.done
-            for activities in self._rooms.values()
-            for a in activities
-            if a.id not in enclosing
-        ]
-        await self._wait_all(pending, _budget(timeout), "all rooms")
+        activities = [a for room in self._rooms.values() for a in room]
+        await self._drain(activities, _budget(timeout), "all rooms")
 
     async def wait_for(
         self, signals: list[asyncio.Event], *, timeout: float | None = None
@@ -215,6 +217,37 @@ class RoomActivity:
         handed it, which by then it is no longer nested inside.
         """
         await self._wait_all(list(signals), _budget(timeout), "deferred teardown")
+
+    @staticmethod
+    async def _drain(activities: list[_Activity], timeout: float, what: str) -> None:
+        """Wait for *activities*, on one deadline, but those the caller runs
+        inside: read again at each wake, so the activity a ``close()`` that
+        joins the kit's shutdown meanwhile runs inside stops being waited
+        for (RMK-1019)."""
+        waits: dict[int, asyncio.Future[Any]] = {}
+
+        def pending() -> list[asyncio.Future[Any]]:
+            enclosing = _enclosing_ids()
+            return [
+                waits.setdefault(a.id, asyncio.ensure_future(a.done.wait()))
+                for a in activities
+                if a.id not in enclosing and not a.done.is_set()
+            ]
+
+        try:
+            unfinished = await wait_for_unspared(pending, timeout=timeout)
+            if unfinished:
+                logger.warning(
+                    "Conference teardown for %s went ahead after %.0fs: %d piece(s) of "
+                    "in-flight work have not finished, so anything they still emit or "
+                    "publish arrives out of order",
+                    what,
+                    timeout,
+                    len(unfinished),
+                )
+        finally:
+            for wait in waits.values():
+                wait.cancel()
 
     @staticmethod
     async def _wait_all(pending: list[asyncio.Event], timeout: float, what: str) -> None:

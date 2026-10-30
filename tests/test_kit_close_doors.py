@@ -20,9 +20,11 @@ import pytest
 from roomkit import (
     ChannelBinding,
     ChannelType,
+    ConferenceChannel,
     HookExecution,
     HookTrigger,
     KitClosedError,
+    MockConferenceBackend,
     RealtimeVoiceChannel,
     RoomKit,
     RoomStatus,
@@ -403,6 +405,29 @@ async def _video_session_end_door(witness: _Witness, work: _Closer) -> RoomKit:
     return kit
 
 
+async def _conference_started_door(witness: _Witness, work: _Closer) -> RoomKit:
+    """The bot joins a conference as its first participant arrives; the
+    ``conference_started`` handler, run inside that arrival's callback,
+    closes the kit (RMK-1019)."""
+    backend = MockConferenceBackend()
+    kit = RoomKit()
+    kit.register_channel(ConferenceChannel("conf", backend=backend, stt=MockSTTProvider()))
+    kit.register_channel(witness)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "conf")
+
+    @kit.on("conference_started")
+    async def started(event: Any) -> None:
+        await work(kit)
+
+    # The arrival's callback waits for the handler, which may be held.
+    work.door = asyncio.ensure_future(backend.simulate_participant_joined("r", "p-alice"))
+    entered = asyncio.ensure_future(work.entered.wait())
+    await asyncio.wait({work.door, entered}, return_when=asyncio.FIRST_COMPLETED)
+    entered.cancel()
+    return kit
+
+
 async def _delegation_end_door(witness: _Witness, work: _Closer) -> RoomKit:
     """A background delegation ends; its ``on_complete``, run in the task's
     end, closes the kit."""
@@ -456,6 +481,7 @@ async def _speak_queue_door(witness: _Witness, work: _Closer) -> RoomKit:
         _voice_session_end_door,
         _video_session_end_door,
         _speak_queue_door,
+        _conference_started_door,
         _delegation_end_door,
         _held_write_door,
     ],
@@ -465,6 +491,7 @@ async def _speak_queue_door(witness: _Witness, work: _Closer) -> RoomKit:
         "voice-session-end",
         "video-session-end",
         "speak-queue-hook",
+        "conference-started",
         "delegation-end",
         "held-write",
     ],
@@ -495,6 +522,7 @@ async def test_a_close_from_the_kit_s_own_work_returns_and_closes_the_kit(
         _delivery_door,
         _realtime_session_end_door,
         _speak_queue_door,
+        _conference_started_door,
         _delegation_end_door,
         _held_write_door,
     ],
@@ -502,6 +530,7 @@ async def test_a_close_from_the_kit_s_own_work_returns_and_closes_the_kit(
         "delivery-hook",
         "realtime-session-end",
         "speak-queue-hook",
+        "conference-started",
         "delegation-end",
         "held-write",
     ],
@@ -558,6 +587,106 @@ async def test_two_sessions_ending_at_once_each_close_the_kit() -> None:
         asyncio.gather(*(transport.simulate_client_disconnect(s) for s in sessions)), 1
     )
     await asyncio.wait_for(both.wait(), 1)
+    assert witness.closed
+
+
+@pytest.mark.in_process(
+    "the kit closes from a tool in its own turn: an executor elsewhere holds no kit"
+)
+async def test_a_close_from_a_cut_tool_joins_the_close_that_cut_it() -> None:
+    """A close() cuts an agent's turn while its tool waits, and the tool's
+    cleanup closes the kit too: that close joins the running one, which
+    neither waits for the tool's turn nor cuts it again, and returns once the
+    kit is closed (RMK-1019)."""
+    kit = RoomKit()
+    witness = _Witness("witness")
+    entered = asyncio.Event()
+    steps: list[str] = []
+
+    async def shutdown(name: str, arguments: dict[str, Any]) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            steps.append("cut")
+        try:
+            await kit.close()
+            steps.append("closed")
+        except asyncio.CancelledError:
+            steps.append("its close cut")
+            raise
+        return "closed"
+
+    tool = {"name": "shutdown", "description": "Shut down.", "parameters": {"type": "object"}}
+    provider = MockAIProvider(
+        ai_responses=[
+            AIResponse(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[AIToolCall(id="c1", name="shutdown", arguments={})],
+            ),
+            AIResponse(content="done", finish_reason="stop"),
+        ]
+    )
+    kit.register_channel(Agent("agent", provider=provider, tools=[tool], tool_handler=shutdown))
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(witness)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "sms")
+    await kit.attach_channel("r", "agent", category=ChannelCategory.INTELLIGENCE)
+    call = asyncio.ensure_future(
+        kit.process_inbound(
+            InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Go.")),
+            room_id="r",
+        )
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+
+    await asyncio.wait_for(kit.close(), 1)
+    await asyncio.wait_for(asyncio.gather(call, return_exceptions=True), 1)
+
+    assert steps == ["cut", "closed"]
+    assert witness.closed
+
+
+async def test_a_close_from_a_cut_realtime_call_joins_the_close_that_cut_it() -> None:
+    """A realtime model's tool call runs as the kit closes: the realtime
+    channel's close cuts it, and the handler's cleanup closes the kit too.
+    That close joins the running one, which stops waiting for the call it
+    cut, and returns at once (RMK-1019)."""
+    kit = RoomKit()
+    provider, transport = MockRealtimeProvider(), MockRealtimeTransport()
+    entered, closed = asyncio.Event(), asyncio.Event()
+    steps: list[str] = []
+
+    async def handler(*args: Any, **kwargs: Any) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            steps.append("cut")
+        await kit.close()
+        steps.append("closed")
+        closed.set()
+        return "closed"
+
+    channel = RealtimeVoiceChannel(
+        "rt", provider=provider, transport=transport, tool_handler=handler
+    )
+    witness = _Witness("witness")
+    kit.register_channel(channel)
+    kit.register_channel(witness)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "rt")
+    session = await channel.start_session("r", "p", "fake-ws")
+    call = asyncio.ensure_future(provider.simulate_tool_call(session, "c1", "shutdown", {}))
+    await asyncio.wait_for(entered.wait(), 5)
+
+    await asyncio.wait_for(kit.close(), 1)
+    await asyncio.wait_for(closed.wait(), 1)
+    await asyncio.wait_for(asyncio.gather(call, return_exceptions=True), 1)
+
+    assert steps == ["cut", "closed"]
     assert witness.closed
 
 

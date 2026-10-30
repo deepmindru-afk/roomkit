@@ -11,7 +11,12 @@ from collections.abc import Iterable
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
-from roomkit.channels._realtime_context import ending_cause, held_by, spare_own_orphaned_call
+from roomkit.channels._realtime_context import (
+    ending_cause,
+    ending_causes,
+    held_by_causes,
+    spare_own_orphaned_call,
+)
 from roomkit.channels._realtime_tool_executor import report_interrupted_calls
 from roomkit.core.task_utils import CLOSE_WAIT_S, acting_tasks, wait_for_unspared
 
@@ -93,7 +98,8 @@ def interrupt_for_ending(
     cause = ending_cause()
     if cause is not None:
         cause.caused_ending = True
-    interrupted = [call for call in calls if call is not cause and call.task not in acting]
+    causes = {id(call) for call in ending_causes()}
+    interrupted = [call for call in calls if id(call) not in causes and call.task not in acting]
     own = [call.task for call in interrupted if call.task is not None]
     return interrupted, cut_tasks([*tasks, *own])
 
@@ -101,11 +107,24 @@ def interrupt_for_ending(
 def cut_tasks(tasks: Iterable[asyncio.Task[Any]]) -> list[asyncio.Task[Any]]:
     """Cancel each of *tasks* an ending reaches but the current one and those
     holding the call that caused the ending; the tasks cancelled."""
-    spared = {*acting_tasks(), *held_by(ending_cause())}
+    spared = {*acting_tasks(), *held_by_causes()}
     cancelled = [task for task in dict.fromkeys(tasks) if task not in spared]
     for task in cancelled:
         task.cancel()
     return cancelled
+
+
+async def wait_for_cut(
+    tasks: Iterable[asyncio.Task[Any]], timeout: float
+) -> set[asyncio.Future[Any]]:
+    """Wait, at most *timeout*, for the *tasks* an ending cut to end; what
+    still runs then. Read again at each wake: a task whose code closes the
+    kit, joining a shutdown under way, stops being waited for, since it
+    waits for that shutdown in turn (RFC §12.10.4, RMK-1019)."""
+    cut = set(tasks)
+    return await wait_for_unspared(
+        lambda: cut - {*acting_tasks(), *held_by_causes()}, timeout=timeout
+    )
 
 
 class SparedCalls:
@@ -143,12 +162,12 @@ async def settle_spared_calls(
     """At a close, wait within its bound for the calls an ending spared that
     still run, then interrupt the rest and report each once, as cancelled
     (RFC §12.4); never the call whose handler is closing, which runs on."""
-    cause = ending_cause()
+    causes = {id(call) for call in ending_causes()}
     acting = acting_tasks()
     running = {
         call.task: call
         for call in calls
-        if call is not cause and call.task is not None and call.task not in acting
+        if id(call) not in causes and call.task is not None and call.task not in acting
         if not call.task.done()
     }
     if not running:

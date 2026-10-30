@@ -7,7 +7,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._mark_copies import without_mark_copies
-from roomkit.channels._realtime_context import ending_cause, held_by
+from roomkit.channels._realtime_context import held_by_causes
 from roomkit.core.task_utils import CLOSE_WAIT_S, acting_tasks
 from roomkit.models.steering import Cancel, InjectMessage, SteeringDirective, UpdateSystemPrompt
 from roomkit.providers.ai.base import AIContext, AIMessage
@@ -95,7 +95,7 @@ class AISteeringMixin(_AIChannelContract):
         realtime call whose handler is closing (a reasoning backend's agent,
         RFC §12.4), and does not wait for that turn; a turn an earlier close
         cut is not cut or waited for again."""
-        spared = {*acting_tasks(), *held_by(ending_cause())}
+        spared = {*acting_tasks(), *held_by_causes()}
         ending = [
             ctx.ended
             for ctx in list(self._active_loops.values())

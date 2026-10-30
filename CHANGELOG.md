@@ -142,6 +142,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `kit.close()` that joins a running one from the kit's own work no
+  longer waits for that work or cuts it** (RFC 12.10.4, RMK-1019). The
+  shutdown spared the work of a joining caller by its tasks only, never by
+  the markers its first caller's code carried.
+  - A tool whose turn the first close cut, closing the kit in its cleanup,
+    had its close cut again by the turn executor's close; it now returns
+    once the kit is closed.
+  - A realtime model's tool call that the realtime channel's close cut,
+    closing the kit in its cleanup, held that close 5 s; it now returns at
+    once.
+  - A `conference_started` handler closing the kit waited 5 s for the
+    arrival callback it runs in, and 10 s when it joined another close; it
+    now returns at once.
+  - The turns a close runs under, the realtime call its handler serves, the
+    conference activity and participant callback it runs inside are now read
+    for every caller, and the waits read them again as a caller joins.
+
 - **`kit.close()` returns while calls keep arriving** (RMK-1016). The close
   waited for the work started after it began, and calls were taken until
   the store was sealed: with calls arriving with no gap, it had not returned

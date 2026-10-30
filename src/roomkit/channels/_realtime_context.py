@@ -8,6 +8,8 @@ import contextvars
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core.task_utils import callers_read
+
 if TYPE_CHECKING:
     from roomkit.channels._realtime_tool_calls import RealtimeToolCall
     from roomkit.voice.base import VoiceSession
@@ -77,11 +79,28 @@ def ending_cause() -> RealtimeToolCall | None:
     return served.call
 
 
+def ending_causes() -> list[RealtimeToolCall]:
+    """The calls an ending started here spares (RFC §12.4): the current
+    one's (:func:`ending_cause`) and, inside the kit's shutdown, the one
+    each ``close()`` it answers was called from (RMK-1019)."""
+    calls = {
+        id(served.call): served.call
+        for served in callers_read(_served_call)
+        if served is not None and not served.finished
+    }
+    return list(calls.values())
+
+
 def held_by(call: RealtimeToolCall | None) -> list[asyncio.Task[Any]]:
     """The tasks that hold *call*: its own, and the one carrying it."""
     if call is None:
         return []
     return [task for task in (call.task, call.carrier) if task is not None]
+
+
+def held_by_causes() -> list[asyncio.Task[Any]]:
+    """The tasks that hold each call :func:`ending_causes` names."""
+    return [task for call in ending_causes() for task in held_by(call)]
 
 
 _carrying_task: contextvars.ContextVar[asyncio.Task[Any] | None] = contextvars.ContextVar(

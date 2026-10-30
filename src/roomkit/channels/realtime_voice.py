@@ -31,7 +31,12 @@ from roomkit.channels._realtime_context import (
     get_current_voice_session as get_current_voice_session,
 )
 from roomkit.channels._realtime_delegation import RealtimeDelegationMixin
-from roomkit.channels._realtime_endings import SparedCalls, cut_tasks, interrupt_for_ending
+from roomkit.channels._realtime_endings import (
+    SparedCalls,
+    cut_tasks,
+    interrupt_for_ending,
+    wait_for_cut,
+)
 from roomkit.channels._realtime_host_hooks import (
     BROADCAST_INTENT,
     broadcast_text,
@@ -1772,7 +1777,7 @@ class RealtimeVoiceChannel(
         )
         self._spared_calls.keep(call for call in calls if call not in interrupted)
         if tool_tasks:
-            _, pending = await asyncio.wait(tool_tasks, timeout=CLOSE_WAIT_S)
+            pending = await wait_for_cut(tool_tasks, CLOSE_WAIT_S)
             if pending:
                 logger.warning(
                     "Timed out cancelling %d tools for session %s", len(pending), session.id
@@ -2211,13 +2216,13 @@ class RealtimeVoiceChannel(
         await self._spared_calls.settle(self, SESSION_ENDED)
         tasks = cut_tasks(list(self._scheduled_tasks))
         if tasks:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True),
-                    timeout=CLOSE_WAIT_S,
-                )
-            except TimeoutError:
-                logger.warning("Timed out waiting for %d tasks during close", len(tasks))
+            pending = await wait_for_cut(tasks, CLOSE_WAIT_S)
+            if pending:
+                logger.warning("Timed out waiting for %d tasks during close", len(pending))
+            for task in tasks:
+                # Retrieved, as gathering them did: an end is this close's.
+                if task.done() and not task.cancelled():
+                    task.exception()
         self._scheduled_tasks.clear()
 
     async def close(self) -> None:

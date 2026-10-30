@@ -1,12 +1,14 @@
 """The turns the current code runs under (RFC §10.6.5).
 
-A leaf module: the turn backend sets it around a turn's work and the calls the
-owner serves for it, and a channel reads it to know the turn its loop serves.
+The turn backend sets it around a turn's work and the calls the owner serves
+for it, and a channel reads it to know the turn its loop serves.
 """
 
 from __future__ import annotations
 
 import contextvars
+
+from roomkit.core.task_utils import callers_read
 
 _TURNS_RUN_UNDER: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
     "roomkit_turns_run_under", default=()
@@ -16,8 +18,10 @@ from one of them must not cut it (the turns' :func:`held_runs`)."""
 
 
 def turns_run_under() -> tuple[str, ...]:
-    """The ids of the turns the current code runs under."""
-    return _TURNS_RUN_UNDER.get()
+    """The ids of the turns the current code runs under and, inside the
+    kit's shutdown, those every ``close()`` it answers was called under
+    (RMK-1019)."""
+    return tuple(dict.fromkeys(t for turns in callers_read(_TURNS_RUN_UNDER) for t in turns))
 
 
 def enter_turn(turn_id: str) -> None:

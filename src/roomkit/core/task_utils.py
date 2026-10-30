@@ -297,15 +297,18 @@ def held_runs() -> tuple[asyncio.Task[Any], ...]:
 class Callers:
     """The callers of work every one of them waits for (the kit's shutdown,
     which every ``close()`` waits for): the one that started it and each one
-    that joined it since, with the kit-held runs each runs under. What the
-    work waits for or cuts spares them all (:func:`acting_tasks`,
-    :func:`spared_by_close`), as each caller's own code would spare itself,
-    and its waits wake as one joins (:func:`wait_for_unspared`): the work of
-    a caller that joins while it is waited for stops being waited for."""
+    that joined it since, with the kit-held runs each runs under and the
+    context it joined from. What the work waits for or cuts spares them all
+    (:func:`acting_tasks`, :func:`spared_by_close`, and a rule that reads a
+    marker of the code it is called from, :func:`callers_read`), as each
+    caller's own code would spare itself, and its waits wake as one joins
+    (:func:`wait_for_unspared`): the work of a caller that joins while it is
+    waited for stops being waited for."""
 
     def __init__(self) -> None:
         self.acting: set[asyncio.Task[Any]] = set()
         self.under: set[asyncio.Task[Any]] = set()
+        self.contexts: list[contextvars.Context] = []
         self._joined: asyncio.Future[None] | None = None
 
     def start[T](self, work: Coroutine[Any, Any, T], *, name: str) -> asyncio.Task[T]:
@@ -318,13 +321,16 @@ class Callers:
         return start_named(work, name=name, context=context)
 
     def join(self) -> None:
-        """Count the current code among the callers: the tasks it runs as and
-        the kit-held runs it runs under."""
+        """Count the current code among the callers: the tasks it runs as,
+        the kit-held runs it runs under, and its context, whose markers (the
+        turns it runs under, the realtime call it serves, the conference
+        activity it runs inside) spare its work too (RMK-1019)."""
         acting, under = acting_tasks(), set(held_runs())
         if acting <= self.acting and under <= self.under:
             return
         self.acting |= acting
         self.under |= under
+        self.contexts.append(contextvars.copy_context())
         if self._joined is not None:
             self._joined.set_result(None)
             self._joined = None
@@ -340,6 +346,20 @@ _ACTS_FOR: contextvars.ContextVar[Callers | None] = contextvars.ContextVar(
     "roomkit_acts_for", default=None
 )
 """The callers the current code's task acts for (:meth:`Callers.start`)."""
+
+
+def callers_read[T](marker: contextvars.ContextVar[T]) -> list[T]:
+    """*marker* as the current code reads it and, inside work its callers
+    wait for (:class:`Callers`), as each caller read it when it joined: a
+    rule that spares the work a ``close()`` is called from by a marker of
+    that code spares the work of every ``close()`` the shutdown answers, not
+    only the first one's (RMK-1019). Read again at each wake of a wait
+    (:func:`wait_for_unspared`), it counts a caller that joined meanwhile."""
+    values = [marker.get()]
+    callers = _ACTS_FOR.get()
+    if callers is not None:
+        values.extend(context.run(marker.get) for context in callers.contexts)
+    return values
 
 
 def acting_tasks() -> set[asyncio.Task[Any]]:

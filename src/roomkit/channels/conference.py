@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import warnings
 from collections.abc import AsyncGenerator, Sequence
@@ -82,6 +83,7 @@ from roomkit.conference.models import (
     TrackKind,
 )
 from roomkit.core._voice_delivery import injection_silent
+from roomkit.core.task_utils import callers_read, wait_for_unspared
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -110,6 +112,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.channels.conference")
 
+
+_running_callbacks: contextvars.ContextVar[frozenset[asyncio.Event]] = contextvars.ContextVar(
+    "roomkit_conference_callbacks", default=frozenset()
+)
+"""The participant callbacks the current code runs inside, each its
+completion signal: a close called from one does not wait for it."""
 
 __all__ = [
     "CONFERENCE_ADDRESS_KEYS",
@@ -849,9 +857,13 @@ class ConferenceChannel(
             return
         done = asyncio.Event()
         self._roster_writes.add(done)
+        # A close() the callback makes (a `conference_started` handler's)
+        # does not wait for it (RFC §12.10.4, RMK-1019).
+        token = _running_callbacks.set(_running_callbacks.get() | {done})
         try:
             yield True
         finally:
+            _running_callbacks.reset(token)
             self._roster_writes.discard(done)
             done.set()
 
@@ -976,22 +988,29 @@ class ConferenceChannel(
         five callbacks in flight would otherwise pay five times over, and the
         module's convention is that a deadline covers a step rather than each of
         the things inside it.
+
+        A callback the close runs inside (a handler that closes the kit) is not
+        waited for: it cannot end before the close returns. Read again at each
+        wake, so the callback a ``close()`` that joins the kit's shutdown
+        meanwhile runs inside stops being waited for (RMK-1019).
         """
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + budget
-        while registry:
-            pending = [asyncio.ensure_future(done.wait()) for done in list(registry)]
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                for waiter in pending:
-                    waiter.cancel()
-                logger.error(unfinished_note, self.channel_id, len(pending), budget)
-                return
-            try:
-                await asyncio.wait(pending, timeout=remaining)
-            finally:
-                for waiter in pending:
-                    waiter.cancel()
+        waits: dict[asyncio.Event, asyncio.Future[Any]] = {}
+
+        def pending() -> list[asyncio.Future[Any]]:
+            inside = frozenset().union(*callers_read(_running_callbacks))
+            return [
+                waits.setdefault(done, asyncio.ensure_future(done.wait()))
+                for done in list(registry)
+                if done not in inside
+            ]
+
+        try:
+            unfinished = await wait_for_unspared(pending, timeout=budget)
+            if unfinished:
+                logger.error(unfinished_note, self.channel_id, len(unfinished), budget)
+        finally:
+            for waiter in waits.values():
+                waiter.cancel()
 
     def _locked_room(self, room_id: str) -> AbstractAsyncContextManager[None]:
         """The framework's per-room lock, which every writer of a roster holds.
