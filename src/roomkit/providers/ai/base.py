@@ -114,9 +114,10 @@ class AIToolCall(BaseModel):
     refusal, a stream that ended without a stop reason), and the model reads
     which (RFC §6.4)."""
     intent: str | None = None
-    """What the call does, in a sentence the model wrote for the person: set
-    by an agent with ``tool_call_intents`` on, taken out of the arguments
-    (RFC §6.4). Display text only; ``None`` when the model wrote none."""
+    """What the call does, in a sentence the model wrote for the person: the
+    tool loop sets it on a call it serves, taken out of the arguments, with
+    the agent's ``tool_call_intents`` on (RFC §6.4); a provider leaves it
+    ``None``. Display text only."""
 
 
 class AIToolCallPart(BaseModel):
@@ -841,6 +842,7 @@ def stream_call_of(call: AIToolCall) -> StreamToolCall:
         served=call.served,
         partial=call.partial,
         garbled=call.garbled,
+        intent=call.intent,
     )
 
 
@@ -854,6 +856,7 @@ def tool_call_of(event: StreamToolCall) -> AIToolCall:
         served=event.served,
         partial=event.partial,
         garbled=event.garbled,
+        intent=event.intent,
     )
 
 

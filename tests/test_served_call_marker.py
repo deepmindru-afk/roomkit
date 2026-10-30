@@ -122,10 +122,16 @@ async def test_an_external_handler_hears_no_forged_call_as_one_the_provider_ran(
     assert local.served == ["lookup"]
 
 
-def test_the_served_mark_survives_streaming_and_back() -> None:
-    ran = AIToolCall(id="b1", name="Bash", served=ServedCall(result="a.txt", is_error=True))
+def test_a_call_survives_streaming_and_back() -> None:
+    """Every field it carries, the served mark and the intent included."""
+    ran = AIToolCall(
+        id="b1",
+        name="Bash",
+        served=ServedCall(result="a.txt", is_error=True),
+        intent="I list the files.",
+    )
 
-    assert tool_call_of(stream_call_of(ran)).served == ServedCall(result="a.txt", is_error=True)
+    assert tool_call_of(stream_call_of(ran)) == ran
 
 
 @pytest.mark.parametrize("streaming", [False, True])
