@@ -10,7 +10,7 @@ import weakref
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from typing import Any, Protocol
 
-from roomkit.core.exceptions import RoomKitError
+from roomkit.core.exceptions import KitClosedError
 
 logger = logging.getLogger("roomkit.tasks")
 
@@ -28,6 +28,14 @@ class _HoldsRuns(Protocol):
 # scheduled tasks) before it goes on and says what is still running.
 CLOSE_WAIT_S = 5.0
 
+# The one grace the kit's close gives its running work (a hook, a store
+# write, a transport send) before it cuts it (RFC §12.10.4).
+CLOSE_GRACE_S = 5.0
+
+# How long the kit's close lets the work it cut unwind (a turn storing what it
+# streamed, a run posting its terminal entry) before it goes on.
+CUT_UNWIND_S = 1.0
+
 
 def check_open(kit: _Closable, what: str = "background run") -> None:
     """Refuse to start *what* on a closing *kit*: started now, it would
@@ -35,10 +43,10 @@ def check_open(kit: _Closable, what: str = "background run") -> None:
     own asks it: a strategy's background run, a delegation.
 
     Raises:
-        RoomKitError: *kit* is closing.
+        KitClosedError: *kit* is closing.
     """
     if kit._closed:
-        raise RoomKitError(f"The framework is closing: no {what} starts")
+        raise KitClosedError(f"The kit is closing: no {what} starts")
 
 
 def hold_task(
@@ -145,8 +153,9 @@ async def run_to_its_end[T](
     The work runs in a copy of the caller's context, its lock's lease and its
     frames included, as a task *name* started at once and named in
     :func:`held_runs` (a ``close()`` called from under it spares it). Until
-    it ends it is in *held*, which the kit's close waits for on its budget
-    (:func:`wait_for_held`) and never cancels. Its exception is raised, as
+    it ends it is in *held*, which the kit's close gives its grace, then
+    cuts: a caller nobody cancelled then gets :class:`KitClosedError`. Its
+    exception is raised, as
     awaiting it would; to a cancelled caller its cancellation is, and the
     exception is logged: as an error, unless it is one of *expected*, an end
     the caller would have handled (a race another call won), at debug.
@@ -164,31 +173,15 @@ async def run_to_its_end[T](
             # The caller's own: the writes finish first.
             cancelled = cancelled or exc
     if cancelled is None:
+        if task.cancelled():
+            # Cut by the kit's close once its grace ran out, the caller
+            # cancelled by nobody (RFC §12.10.4).
+            raise KitClosedError("The kit closed before these writes ended")
         return task.result()
     if not task.cancelled() and (error := task.exception()) is not None:
         level = logging.DEBUG if isinstance(error, expected) else logging.ERROR
         logger.log(level, "Writes a cancelled caller left failed: %s", error, exc_info=error)
     raise cancelled
-
-
-async def wait_for_held(held: set[asyncio.Task[Any]], *, until: float) -> None:
-    """Wait, never cutting them, for the tasks in *held* (:func:`run_to_its_end`)
-    still running, those started meanwhile included, but the ones the caller
-    runs under: waiting for them would wait for itself.
-
-    Waited for until *until* (the loop's clock) at most: they may run
-    integrator code (a framework event's handler, a lifecycle hook), which
-    is only ever waited for on a budget. The ones still running then are
-    named in the log and left to end on their own.
-    """
-    timeout = until - asyncio.get_running_loop().time()
-    pending = await wait_for_unspared(lambda: set(held) - spared_by_close(), timeout=timeout)
-    if pending:
-        logger.warning(
-            "Closing with %d decided write(s) still running, left to end on their own: %s",
-            len(pending),
-            ", ".join(sorted(t.get_name() for t in pending if isinstance(t, asyncio.Task))),
-        )
 
 
 def close_unstarted(*works: object) -> None:

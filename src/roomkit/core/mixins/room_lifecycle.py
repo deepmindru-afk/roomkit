@@ -210,6 +210,12 @@ class RoomLifecycleMixin(HelpersMixin):
         The room is the store's snapshot (RFC §14.4): change it through a copy
         and a write (``room.model_copy(update=...)``), never in place.
         """
+        return await self._read_room(room_id, organization_id=organization_id)
+
+    async def _read_room(self, room_id: str, *, organization_id: str | None = None) -> Room:
+        """:meth:`get_room` for the framework's own work, which a closing kit
+        still does (a task cut by the close records its end, RFC §12.10.4),
+        while it refuses the call itself."""
         room = await self._store.get_room(room_id)
         if room is None or (
             organization_id is not None and room.organization_id != organization_id

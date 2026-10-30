@@ -148,7 +148,7 @@ class InjectedEventsMixin(HelpersMixin):
         """Commit and deliver events injected outside any cascade (an
         identity challenge, before the room lock), waiting for their
         delivery."""
-        cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
+        cascade = self._cascades.new(room_id, reentry_budget=self._max_chain_depth * 10)
         await self._lane_injected_events(injected_events, room_id, cascade, cause=cause)
         await self._finish_cascade(cascade, room_id)
 

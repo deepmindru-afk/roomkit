@@ -119,6 +119,7 @@ if TYPE_CHECKING:
     )
     from roomkit.channels._task_planner import PlanUpdatedCallback
     from roomkit.channels.base import Channel
+    from roomkit.core._closing import Cascades, DoorRuns
     from roomkit.core._timer_transitions import TimerTransitions
     from roomkit.core.hooks import HookEngine, IdentityHookRegistration
     from roomkit.models.channel import ChannelBinding
@@ -189,6 +190,8 @@ class HelpersMixin:
     _resource_lease: Any  # RoomKit._resource_lease — the close()-ordering hold on the store
     _ensure_status_bus_subscribed: Any  # RoomKit's — the StatusBus listened to from now on
     _lanes: Any  # RoomLaneRegistry — set by RoomKit.__init__
+    _cascades: Cascades  # the deliveries the kit's close cuts — set by RoomKit.__init__
+    _door_runs: DoorRuns  # the calls into a room the kit's close cuts — set by RoomKit.__init__
     _room_close_epoch: int  # counted by _store_refusing_room — set by RoomKit.__init__
     _room_timers: TimerTransitions  # the rooms' due timer transitions — set by RoomKit.__init__
     _process_timeout: float  # the pre-commit bound (RFC §13.6) — set by RoomKit.__init__
@@ -396,7 +399,8 @@ class HelpersMixin:
         caller cancelled between the two would leave an index the lane never
         reaches, and the room's next event waiting ``delivery_gap_timeout``
         for it. A cancellation waits for both, under the lock the caller
-        holds, then is raised; the kit's close waits for them on its budget."""
+        holds, then is raised; the kit's close gives them its grace, then
+        cuts them (RFC §12.10.4)."""
         return await run_to_its_end(
             self._commit_and_note(room_id, event, target=target, activity=activity),
             held=self._decided_writes,

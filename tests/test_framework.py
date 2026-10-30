@@ -10,7 +10,7 @@ import pytest
 
 from roomkit.channels.base import Channel
 from roomkit.core._private_state import PRIVATE_STATE_KEYS
-from roomkit.core.exceptions import RoomAlreadyExistsError
+from roomkit.core.exceptions import RoomAlreadyExistsError, ShutdownCancelledError
 from roomkit.core.framework import (
     ChannelAlreadyRegisteredError,
     ChannelNotRegisteredError,
@@ -810,7 +810,7 @@ class TestOneShutdown:
             task.cancel()
         await asyncio.gather(first, return_exceptions=True)
 
-        with pytest.raises(RoomKitError, match="shutdown was cancelled"):
+        with pytest.raises(ShutdownCancelledError, match="shutdown was cancelled"):
             await kit.close()
 
     async def test_a_close_from_the_shutdown_s_own_work_returns_at_once(self) -> None:

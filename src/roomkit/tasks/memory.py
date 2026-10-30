@@ -162,8 +162,9 @@ class InMemoryTaskRunner(TaskRunner):
         agent_response: str | None = None
         failure: Exception | None = None
         try:
-            # Update child room status
-            room = await kit.get_room(task.child_room_id)
+            # Update child room status; the framework's read, not the kit's
+            # call, which a closing kit refuses (RFC §12.10.4).
+            room = await kit._read_room(task.child_room_id)
             if room is None:
                 logger.warning(
                     "Task %s: child room %s not found",

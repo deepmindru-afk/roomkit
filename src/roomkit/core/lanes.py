@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._reentrance import ReentryBudget, delivering
+from roomkit.core.exceptions import KitClosedError
 from roomkit.core.locks import _has_room_lock, _held_rooms
 from roomkit.core.task_utils import spared_by_close, start_named, wait_for_unspared
 from roomkit.models.response_metadata import ResponseMetadata
@@ -62,8 +63,7 @@ logger = logging.getLogger("roomkit.lanes")
 # confuse "I hold the delivery claim" with "I hold the room lock".
 DELIVERY_CLAIM_PREFIX = "__delivery__:"
 
-# How long a closing lane lets its task end the unit it runs, then unwind once
-# cancelled.
+# How long a cut lane's task is given to unwind once cancelled.
 _TASK_GRACE_S = 1.0
 
 
@@ -143,6 +143,10 @@ class DeliveryPlan:
     defers_solicitation: bool = False
     turn_for: str | None = None
     max_chain_depth: int | None = None
+    # What its delivery set had done when the kit's close cut it (RFC
+    # §12.10.4): the targets delivered, the one cut mid-send failed; its
+    # caller reads it as the set's result.
+    cut_result: Any = None
 
     @property
     def answers_caller(self) -> bool:
@@ -186,7 +190,10 @@ class DeliveryCascade:
         "_turn_work",
         "_cleanup_task",
         "_when_over",
+        "_over",
         "reader_detached",
+        # The kit holds its cascades weakly (core._closing.Cascades).
+        "__weakref__",
     )
 
     def __init__(self, room_id: str, *, reentry_budget: int | ReentryBudget) -> None:
@@ -233,6 +240,7 @@ class DeliveryCascade:
         self._turn_work: set[asyncio.Task[Any]] = set()
         self._cleanup_task: asyncio.Task[None] | None = None
         self._when_over: list[Callable[[], None]] = []
+        self._over = False
         # A reader nobody awaits reads its streams: the delivery is over when
         # that reader ends, not when its call returns.
         self.reader_detached = False
@@ -267,6 +275,7 @@ class DeliveryCascade:
         """The caller's delivery is over: its call returned having read what
         it started, or the reader it detached ended. Calls the callbacks
         :meth:`when_over` registered, once."""
+        self._over = True
         callbacks, self._when_over = self._when_over, []
         for callback in callbacks:
             callback()
@@ -308,6 +317,11 @@ class DeliveryCascade:
             if not task.done() and not task.cancelling():
                 task.cancel()
             raise
+
+    def unwinding(self) -> set[asyncio.Task[Any]]:
+        """Its turn work still running, once cancelled: a cut turn storing
+        what it streamed. Its cleanup, which waits for that work, is not."""
+        return {task for task in self._turn_work if not task.done()}
 
     async def wait_drained(self) -> None:
         """Join its turn work, including its asynchronous finalizers."""
@@ -414,22 +428,43 @@ class DeliveryCascade:
         return self.caller_logs_streamed if rendered else self.caller_logs
 
     def record_error(self, exc: Exception) -> None:
-        """Record an intelligence failure; the first one wins."""
-        if self.error is None:
+        """Record an intelligence failure; the first one wins. One met once
+        the kit's close cut the cascade (a turn given up as its backend
+        closed) is the cut's, which the call reads as its reason, not its
+        error (RFC §12.10.4)."""
+        if self.error is None and self.cancelled != KitClosedError.code:
             self.error = exc
 
-    def cancel(self, reason: str) -> None:
+    @property
+    def in_flight(self) -> bool:
+        """Whether its caller's delivery is still under way: a unit not
+        released, turn work running, or a detached reader not ended."""
+        return self._pending > 0 or not self.drained or (self.reader_detached and not self._over)
+
+    def cancel(
+        self,
+        reason: str,
+        *,
+        spared: set[asyncio.Task[Any]] | frozenset[Any] = frozenset(),
+        wake: bool = True,
+    ) -> None:
         """Stop the cascade's turns: cancel its turn work and start none
-        after; wake every waiter, keep the reason."""
+        after; wake every waiter, keep the reason. The turn work in *spared*
+        (the work a close runs under, RFC §12.10.4) is left to end. Without
+        *wake* (the kit's close), a waiter still waits for its delivery set,
+        which the close lets end or cuts, so it reads what was delivered."""
         if self.cancelled is not None:
             return
         self.cancelled = reason
         for task in self._turn_work:
+            if task in spared:
+                continue
             if not task.done() and not task.cancelling():
                 # The reason travels with the cancellation: a turn the
                 # cascade runs tells its executor why (RFC §10.6.8).
                 task.cancel(reason)
-        self._done.set()
+        if wake:
+            self._done.set()
         self._cleanup_task = asyncio.create_task(
             self._cleanup(),
             context=contextvars.Context(),
@@ -556,9 +591,11 @@ class LaneHost(Protocol):
     turns as its cascade's turn work, and returns its
     ``BroadcastResult``-shaped outcome. ``_post_plan_effects`` fires the
     per-event aftermath (delivery framework events, ON_ERROR funnel, side
-    effects, AFTER_BROADCAST). ``_reentry_commit_pass`` turns the response
-    events of an executed plan into fresh commit passes (room lock taken
-    anew) whose plans join the same lane.
+    effects, AFTER_BROADCAST); ``_report_cut`` reports a cut plan's result
+    to its caller, and nothing else of its aftermath.
+    ``_reentry_commit_pass`` turns the response events of an executed plan
+    into fresh commit passes (room lock taken anew) whose plans join the
+    same lane.
     """
 
     _store: ConversationStore
@@ -572,6 +609,8 @@ class LaneHost(Protocol):
     async def _reentry_commit_pass(
         self, room_id: str, plan: DeliveryPlan, result: Any, cascade: DeliveryCascade
     ) -> None: ...
+
+    def _report_cut(self, plan: DeliveryPlan, result: Any, cascade: DeliveryCascade) -> None: ...
 
     async def _emit_framework_event(
         self,
@@ -618,6 +657,10 @@ class RoomDeliveryLane:
         self._task: asyncio.Task[None] | None = None
         self._busy = False
         self._closed = False
+        # Set by seal(): the reason the entries it drops, and the ones a cut
+        # round took, end with.
+        self._reason = "lane_cancelled"
+        self._cut = False
 
     @property
     def idle(self) -> bool:
@@ -657,56 +700,40 @@ class RoomDeliveryLane:
 
     async def drain(self) -> None:
         """Wait until every queued entry has been processed."""
-        await self._drain_unless(lambda: False)
-
-    async def aclose(self) -> None:
-        """Stop the lane: bounded drain, then cancel, then abort leftovers.
-
-        The drain runs first, while the executor is still willing — a close
-        must not throw away work it had time to do. It is bounded (a cursor
-        hole owned by an absent worker would otherwise hold the whole
-        framework close), as is the cancellation grace — a provider that
-        swallows cancellation cannot extend it. Whatever remains is aborted:
-        every pending unit is released and its cascade cancelled so no
-        waiter hangs.
-
-        A lane whose work runs this close (a delivery's hook closing the kit)
-        is neither drained nor cut: it cannot move on before the close
-        returns. It is sealed, its queued entries aborted, and the round under
-        way ends on its own once its work returns.
-        """
-        task = self._task
-
-        def spared() -> bool:
-            # Read again as the close goes: a close that joins it from this
-            # lane's work spares the lane from then on.
-            return task is not None and task in spared_by_close()
-
-        if not self._closed and not spared():
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(
-                    self._drain_unless(spared), timeout=self._config.close_grace
-                )
-        self._closed = True
-        self._wakeup.set()
-        self._task = None
-        if task is not None and not spared():
-            pending = await wait_for_unspared(
-                lambda: () if spared() else (task,), timeout=_TASK_GRACE_S
-            )
-            if pending:
-                task.cancel()
-                await asyncio.wait({task}, timeout=_TASK_GRACE_S)
-        self._abort_pending("kit_closed")
-
-    async def _drain_unless(self, spared: Callable[[], bool]) -> None:
-        """Wait until every queued entry has been processed, or *spared*."""
-        while (self._indexed or self._unindexed or self._busy) and not spared():
+        while self._indexed or self._unindexed or self._busy:
             await asyncio.sleep(0.01)
+
+    @property
+    def task(self) -> asyncio.Task[None] | None:
+        """The lane's executor, while it runs."""
+        return self._task
+
+    def seal(self, reason: str) -> None:
+        """Take no more work (RFC §12.10.4): the queued entries are dropped
+        with *reason*, their cascades cancelled, and the round under way ends
+        after the entry it runs; what it ran is then finished as usual."""
+        self._closed = True
+        self._reason = reason
+        self._wakeup.set()
+        self._abort_pending(reason)
+
+    def cut(self) -> None:
+        """Cut the round under way, once sealed: its task is cancelled, and
+        every entry it took reports what it delivered (a target cut mid-send
+        reported failed) and ends with the seal's reason; nothing of their
+        aftermath runs."""
+        task = self._task
+        if task is None or task.done() or self._cut:
+            return
+        self._cut = True
+        task.cancel()
 
     def _drop_entry(self, entry: ExecEntry | CursorEntry, reason: str) -> None:
         if isinstance(entry, ExecEntry):
-            logger.warning(
+            # The kit's close drops what it did not start (RFC §12.10.4): an
+            # expected end, not a warning.
+            logger.log(
+                logging.INFO if reason == KitClosedError.code else logging.WARNING,
                 "Delivery dropped (%s) for room %s index %s",
                 reason,
                 self.room_id,
@@ -802,10 +829,20 @@ class RoomDeliveryLane:
         finally:
             self._busy = False
             # A cancellation mid-round must not leak cascade units: every
-            # entry pulled off the queues but not finished is aborted here.
+            # entry pulled off the queues but not finished reports what it
+            # delivered and is dropped here.
             for run in executed:
-                self._drop_entry(run.entry, "lane_cancelled")
+                self._report_cut(run.entry, run.result)
+                self._drop_entry(run.entry, self._reason)
         return progressed
+
+    def _report_cut(self, entry: ExecEntry, result: Any) -> None:
+        """What a cut entry delivered, to its caller: the result of its
+        delivery set, or what the set had delivered when it was cut."""
+        if result is None:
+            result = entry.plan.cut_result
+        if result is not None:
+            self._host._report_cut(entry.plan, result, entry.cascade)
 
     def _has_turn(self, delivered: int) -> bool:
         """Whether the cursor allows any of this lane's entries to run."""
@@ -902,9 +939,15 @@ class RoomDeliveryLane:
         """
         run = _Executed(entry)
         executed.append(run)
+        delivery: list[asyncio.Task[Any]] = []
         try:
-            run.result = await entry.cascade.run(self._execute(entry))
+            run.result = await entry.cascade.run(self._execute(entry), on_task=delivery.append)
         except asyncio.CancelledError:
+            if self._cut:
+                # The set reports what it delivered as it unwinds: waited
+                # for, at most the cut's grace, before the entry reports.
+                await asyncio.wait(delivery, timeout=_TASK_GRACE_S)
+                raise
             if entry.cascade.cancelled is None:
                 raise
             # Still consume the committed index; cancellation must not leave
@@ -951,6 +994,12 @@ class RoomDeliveryLane:
             if result is not None:
                 await entry.cascade.run(self._finish_effects(entry, result))
         except asyncio.CancelledError:
+            if self._cut:
+                # Cut in its aftermath: its caller still reads what it
+                # delivered (RFC §12.10.4).
+                self._report_cut(entry, result)
+                entry.cascade.cancel(self._reason)
+                raise
             if entry.cascade.cancelled is None:
                 raise
         except Exception as exc:
@@ -999,12 +1048,12 @@ class RoomLaneRegistry:
         """
         if self._sealed:
             if isinstance(entry, ExecEntry):
-                logger.warning(
-                    "Delivery dropped (registry sealed) for room %s index %s",
+                logger.info(
+                    "Delivery dropped (kit closing) for room %s index %s",
                     room_id,
                     entry.index,
                 )
-                entry.cascade.cancel("kit_closed")
+                entry.cascade.cancel(KitClosedError.code)
                 entry.cascade.release()
             return
         self.lane(room_id).enqueue(entry)
@@ -1021,9 +1070,40 @@ class RoomLaneRegistry:
             del self._lanes[lane.room_id]
         return True
 
-    async def aclose(self) -> None:
-        """Seal the registry and close every lane. Idempotent."""
+    def seal(self, reason: str = "kit_closed") -> None:
+        """Take no more work (RFC §12.10.4): every entry queued or enqueued
+        from now on is dropped with *reason*, its cascade cancelled; the
+        rounds under way end after the entry each runs. Idempotent."""
         self._sealed = True
-        lanes, self._lanes = list(self._lanes.values()), {}
-        for lane in lanes:
-            await lane.aclose()
+        for lane in self._lanes.values():
+            lane.seal(reason)
+
+    def running(self) -> set[asyncio.Task[None]]:
+        """The executors still running, the rounds under way included."""
+        return {
+            lane.task
+            for lane in self._lanes.values()
+            if lane.task is not None and not lane.task.done()
+        }
+
+    def cut(self, spared: set[asyncio.Task[Any]]) -> None:
+        """Cut every round still under way but those *spared* (a lane whose
+        work runs the close, RFC §12.10.4)."""
+        for lane in self._lanes.values():
+            if lane.task not in spared:
+                lane.cut()
+
+    async def aclose(self) -> None:
+        """Seal the registry, give the rounds under way the lanes'
+        ``close_grace`` to end, then cut what is left and let it unwind, at
+        most ``_TASK_GRACE_S``. A lane whose work runs this close is neither
+        waited for nor cut. Idempotent. The kit's close runs these steps
+        itself, on the one grace it gives all its work."""
+        self.seal()
+
+        def unspared() -> set[asyncio.Task[None]]:
+            return self.running() - spared_by_close()
+
+        await wait_for_unspared(unspared, timeout=self._config.close_grace)
+        self.cut(spared_by_close())
+        await wait_for_unspared(unspared, timeout=_TASK_GRACE_S)

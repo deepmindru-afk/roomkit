@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from roomkit.core import framework
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities
 from roomkit.models.enums import ChannelMediaType, ChannelType
 from roomkit.models.event import (
@@ -47,6 +48,16 @@ def advance() -> Callable[[int], Coroutine[Any, Any, None]]:
             await asyncio.sleep(0)
 
     return _advance
+
+
+@pytest.fixture
+def close_grace(monkeypatch: pytest.MonkeyPatch) -> float:
+    """The grace the kit's close gives its running work, 50 ms under test:
+    work a test leaves running as the kit closes is cut then, not after the
+    production 5 s (RFC §12.10.4)."""
+    grace = 0.05
+    monkeypatch.setattr(framework, "CLOSE_GRACE_S", grace, raising=False)
+    return grace
 
 
 @pytest.fixture

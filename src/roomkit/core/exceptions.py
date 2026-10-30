@@ -169,6 +169,40 @@ class ProcessTimeoutError(RoomKitError):
     """
 
 
+class KitClosedError(RoomKitError):
+    """The kit's ``close()`` has started: the call is refused, nothing
+    written (RFC §12.10.4).
+
+    Raised by every call made once ``close()`` started, whoever makes it: an
+    outside caller, or the kit's own work still running (a hook, a tool, a
+    channel's close). Raised too by a call that returns the committed
+    ``RoomEvent`` and was cut before its commit (it waited for its room's
+    lock, or its hooks outlasted the close's grace); ``process_inbound`` and
+    ``regenerate_response``, whose result can say so, return
+    ``InboundResult(blocked=True, reason="kit_closed")`` instead.
+
+    A transport send the close cut once its grace ran out reads it as its
+    delivery's error: ``failed``, code ``kit_closed``, retryable.
+    """
+
+    code = "kit_closed"
+    """The reason a call the close cut reads (``cancellation_reason``,
+    ``InboundResult.reason``) and the code of a send it cut."""
+
+    retryable = True
+    """A send the close cut may succeed on another kit."""
+
+
+class ShutdownCancelledError(RoomKitError):
+    """The kit's one shutdown was cancelled before it ended, as when a
+    process cancels every task as it ends: its channels and its store may
+    not all be closed (RFC §12.10.4).
+
+    Raised by ``close()`` to a caller nobody cancelled; a caller cancelled
+    itself gets its own cancellation.
+    """
+
+
 class ReentrantCallError(RoomKitError):
     """A call into a room could only wait for its own caller, or commit ahead
     of the event its caller works for outside every order (RFC §9.5.1

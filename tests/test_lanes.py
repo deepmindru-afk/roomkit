@@ -294,7 +294,8 @@ async def test_close_releases_the_delivery_it_cancelled_mid_execution(
     await asyncio.wait_for(host.executing.wait(), 1.0)  # dequeued, in _execute
     await asyncio.wait_for(registry.aclose(), timeout=2.0)
     await asyncio.wait_for(cascade.wait(), timeout=1.0)
-    assert cascade.cancelled == "lane_cancelled"
+    # A close gives one reason, never one by position (RMK-1030).
+    assert cascade.cancelled == "kit_closed"
     assert cascade._pending == 0
     assert host.executed == []
 
@@ -534,12 +535,14 @@ async def test_claim_blocks_gap_clock_while_owner_is_executing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_drain_completes_queued_work_before_close() -> None:
+async def test_close_drops_the_queued_work_it_did_not_start() -> None:
+    """A close starts nothing queued: each entry is dropped at once, its
+    cascade cancelled ``kit_closed`` and its waiter woken (RMK-1030)."""
     store, host, registry, _ = await make_rig()
     cascade = DeliveryCascade(ROOM, reentry_budget=10)
     for i in range(5):
         enqueue_exec(registry, cascade, f"e{i}", i)
-    await registry.aclose()  # bounded drain runs first
-    assert host.executed == [f"e{i}" for i in range(5)]
-    assert cascade.cancelled is None
+    await registry.aclose()
+    assert host.executed == []
+    assert cascade.cancelled == "kit_closed"
     await asyncio.wait_for(cascade.wait(), timeout=0.5)

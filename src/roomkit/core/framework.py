@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
+import inspect
 import logging
-from collections.abc import Coroutine, Generator, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Generator, Iterable, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 if TYPE_CHECKING:
     from roomkit.channels._author_images import AttachedMedia, MediaResolver
+    from roomkit.core.lanes import DeliveryCascade
     from roomkit.delivery.base import DeliveryBackend
     from roomkit.models.steering import SteeringDirective
     from roomkit.orchestration.base import Orchestration
@@ -25,6 +28,7 @@ from roomkit.channels.base import Channel
 from roomkit.channels.websocket import SendFn, StreamSendFn, WebSocketChannel
 from roomkit.core import _host_post
 from roomkit.core._changes import CHANGE_REFUSALS
+from roomkit.core._closing import Cascades, DoorRuns
 from roomkit.core._instructions import names_an_agent, without_fingerprint
 from roomkit.core._kit_turn_hooks import KitTurnHooks
 from roomkit.core._kit_wiring import KitEvents, KitWiringEnv
@@ -42,11 +46,13 @@ from roomkit.core.exceptions import (
     ChannelNotFoundError,
     ChannelNotRegisteredError,
     IdentityNotFoundError,
+    KitClosedError,
     ParticipantNotFoundError,
     ProcessTimeoutError,
     RoomClosedError,
     RoomKitError,
     RoomNotFoundError,
+    ShutdownCancelledError,
     SourceAlreadyAttachedError,
     SourceNotFoundError,
     VoiceBackendNotConfiguredError,
@@ -58,7 +64,6 @@ from roomkit.core.hooks import (
     IdentityHookRegistration,
 )
 from roomkit.core.inbound_router import DefaultInboundRoomRouter, InboundRoomRouter
-from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.locks import (
     InMemoryLockManager,
     ReleaseTolerantLockManager,
@@ -96,13 +101,12 @@ from roomkit.core.mixins import (
 )
 from roomkit.core.mixins.helpers import _refuses_writes
 from roomkit.core.task_utils import (
-    CLOSE_WAIT_S,
+    CLOSE_GRACE_S,
+    CUT_UNWIND_S,
     Callers,
-    cancel_and_wait,
     cut_once_started,
     held_runs,
     spared_by_close,
-    wait_for_held,
     wait_for_unspared,
 )
 from roomkit.core.transcoder import DefaultContentTranscoder
@@ -204,11 +208,6 @@ __all__ = [
 ]
 
 
-def _running(tasks: set[asyncio.Task[Any]], spared: set[asyncio.Task[Any]]) -> bool:
-    """Whether a task of *tasks* still runs, but those *spared*."""
-    return any(not task.done() and task not in spared for task in tasks)
-
-
 async def _await_shutdown(shutdown: asyncio.Task[None]) -> None:
     """Wait for the kit's *shutdown*, its failure raised. One cut itself is
     no cancellation of a caller nobody cancelled: it is told so."""
@@ -217,7 +216,7 @@ async def _await_shutdown(shutdown: asyncio.Task[None]) -> None:
     except asyncio.CancelledError:
         caller = asyncio.current_task()
         if shutdown.cancelled() and (caller is None or not caller.cancelling()):
-            raise RoomKitError(
+            raise ShutdownCancelledError(
                 "The kit's shutdown was cancelled before it ended: "
                 "its channels and its store may not all be closed"
             ) from None
@@ -426,7 +425,12 @@ class RoomKit(
         # Explicit detaches (revocations, RFC §7.5-7) are recorded in room
         # metadata by detach_channel() — not here — so they survive restarts
         # and are visible to every process sharing the store.
+        # Once close() starts, every call is refused and the kit's work cut
+        # (RFC §12.10.4): the calls into a room under way, the deliveries of
+        # the calls it took.
         self._closed = False
+        self._door_runs = DoorRuns()
+        self._cascades = Cascades()
         self._shutdown: asyncio.Task[None] | None = None
         self._shutdown_callers = Callers()
         self._hook_engine = HookEngine()
@@ -516,6 +520,11 @@ class RoomKit(
             except RoomNotFoundError:
                 logger.debug("No such room %s for ON_STATUS_POSTED", room_id)
                 return
+            except KitClosedError:
+                # Posted once the kit's close sealed its store (a run's
+                # terminal entry, published late): no hook fires (RFC §12.10.4).
+                logger.debug("The kit is closed: no ON_STATUS_POSTED for room %s", room_id)
+                return
             await self._hook_engine.run_async_hooks(
                 room_id,
                 HookTrigger.ON_STATUS_POSTED,
@@ -541,7 +550,7 @@ class RoomKit(
         self._background_runs: set[asyncio.Task[None]] = set()
         # The writes past a call's decision, run to their end whatever becomes
         # of its caller (core.task_utils.run_to_its_end, RFC §13.6): close()
-        # waits for them, never cuts them.
+        # gives them its grace, then cuts them (RFC §12.10.4).
         self._decided_writes: set[asyncio.Task[Any]] = set()
         # The ``cancel_task`` cancels under way, by task: the channels whose
         # calls asked are not handed the cancellation back (RFC §23.4).
@@ -842,75 +851,90 @@ class RoomKit(
             self._event_router._defers = self._discussions.__contains__
         return self._event_router
 
-    async def _cancel_background_runs(self) -> None:
-        """Cancel the background work the kit holds and wait for its ends:
-        a strategy's run frees its room and posts its terminal entry,
-        cancelled; an inline delegation ends cancelled, its completion run;
-        a delegation's hand-back under way is cut (RFC §23.3). A run not
-        started yet is cut once started, its end run all the same. The runs
-        this close runs under are spared: waiting for them would wait for
-        itself."""
-        # A run's end may start another: it is cancelled in turn.
-        while runs := {run for run in self._background_runs if not run.done()} - spared_by_close():
-            await cancel_and_wait(*runs, log_errors_to=logger, once_started=True)
+    def _running_work(self) -> set[asyncio.Task[Any]]:
+        """The kit's work still running (RFC §12.10.4), but what the current
+        close runs under: the lanes' rounds, the calls into a room before
+        their commit, the decided writes, the hook tasks and stream readers,
+        the observers, the background runs, the cut turns unwinding. Read
+        again at each wake: work started meanwhile is in it, the work of a
+        caller that joined the close is not."""
+        work = {
+            *self._lanes.running(),
+            *self._door_runs.running(),
+            *self._decided_writes,
+            *self._pending_hook_tasks,
+            *self._background_runs,
+            *self._hook_engine.running_observers(),
+            *self._cascades.turn_work(),
+        }
+        return {task for task in work if not task.done()} - spared_by_close()
 
-    async def _cancel_pending_tasks(self) -> None:
-        """Cancel the pending hook tasks and the stream readers the kit holds
-        and wait for their ends, but the ones this close runs under: waiting
-        for them would wait for itself. A task not started yet is cut once
-        started, as a held run is, so its end runs. A task one of them
-        starts as it ends is cancelled in turn."""
-        while pending := set(self._pending_hook_tasks) - spared_by_close():
-            for task in pending:
-                if not task.done():
-                    cut_once_started(task)
-            await wait_for_unspared(lambda pending=pending: pending - spared_by_close())
-            ended = {task for task in pending if task.done()}
-            for task in ended:
-                # Retrieved, as awaiting it would: its end is this close's.
-                if not task.cancelled():
-                    task.exception()
-            self._pending_hook_tasks.difference_update(ended)
+    def _cut_running_work(self) -> set[asyncio.Task[Any]]:
+        """Cut the kit's work still running, but what the current close runs
+        under, each task once it started so its own end runs (a run's
+        terminal entry, a turn's stored text); what is left of it."""
+        spared = spared_by_close()
+        self._door_runs.cut_running(spared)
+        self._lanes.cut(spared)
+        self._cascades.cut(spared)
+        running = self._running_work()
+        for task in running:
+            cut_once_started(task)
+        return running
 
-    async def _end_what_the_channels_started(self) -> None:
-        """End what the channels' closes started, before the store is
-        released: a run held on the closing kit, cut once started; a decided
-        write, waited for on a budget of its own, counted from the channels'
-        end; a hook task, cut once started; an observer, drained. Again
-        until none is left, since the end of one may start another (a cut
-        hook's end holding a run, an observer's call committing a record);
-        what an end scheduled takes its first step before the check."""
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + CLOSE_WAIT_S
-        while True:
-            await self._cancel_background_runs()
-            await wait_for_held(self._decided_writes, until=deadline)
-            await self._cancel_pending_tasks()
-            await self._hook_engine.drain_observers()
-            await asyncio.sleep(0)
-            spared = spared_by_close()
-            writes = loop.time() < deadline and _running(self._decided_writes, spared)
-            if not (
-                writes
-                or _running(self._background_runs, spared)
-                or _running(self._pending_hook_tasks, spared)
-                or self._hook_engine.running_observers()
-            ):
-                return
+    def _cut_at_once(self) -> None:
+        """What close() cuts as it starts (RFC §12.10.4), but the work it is
+        called from: admission (the calls waiting for their room's lock),
+        the deliveries queued in the lanes, every delivery's turns, the
+        background runs, the verification timers."""
+        spared = spared_by_close()
+        self._door_runs.cut_waiting(spared)
+        self._lanes.seal()
+        self._cascades.cut(spared)
+        self._cancel_verification_timers()
+        for run in set(self._background_runs) - spared:
+            cut_once_started(run)
+
+    async def _cut_and_unwind(self) -> None:
+        """Cut what is left of the kit's work and let it unwind, at most
+        :data:`CUT_UNWIND_S`: what its end starts is cut in turn. What still
+        runs then is named in the log and left."""
+        left = await wait_for_unspared(self._cut_running_work, timeout=CUT_UNWIND_S)
+        if left:
+            logger.warning(
+                "Closing with %d task(s) still running after their cut: %s",
+                len(left),
+                ", ".join(sorted(t.get_name() for t in left if isinstance(t, asyncio.Task))),
+            )
 
     async def close(self) -> None:
-        """Close every channel, then release what they share.
+        """Close the kit: refuse every new call, cut its work, close every
+        channel, then release what they share (RFC §12.10.4).
 
-        In two phases (RFC 12.10.4). First the channels close, one at a time
-        and shielded from one another, each on its own bounded budgets — a
-        conference channel's bot is out of its meeting when this phase ends,
-        whatever the store is doing. Then, with every channel's media
-        released, the framework waits — with no deadline — for the operations
-        the store and the lock manager already have (each runs under a
-        resource lease), seals both against new work, and releases them. An
-        operation arriving after the seal is refused with
-        :class:`RoomKitError` rather than started against a resource being
-        released.
+        As it starts, every call made from then on raises
+        :class:`KitClosedError`, whoever makes it (an outside caller, a
+        hook, a tool, a channel's close), and what has not started is cut at
+        once: a delivery queued in a room's lane, a call waiting for its
+        room's lock, every model turn (its stream and its tool calls; what it
+        streamed is stored marked cancelled, an open tool call gets its end
+        row). The work still running (a hook, a store write, a transport
+        send) gets one grace of :data:`CLOSE_GRACE_S` seconds; then what is
+        left is cut. A call the close cuts returns one result, its
+        ``cancellation_reason`` ``kit_closed``, with the answers already
+        stored and each target's delivery (a send cut mid-way ``failed``,
+        code ``kit_closed``, retryable); a call cut before its commit
+        returns ``InboundResult(blocked=True, reason="kit_closed")`` or, for
+        a call that returns the committed event, raises
+        :class:`KitClosedError`.
+
+        Then the channels close, one at a time and shielded from one another,
+        each on its own bounded budgets — a conference channel's bot is out
+        of its meeting when this phase ends, whatever the store is doing.
+        What their closes started is cut at once. Then the framework waits,
+        with no deadline, for the operations the store and the lock manager
+        already have (each runs under a resource lease), seals both, and
+        releases them. Nothing is written or delivered after close()
+        returns: it takes the grace plus the channels' closes.
 
         Raises:
             ExceptionGroup: one or more channels failed to close. Raised only
@@ -919,17 +943,17 @@ class RoomKit(
                 — so nothing else is skipped on a failure's account. The
                 channel that failed may still be holding its own resources (a
                 bot possibly still in its meeting); the group names each one.
+            ShutdownCancelledError: the shutdown was cut itself (every task
+                of the process cancelled, as ``asyncio.run`` does as it ends),
+                to a caller nobody cancelled.
 
-        One shutdown per kit (RFC 12.10.4): the first call starts it in a
-        task of its own, and every call, concurrent or later, waits for that
-        one. A caller cancelled, or timed out, cancels only its own wait: the
-        shutdown runs to its end. Once ended, its result answers every later
-        call, a return after a success, the same ``ExceptionGroup`` after a
-        failure; it never runs again — re-closing already-closed channels
-        would raise a second, unrelated failure over the one already reported.
-        A shutdown cut itself (every task of the process cancelled, as
-        ``asyncio.run`` does as it ends) raises :class:`RoomKitError` to a
-        caller nobody cancelled.
+        One shutdown per kit: the first call starts it in a task of its own,
+        and every call, concurrent or later, waits for that one. A caller
+        cancelled, or timed out, cancels only its own wait: the shutdown runs
+        to its end. Once ended, its result answers every later call, a return
+        after a success, the same ``ExceptionGroup`` after a failure; it never
+        runs again — re-closing already-closed channels would raise a second,
+        unrelated failure over the one already reported.
 
         A call from the kit's own work (a hook's body, a tool's call, a
         background run, a delivery, a session's end) waits for the shutdown
@@ -939,6 +963,7 @@ class RoomKit(
         """
         if self._shutdown is None:
             self._closed = True
+            self._cut_at_once()
             self._shutdown = self._shutdown_callers.start(self._shut_down(), name="roomkit-close")
         elif self._shutdown in held_runs():
             # Waiting for the shutdown from its own work would wait for itself.
@@ -950,18 +975,27 @@ class RoomKit(
         await _await_shutdown(self._shutdown)
 
     async def _shut_down(self) -> None:
-        """The kit's one shutdown (:meth:`close`): its own work stops, the
-        channels close, then what they shared is released; the channels'
-        failures raised last."""
+        """The kit's one shutdown (:meth:`close`): its own work stops and its
+        running work gets its grace, then is cut; the channels close, what
+        their closes started is cut, then what they shared is released; the
+        channels' failures raised last."""
+        grace_until = asyncio.get_running_loop().time() + CLOSE_GRACE_S
         await self._stop_kit_work()
+        await wait_for_unspared(
+            self._running_work, timeout=grace_until - asyncio.get_running_loop().time()
+        )
+        await self._cut_and_unwind()
+        # A turn still open (a stream nobody reads) is given up before its
+        # channel closes.
+        await self._turns.close()
         channel_failures = await self._close_channels()
         # Close voice backend
         if self._voice:
             await self._voice.close()
         await self._realtime.close()
-        # What the channels' closes started ends before the store is
-        # released, as what the drains started did.
-        await self._end_what_the_channels_started()
+        # What the channels' closes started is cut before the store is
+        # released: their grace is over.
+        await self._cut_and_unwind()
         await self._release_shared_resources()
         # Last, the failures the channel loop collected. After everything, so
         # the caller learns of them without any other part of the shutdown
@@ -976,11 +1010,9 @@ class RoomKit(
             )
 
     async def _stop_kit_work(self) -> None:
-        """Stop the kit's own work while the channels it uses are still open
-        (timers, recordings, discussions, background runs, decided writes,
-        sources, lanes, turns, observers), what its ends start included."""
-        # No verification ends after this: the timers die with the kit.
-        self._cancel_verification_timers()
+        """Stop the kit's own work while the channels it uses are still open:
+        recordings, greeting gates, the delivery backend, discussions,
+        delegations, sources."""
         # Stop room-level media recorders before channels close (RFC §12.11)
         await self._close_room_recorders()
         # Clear stale greeting gates
@@ -989,40 +1021,13 @@ class RoomKit(
         # Stop delivery backend worker loop
         if self._delivery_backend is not None:
             await self._delivery_backend.close()
-        # Stop the discussions' turns first, their queues kept (RFC §19.7.5
-        # rule 16). Then cancel in-flight background work: the strategies'
-        # runs, which end their workers' delegations as they end, and the
-        # hand-backs under way, then delegated tasks.
+        # Stop the discussions' turns, their queues kept (RFC §19.7.5 rule
+        # 16), then the delegated tasks.
         await self._stop_discussions()
-        await self._cancel_background_runs()
         await self._task_runner.close()
-        # The writes past a decision whose caller left end before anything
-        # they enqueue or start is drained or cut (RFC §13.6), waited for on
-        # one budget across the close: they may run integrator code.
-        writes_deadline = asyncio.get_running_loop().time() + CLOSE_WAIT_S
-        await wait_for_held(self._decided_writes, until=writes_deadline)
-        await self._cancel_pending_tasks()
         # Stop all event sources
         for channel_id in list(self._sources.keys()):
-            await self.detach_source(channel_id)
-        # Drain and seal the delivery lanes BEFORE the channels close: lane
-        # executors call channel.on_event/deliver, and a bounded drain gives
-        # queued deliveries their chance while the channels still accept
-        # them. Whatever outlives the budget is aborted with its cascade
-        # cancelled — no waiter hangs.
-        await self._lanes.aclose()
-        # A turn still running after the lanes (a stream nobody reads) is cut
-        # before its channel closes.
-        await self._turns.close()
-        # The ASYNC observers still running finish while the channels they may
-        # use are open; each is bounded by its hook's timeout.
-        await self._hook_engine.drain_observers()
-        # What the drains started meanwhile (a background run, a timer's
-        # hooks, an injected pass, a stream's reader) ends before the
-        # channels close, as what was there at the first pass did.
-        await self._cancel_background_runs()
-        await wait_for_held(self._decided_writes, until=writes_deadline)
-        await self._cancel_pending_tasks()
+            await self._detach_source(channel_id)
 
     async def _close_channels(self) -> list[Exception]:
         """Close every channel, one at a time and shielded from one another;
@@ -1094,7 +1099,7 @@ class RoomKit(
         on it; the seal turns it into an error that says what happened.
         """
         if self._resource_leases_sealed:
-            raise RoomKitError(
+            raise KitClosedError(
                 "RoomKit.close() has sealed the store and the lock manager; an operation "
                 "arriving now would run against resources that are being released"
             )
@@ -1523,32 +1528,36 @@ class RoomKit(
             raise ValueError("standalone applies to an INSTRUCTION only")
         refuse_reserved(idempotency_key)
 
-        await self._ensure_status_bus_subscribed()
-        if first_post is None:
-            binding = await self._injection_binding(room_id, channel_id, organization_id, deadline)
-            source = _direct_source(binding, participant_id, provider)
-        else:
-            source = first_post.source
-        fields: dict[str, Any] = dict(
-            room_id=room_id,
-            type=event_type,
-            source=source,
-            content=content,
-            # A call made within a turn is at least as deep as the turn's
-            # response (RFC §8.3, §10.6).
-            chain_depth=max(chain_depth, chain_floor()),
-            parent_event_id=parent_event_id,
-            status=EventStatus.DELIVERED,
-            # The key the pipeline reserves (RFC §5.2) is not the caller's.
-            metadata=without_fingerprint(metadata or {}),
-            visibility=visibility,
-            response_visibility=response_visibility,
-            addressed_to=addressed_to,
-            idempotency_key=idempotency_key,
-        )
-        if created_at is not None:
-            fields["created_at"] = created_at
-        return await self._enter_injection(RoomEvent(**fields), deadline, first_post)
+        # The kit's close cuts it before its commit (RFC §12.10.4).
+        with self._door_runs.run("event"):
+            await self._ensure_status_bus_subscribed()
+            if first_post is None:
+                binding = await self._injection_binding(
+                    room_id, channel_id, organization_id, deadline
+                )
+                source = _direct_source(binding, participant_id, provider)
+            else:
+                source = first_post.source
+            fields: dict[str, Any] = dict(
+                room_id=room_id,
+                type=event_type,
+                source=source,
+                content=content,
+                # A call made within a turn is at least as deep as the turn's
+                # response (RFC §8.3, §10.6).
+                chain_depth=max(chain_depth, chain_floor()),
+                parent_event_id=parent_event_id,
+                status=EventStatus.DELIVERED,
+                # The key the pipeline reserves (RFC §5.2) is not the caller's.
+                metadata=without_fingerprint(metadata or {}),
+                visibility=visibility,
+                response_visibility=response_visibility,
+                addressed_to=addressed_to,
+                idempotency_key=idempotency_key,
+            )
+            if created_at is not None:
+                fields["created_at"] = created_at
+            return await self._enter_injection(RoomEvent(**fields), deadline, first_post)
 
     async def _enter_injection(
         self, event: RoomEvent, deadline: float, first_post: _host_post.FirstPost | None
@@ -1597,9 +1606,12 @@ class RoomKit(
             attributes={"event_type": str(event.type)},
         )
         token = set_current_span(span_id, telemetry_ctx=telemetry.get_span_context(span_id))
-        cascade = DeliveryCascade(room_id, reentry_budget=entry.budget)
+        cascade = self._cascades.new(room_id, reentry_budget=entry.budget)
         try:
             result, handed = await self._injection_section(event, entry, cascade, deadline)
+            # Past its commit: the kit's close no longer cuts the call, but its
+            # delivery (RFC §12.10.4).
+            self._door_runs.committed()
             # What its hooks injected commits once its section released the
             # lock, each in a section of its own (RFC §9.4), before this call
             # returns; nested in a pass's section, that section runs them
@@ -1652,7 +1664,7 @@ class RoomKit(
                             room_id, event, None, budget=entry.budget, adopted=entry.adopted
                         )
                     )
-                    await stack.enter_async_context(self._lock_manager.locked(room_id))
+                    await self._door_runs.enter_lock(stack, self._lock_manager.locked(room_id))
             except TimeoutError:
                 result = await self._refuse_on_timeout(room_id, channel_id=event.source.channel_id)
                 return result, None
@@ -1945,3 +1957,52 @@ class RoomKit(
         if organization_id is not None:
             await self.get_room(room_id, organization_id=organization_id)
         return await self._store.list_read_markers(room_id)
+
+
+# -- Admission (RFC §12.10.4) --
+#
+# Once close() starts, every call the kit offers is refused, whoever makes it:
+# an outside caller, or the kit's own work still running (a hook, a tool, a
+# channel's close). The refusal is put on each public call here, in one place,
+# rather than repeated at the top of each; the framework's own steps call the
+# private bodies, never the refused calls.
+
+_TAKEN_WHILE_CLOSING = frozenset({"close"})
+"""The calls a closing kit still takes: a close joins the shutdown."""
+
+
+def _refused_once_closed(
+    name: str, method: Callable[..., Awaitable[Any]]
+) -> Callable[..., Awaitable[Any]]:
+    """The call *name* (*method*), refused with :class:`KitClosedError` once
+    the kit's close started."""
+
+    @functools.wraps(method)
+    async def call(kit: RoomKit, /, *args: Any, **kwargs: Any) -> Any:
+        if kit._closed:
+            raise KitClosedError(f"The kit is closing: {name}() is refused")
+        return await method(kit, *args, **kwargs)
+
+    return call
+
+
+def _refused_once_closed_sync(name: str, method: Callable[..., Any]) -> Callable[..., Any]:
+    """The call *name* (*method*), which changes the channels a closing kit
+    closes, refused with :class:`KitClosedError` once the kit's close
+    started."""
+
+    @functools.wraps(method)
+    def call(kit: RoomKit, /, *args: Any, **kwargs: Any) -> Any:
+        if kit._closed:
+            raise KitClosedError(f"The kit is closing: {name}() is refused")
+        return method(kit, *args, **kwargs)
+
+    return call
+
+
+for _name, _call in inspect.getmembers(RoomKit, inspect.iscoroutinefunction):
+    if not _name.startswith("_") and _name not in _TAKEN_WHILE_CLOSING:
+        setattr(RoomKit, _name, _refused_once_closed(_name, _call))
+for _name in ("register_channel", "unregister_channel"):
+    setattr(RoomKit, _name, _refused_once_closed_sync(_name, getattr(RoomKit, _name)))
+del _name, _call

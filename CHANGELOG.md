@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`KitClosedError` and `ShutdownCancelledError`, both `RoomKitError`s**
+  (RFC 12.10.4, RMK-1030).
+  - `KitClosedError` is what a call to a closing kit raises, and the code
+    (`kit_closed`) of a send its close cut. It replaces the plain
+    `RoomKitError` a call met after the store was sealed, or a delegation
+    or a strategy's run asked for on a closing kit.
+  - `ShutdownCancelledError` is what `close()` raises to a caller nobody
+    cancelled once the shutdown itself was cut (every task cancelled, as
+    `asyncio.run` does as it ends). It used to be a plain `RoomKitError`.
+
 - **`SystemOneClassifier` asks a decision model on any server with a
   System One API** (RFC 6.8, RMK-1025). TypeSafe's API (`POST
   {base_url}/v1/systemone`) is now also served by Ollama (d3, d1, nimble,
@@ -67,6 +77,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the tools already used, and the latest images their results returned
     still ride the input.
 
+- **BREAKING — once `kit.close()` starts, every call raises
+  `KitClosedError`** (RFC 12.10.4, RMK-1030). A closing kit took calls until
+  its store was sealed, so traffic kept the close open and a call made in the
+  close's last moments was stored and never delivered. Now admission stops
+  as `close()` starts, whoever calls: an outside caller, a hook or a tool
+  still running, a channel's own `close()`. Reads are refused too
+  (`get_room`, `get_timeline`, `list_*`), and `commit_event` after the
+  close no longer writes. Migration: read what a closed kit left through
+  `kit.store`, and let a hook or a channel's close that may run during a
+  close catch `KitClosedError`.
+
+- **BREAKING — `kit.close()` no longer drains: what has not started is cut
+  at once, the running work gets one grace of 5 s** (RFC 12.10.4,
+  RMK-1030).
+  - A delivery queued in a room's lane is dropped, never sent; it used to be
+    delivered if the lane's 5 s drain reached it.
+  - A call waiting for its room's lock is cut, nothing of it stored:
+    `process_inbound` and `regenerate_response` return
+    `InboundResult(blocked=True, reason="kit_closed")`, `send_event` and
+    `commit_event` raise `KitClosedError`. It used to wait for the lock,
+    then fail on the sealed store after `close()` had returned.
+  - A hook, a store write or a transport send still running gets one grace
+    of 5 s from the close's start, then is cut. A write is no longer waited
+    for on 5 s, again on the same deadline, then on a fresh 5 s after the
+    channels closed, and left running past that. What a channel's close
+    starts is cut at once.
+  - The close takes the grace plus the channels' closes. With a send, a
+    write, an observer and a hook that never end, it took 19.8 s; it takes
+    5 s.
+
+- **BREAKING — `kit.close()` cuts a model turn at once** (RFC 12.10.4,
+  RMK-1030). A turn in progress, its stream and its tool calls, is cut as
+  the close starts, while the other running work has its grace. It used to
+  be cut only once every lane had drained, up to 6 s later. What it
+  streamed is stored marked `cancelled`, and an open tool call gets its end
+  row, `failed`.
+
+- **BREAKING — a call `kit.close()` cuts reads `kit_closed`, never
+  `lane_cancelled`, with what it delivered** (RFC 12.10.4, RMK-1030). A
+  close gave `lane_cancelled` to the deliveries its lane's round had taken
+  and `kit_closed` to the ones queued, all with empty `delivery_results`.
+  Every call it cuts now reads `cancellation_reason == "kit_closed"`, its
+  answers already stored, and each target's delivery: a target delivered
+  keeps `sent`, a send cut mid-way is `failed` with code `kit_closed`,
+  retryable. A deferred call's `delivery.wait()` returns once its delivery
+  set ended or was cut, no longer as the close starts. `lane_cancelled` is
+  no longer given by a close.
+
 - **BREAKING — a `kit.close()` after one that failed raises the same
   failure** (RFC 12.10.4, RMK-1015). A channel that fails to close makes
   `close()` raise an `ExceptionGroup`; a later `close()` used to return
@@ -79,6 +137,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   around the block.
 
 ### Fixed
+
+- **`kit.close()` returns while calls keep arriving** (RMK-1016). The close
+  waited for the work started after it began, and calls were taken until
+  the store was sealed: with calls arriving with no gap, it had not returned
+  after 20 s, and returned 7 s after the traffic stopped, 67,840 calls taken
+  meanwhile. Calls are now refused from the close's start (above), and it
+  returns with its 5 s grace.
 
 - **`JevClassifier` sends its `model` with a client handed in** (RMK-1025).
   The model was used only when the classifier made its own client. A client
@@ -107,7 +172,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shutdown runs to its end while the event loop runs. A process that
   cancels every task as it ends (`asyncio.run` interrupted during its last
   `close()`) cuts the shutdown too: a later `close()` then raises
-  `RoomKitError` saying so. A `close()` from the kit's own work (a tool's
+  `ShutdownCancelledError` (a `RoomKitError`) saying so. A `close()` from the kit's own work (a tool's
   call, a hook's body) still runs on once the shutdown has ended: the
   shutdown neither waits for it nor cuts it, whether that call started the
   shutdown or joined one under way.

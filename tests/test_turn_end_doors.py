@@ -23,7 +23,7 @@ from roomkit import HookExecution, HookTrigger, RoomKit
 from roomkit.channels.agent import Agent
 from roomkit.channels.base import Channel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-from roomkit.core.exceptions import RoomKitError
+from roomkit.core.exceptions import KitClosedError
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -308,9 +308,9 @@ async def test_nothing_starts_a_worker_s_turn_on_a_closing_kit(door: Any) -> Non
     kit.register_channel(Agent("worker", provider=MockAIProvider(responses=["done"])))
     await kit.create_room(room_id="r")
     await kit.attach_channel("r", "sms")
-    kit._closed = True  # the window close() opens before it seals the store
+    kit._closed = True  # the kit's close has started
 
-    with pytest.raises(RoomKitError, match="The framework is closing"):
+    with pytest.raises(KitClosedError, match="The kit is closing"):
         await door(kit)
     kit._closed = False
     await kit.close()
@@ -518,9 +518,9 @@ async def test_the_delegate_task_tool_starts_nothing_on_a_closing_kit() -> None:
     kit.register_channel(Agent("worker", provider=MockAIProvider(responses=["done"])))
     await kit.create_room(room_id="r")
     await kit.attach_channel("r", "sms")
-    kit._closed = True  # the window close() opens before it seals the store
+    kit._closed = True  # the kit's close has started
 
-    with pytest.raises(RoomKitError, match="no delegation starts"):
+    with pytest.raises(KitClosedError, match="The kit is closing"):
         await DelegateHandler(kit).handle("r", "caller", {"agent": "worker", "task": "Go."})
     kit._closed = False
     await kit.close()

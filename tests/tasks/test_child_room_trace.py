@@ -406,6 +406,7 @@ class TestRunAgentNonStreaming:
                 id="parent::task-1", metadata={"parent_room_id": "parent", "task_agent_id": "w1"}
             )
         )
+        kit._read_room = kit.get_room
         kit.store.list_bindings = AsyncMock(return_value=[])
         kit.store.list_events = AsyncMock(return_value=[])
         kit.store.get_private_state = AsyncMock(return_value=None)
@@ -452,6 +453,7 @@ class TestRunAgentNonStreaming:
                 id="parent::task-1", metadata={"parent_room_id": "parent", "task_agent_id": "w1"}
             )
         )
+        kit._read_room = kit.get_room
         kit.store.list_bindings = AsyncMock(return_value=[])
         kit.store.list_events = AsyncMock(return_value=[])
         kit.store.get_private_state = AsyncMock(return_value=None)

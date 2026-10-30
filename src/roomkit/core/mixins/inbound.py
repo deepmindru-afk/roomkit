@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.channels._runtime_record import RUNTIME_RECORD
 from roomkit.channels.addressing import read_recipient
 from roomkit.core._changes import for_channels
+from roomkit.core._closing import Cascades, DoorRuns, cut_by_close
 from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
 from roomkit.core._instructions import FINGERPRINT, names_an_agent
 from roomkit.core._publication_keys import admitted_key
@@ -26,6 +27,7 @@ from roomkit.core._reentrance import (
 )
 from roomkit.core.exceptions import (
     ChannelNotRegisteredError,
+    KitClosedError,
     RoomAlreadyExistsError,
     RoomNotFoundError,
 )
@@ -144,6 +146,8 @@ class InboundMixin(HelpersMixin):
     _inbound_rate_limit: Any  # RateLimit | None
     _telemetry: TelemetryProvider
     _verification_inbound: bool
+    _door_runs: DoorRuns
+    _cascades: Cascades
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _resolve_identity: Any  # see InboundHost
@@ -244,10 +248,17 @@ class InboundMixin(HelpersMixin):
         refuse_too_deep(message.content)
         # The message's key names its delivery from the call's start, before
         # anything is awaited (RFC §10.1): the read of its room's scope too.
-        with self._delivery_keys.naming(message.delivery_key, organization_id) as named:
-            return await self._process_named_inbound(
-                message, room_id, defer_delivery, organization_id, named
-            )
+        # The kit's close cuts it before its commit (RFC §12.10.4).
+        try:
+            with (
+                self._door_runs.run("message"),
+                self._delivery_keys.naming(message.delivery_key, organization_id) as named,
+            ):
+                return await self._process_named_inbound(
+                    message, room_id, defer_delivery, organization_id, named
+                )
+        except KitClosedError:
+            return cut_by_close()
 
     async def _process_named_inbound(
         self,
@@ -719,9 +730,8 @@ class InboundMixin(HelpersMixin):
         cancelled before its commit when a cancellation reached it earlier;
         an event held for verification keeps it named until its release.
         """
-        from roomkit.core.lanes import DeliveryCascade
 
-        cascade = DeliveryCascade(room_id, reentry_budget=entry.budget)
+        cascade = self._cascades.new(room_id, reentry_budget=entry.budget)
         named.attach(cascade)
         try:
             result = await self._complete_inbound_delivery(
@@ -780,7 +790,7 @@ class InboundMixin(HelpersMixin):
                             room_id, event, context, budget=entry.budget, adopted=entry.adopted
                         )
                     )
-                    await stack.enter_async_context(self._lock_manager.locked(room_id))
+                    await self._door_runs.enter_lock(stack, self._lock_manager.locked(room_id))
             except TimeoutError:
                 return await self._refuse_on_timeout(room_id, channel_id=message.channel_id)
             try:
@@ -802,6 +812,9 @@ class InboundMixin(HelpersMixin):
                 # once the lock is released.
                 handed = self._hand_off_decided(entry, queued, room_id, cascade)
             self._name_held(named, result)
+        # Past its commit: the kit's close no longer cuts the call, but its
+        # delivery (RFC §12.10.4).
+        self._door_runs.committed()
         if result.error is None:
             # The lock's release comes before anything the delivery set
             # meets, so its failure is the earlier error (RFC §13.5).
@@ -1383,7 +1396,7 @@ class InboundMixin(HelpersMixin):
         :class:`_RoutingTimeoutError` naming the room."""
         await _by(
             deadline,
-            stack.enter_async_context(self._lock_manager.locked(room_id)),
+            self._door_runs.enter_lock(stack, self._lock_manager.locked(room_id)),
             room_id=room_id,
         )
 

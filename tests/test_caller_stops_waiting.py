@@ -16,7 +16,6 @@ from typing import Any
 import pytest
 
 from roomkit import FrameworkEvent, RoomKit
-from roomkit.core import framework
 from roomkit.core.inbound_router import InboundRoomRouter
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -325,10 +324,13 @@ class TestARoomAnotherCallCreatedFirst:
 
 
 class TestTheKitsClose:
-    async def test_waits_for_the_writes_a_cancelled_caller_left(self) -> None:
+    async def test_the_writes_a_cancelled_caller_left_land_within_the_grace(
+        self, close_grace: float
+    ) -> None:
         """A host cancels a call whose commit is in flight and closes the kit
-        at once: the close waits for the writes, never cuts them, and the
-        event is delivered before the channels close (RFC §13.6)."""
+        at once: the writes are running work, so the close lets them end
+        within its grace; the event is stored, its delivery, not started,
+        dropped (RMK-1030, RFC §13.6)."""
         store = _SlowAnswer()
         kit = RoomKit(store=store)
         ws = SimpleChannel("ws1")
@@ -342,28 +344,28 @@ class TestTheKitsClose:
         caller = asyncio.create_task(kit.process_inbound(_msg("first"), room_id="r1"))
         await _cancelled_while(caller, store.written)
         closing = asyncio.ensure_future(kit.close())
-        await asyncio.wait({closing}, timeout=0.05)
-        assert not closing.done()  # it waits for the commit in flight
+        await asyncio.sleep(0)
+        assert not closing.done()  # it gives the commit in flight its grace
         store.answer.set()
         await asyncio.wait_for(closing, 1)
 
-        assert [_body(e) for e in ws.delivered] == ["first"]
+        assert "first" in [_body(e) for e in await store.list_events("r1")]
+        assert ws.delivered == []
         with pytest.raises(asyncio.CancelledError):
             await caller
 
-    async def test_waits_for_them_on_its_budget_while_a_handler_hangs(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    async def test_writes_outlasting_the_grace_are_cut(
+        self, close_grace: float, caplog: pytest.LogCaptureFixture
     ) -> None:
         """A decided write runs integrator code (an ``event_blocked`` handler
-        that never answers): the close waits for it on its budget only, names
-        it and goes on, never cutting it; the write ends once the handler
-        does."""
-        monkeypatch.setattr(framework, "CLOSE_WAIT_S", 0.02)
+        that never answers): the close gives it its grace, then cuts it, the
+        handler with it, and its caller returns refused (RMK-1030)."""
         kit = RoomKit()
         kit.register_channel(SimpleChannel("sms1"))
         await kit.create_room(room_id="r1")
         await kit.attach_channel("r1", "sms1")
-        entered, answer = asyncio.Event(), asyncio.Event()
+        entered = asyncio.Event()
+        steps: list[str] = []
 
         @kit.hook(HookTrigger.BEFORE_BROADCAST, name="block")
         async def block(event: RoomEvent, ctx: RoomContext) -> HookResult:
@@ -372,14 +374,16 @@ class TestTheKitsClose:
         @kit.on("event_blocked")
         async def webhook(event: FrameworkEvent) -> None:
             entered.set()
-            await answer.wait()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                steps.append("cut")
+                raise
 
         caller = asyncio.create_task(kit.process_inbound(_msg("spam"), room_id="r1"))
         await asyncio.wait_for(entered.wait(), 1)
-        with caplog.at_level(logging.WARNING):
-            await asyncio.wait_for(kit.close(), 1)
-        assert any("roomkit-decided-write-r1" in r.getMessage() for r in caplog.records)
+        await asyncio.wait_for(kit.close(), 1)
 
-        answer.set()
         result = await asyncio.wait_for(caller, 1)
-        assert (result.blocked, result.reason) == (True, "spam")
+        assert steps == ["cut"]
+        assert result.blocked

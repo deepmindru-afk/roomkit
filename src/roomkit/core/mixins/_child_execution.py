@@ -21,7 +21,6 @@ from roomkit.core._failure_log import log_failure, mark_reported
 from roomkit.core._publication_keys import without_reserved_key
 from roomkit.core.event_router import responder_turn_entries, stream_record
 from roomkit.core.exceptions import TaskCutShortError, TaskTurnFailedError, TurnCutShortError
-from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins._response_reader import ResponseReader
 from roomkit.core.mixins._result_capture import capture_result
 from roomkit.core.mixins._streaming_segments import LaneSink, RowSink, SegmentWriter, TurnScope
@@ -111,7 +110,7 @@ async def persist_tool_calls(
     segment of a turn that completed: a turn its round cap, deadline or
     budget cut short has none, its narration is no answer (RFC §6.4).
     """
-    cascade = DeliveryCascade(room_id, reentry_budget=kit._max_chain_depth * 10)
+    cascade = kit._cascades.new(room_id, reentry_budget=kit._max_chain_depth * 10)
     lane = LaneSink(
         kit,
         room_id=room_id,
@@ -289,7 +288,7 @@ async def _broadcast_and_collect(
     is its last turn's)."""
     if turns is not None:
         turns.clear()
-    room = await kit.get_room(child_room_id)
+    room = await kit._read_room(child_room_id)
     bindings = await kit.store.list_bindings(child_room_id)
 
     # The task description, and a result tool's re-prompt, are the delegating
@@ -385,7 +384,7 @@ async def _deliver_answer(
     agent's response that failed fails the turn once every response is read;
     another responder's is that responder's turn.
     """
-    cascade = DeliveryCascade(child_room_id, reentry_budget=kit._max_chain_depth * 10)
+    cascade = kit._cascades.new(child_room_id, reentry_budget=kit._max_chain_depth * 10)
     cascade.add_streams(result.streaming_responses)
     await kit._commit_responses(child_room_id, result.reentry_events, None, cascade)
     # The failure is raised to the delegation, which logs it, a stream a
@@ -699,7 +698,7 @@ async def _run_with_structured_result(
     from roomkit.orchestration.result import SUBMIT_RESULT
 
     tool = result_tool or SUBMIT_RESULT
-    room = await kit.get_room(child_room_id)
+    room = await kit._read_room(child_room_id)
     agent_id = _task_agent(room)
     channel = kit.channels.get(agent_id) if agent_id else None
     if not _takes_owner_tools(channel):

@@ -26,7 +26,7 @@ from roomkit.core.event_router import (
     BroadcastResult,
     reply_turn_entry,
 )
-from roomkit.core.exceptions import RoomNotFoundError, error_type_name
+from roomkit.core.exceptions import KitClosedError, RoomNotFoundError, error_type_name
 from roomkit.core.lanes import anchor_index
 from roomkit.core.mixins.helpers import (
     _RECENT_EVENTS_LIMIT,
@@ -409,11 +409,10 @@ class LaneExecutionMixin(HelpersMixin):
         Returns the committed event, or ``None`` when the persistence
         policy excluded it (delivered, unstored — RFC §14.3).
         """
-        from roomkit.core.lanes import DeliveryCascade
 
         own_cascade = cascade is None
         if cascade is None:
-            cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
+            cascade = self._cascades.new(room_id, reentry_budget=self._max_chain_depth * 10)
 
         if isinstance(source, str):
             async with self._lock_manager.locked(room_id):
@@ -674,7 +673,9 @@ class LaneExecutionMixin(HelpersMixin):
         """Read the streams a caller's delivery set started, as work the
         kit's close cuts with the deferred readers. A cut from elsewhere
         leaves the cut turn on the cascade, which the caller reports; the
-        caller's own cancellation is raised (RFC §10.1)."""
+        caller's own cancellation is raised (RFC §10.1). A failure met once
+        the kit's close cut the turns is the cut's, not the caller's (RFC
+        §12.10.4)."""
         _, read = await await_unless_cut(
             cascade.run(
                 self._process_streaming_responses(
@@ -684,7 +685,12 @@ class LaneExecutionMixin(HelpersMixin):
                 turn_work=True,
             )
         )
-        return read if read is not None else (None, ResponseMetadata())
+        if read is None:
+            return None, ResponseMetadata()
+        stream_error, record = read
+        if cascade.cancelled == KitClosedError.code:
+            return None, record
+        return stream_error, record
 
     async def _finish_cascade(
         self,
@@ -883,6 +889,16 @@ class LaneExecutionMixin(HelpersMixin):
         await self._hook_engine.run_async_hooks(
             room_id, trigger, payload, context, budget=cascade.budget
         )
+
+    def _report_cut(
+        self, plan: DeliveryPlan, result: BroadcastResult, cascade: DeliveryCascade
+    ) -> None:
+        """What a plan the kit's close cut delivered, to its caller (RFC
+        §12.10.4): each target's result on the root pass, a send cut
+        mid-way failed ``kit_closed``; nothing else of its aftermath runs."""
+        if plan.emit_processed:
+            cascade.delivery_results = _delivery_results(result)
+            cascade.unavailable_targets = _unavailable_targets(plan, result)
 
     async def _report_root_pass(
         self, plan: DeliveryPlan, result: BroadcastResult, cascade: DeliveryCascade

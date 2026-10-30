@@ -439,7 +439,7 @@ class DiscussionMixin(HelpersMixin):
         plan.turn_for = agent_id
         plan.max_chain_depth = max_depth
         plan.response_visibility = answered.response_visibility
-        cascade = DeliveryCascade(room_id, reentry_budget=10 * max_depth)
+        cascade = self._cascades.new(room_id, reentry_budget=10 * max_depth)
         cascade.retain()
         self._enqueue_exec(
             room_id, plan, cascade, index=None, after_index=anchor_index(context.room.latest_index)

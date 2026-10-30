@@ -837,13 +837,14 @@ class TestScopedRoomHooks:
             ),
             room_id="globex-room",
         )
-        await hooks.kit.close()  # its ASYNC hooks have run
+        await hooks.kit.hook_engine.drain_observers()  # its ASYNC hooks have run
         # acme reads nothing, globex's hook still does, and the enabled set
         # is the one globex made.
         assert (hooks.acme_read, hooks.globex_read) == ([], ["secret"])
         assert hooks.kit.hook_engine.room_hook_names("globex-room") == ["globex-hook"]
         assert not await hooks.kit.disable_room_hook("globex-room", "acme-audit")
         assert await hooks.kit.disable_room_hook("globex-room", "audit")
+        await hooks.kit.close()
 
     @pytest.mark.parametrize("organization_id", ["globex", None], ids=["own", "unscoped"])
     async def test_the_rooms_own_organization_or_none_runs_each_verb(

@@ -19,7 +19,7 @@ from roomkit.core._room_turns import RoomTurns
 from roomkit.core._turn_runners import TurnRunner
 from roomkit.core._voice_delivery import delivering_injected
 from roomkit.core.circuit_breaker import CircuitBreaker
-from roomkit.core.exceptions import NoRecipientError
+from roomkit.core.exceptions import KitClosedError, NoRecipientError
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
 from roomkit.core.rate_limiter import TokenBucketRateLimiter
 from roomkit.core.retry import retry_with_backoff
@@ -382,6 +382,53 @@ class _TargetResult:
     reentry_events: list[RoomEvent] = field(default_factory=list)
     blocked_events: list[RoomEvent] = field(default_factory=list)
     observations: list[Observation] = field(default_factory=list)
+
+
+def _merged(event: RoomEvent, target_results: list[_TargetResult]) -> BroadcastResult:
+    """The per-target results of *event*'s delivery set as one result, in
+    the order the targets answered: on_event()'s room metadata updates, then
+    deliver()'s (RFC §10.1 step 15)."""
+    result = BroadcastResult()
+    for tr in target_results:
+        if tr.output is not None:
+            result.outputs[tr.channel_id] = tr.output
+            result.tasks.extend(tr.output.tasks)
+            _merge_updates(result, tr.output, tr.channel_id, event.room_id)
+        if tr.delivery_output is not None:
+            result.delivery_outputs[tr.channel_id] = tr.delivery_output
+            _merge_updates(result, tr.delivery_output, tr.channel_id, event.room_id)
+        if tr.streaming_response is not None:
+            result.streaming_responses.append(tr.streaming_response)
+        if tr.error is not None:
+            result.errors[tr.channel_id] = tr.error
+        if tr.error_exc is not None:
+            result.errors_exc[tr.channel_id] = tr.error_exc
+        result.reentry_events.extend(tr.reentry_events)
+        result.blocked_events.extend(tr.blocked_events)
+        result.observations.extend(tr.observations)
+    return result
+
+
+def _cut_sends(
+    plan: DeliveryPlan, target_results: list[_TargetResult], channels: Mapping[str, Channel]
+) -> list[_TargetResult]:
+    """The sends of *plan*'s set still under way when the kit's close cut it:
+    each a failure, ``kit_closed``, retryable (RFC §12.10.4)."""
+    answered = {tr.channel_id for tr in target_results}
+    excluded = plan.exclude_delivery or set()
+    return [
+        _TargetResult(
+            channel_id=binding.channel_id,
+            error=KitClosedError.code,
+            error_exc=KitClosedError("The kit closed while this delivery was being sent"),
+        )
+        for binding in plan.targets
+        if binding.category == ChannelCategory.TRANSPORT
+        and binding.sends
+        and binding.channel_id in channels
+        and binding.channel_id not in answered
+        and binding.channel_id not in excluded
+    ]
 
 
 class EventRouter:
@@ -808,28 +855,18 @@ class EventRouter:
             for tr in target_results:
                 if tr.streaming_response is not None:
                     drop_unread(tr.streaming_response.stream)
+            if cascade is not None and cascade.cancelled == KitClosedError.code:
+                # The kit's close cut the set: each target delivered keeps
+                # its result, the ones cut mid-send failed (RFC §12.10.4).
+                plan.cut_result = _merged(
+                    event, target_results + _cut_sends(plan, target_results, self._channels)
+                )
             raise
 
         # Merge per-target results into BroadcastResult (single-threaded), in
         # the order the targets answered: on_event()'s room metadata updates,
         # then deliver()'s (RFC §10.1 step 15).
-        for tr in target_results:
-            if tr.output is not None:
-                result.outputs[tr.channel_id] = tr.output
-                result.tasks.extend(tr.output.tasks)
-                _merge_updates(result, tr.output, tr.channel_id, event.room_id)
-            if tr.delivery_output is not None:
-                result.delivery_outputs[tr.channel_id] = tr.delivery_output
-                _merge_updates(result, tr.delivery_output, tr.channel_id, event.room_id)
-            if tr.streaming_response is not None:
-                result.streaming_responses.append(tr.streaming_response)
-            if tr.error is not None:
-                result.errors[tr.channel_id] = tr.error
-            if tr.error_exc is not None:
-                result.errors_exc[tr.channel_id] = tr.error_exc
-            result.reentry_events.extend(tr.reentry_events)
-            result.blocked_events.extend(tr.blocked_events)
-            result.observations.extend(tr.observations)
+        result = _merged(event, target_results)
 
         reset_span(broadcast_token)
         if parent_token is not None:

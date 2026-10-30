@@ -118,7 +118,7 @@ def _delivered_messages(transport: SimpleChannel) -> list[str]:
 async def _supervisor_messages(kit: RoomKit) -> list[RoomEvent]:
     return [
         e
-        for e in await kit.get_timeline("r", limit=50)
+        for e in await kit.store.list_events("r", limit=50)
         if e.source.channel_id == "sup" and e.type == EventType.MESSAGE
     ]
 

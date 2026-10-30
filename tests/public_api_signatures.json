@@ -1318,6 +1318,7 @@
     "classify": ["async def", "state", "questions"],
     "close": ["async def"]
   },
+  "roomkit.KitClosedError": {},
   "roomkit.LLMClassifier": {
     "__init__": ["def", "provider", "*", "timeout=10.0", "max_tokens=1000"],
     "classify": ["async def", "state", "questions"],
@@ -2119,6 +2120,7 @@
   "roomkit.SessionStartedEvent": {
     "__init__": ["def", "room_id", "channel_id", "channel_type", "participant_id", "session=None", "timestamp=<factory>"]
   },
+  "roomkit.ShutdownCancelledError": {},
   "roomkit.SimpleAGCProvider": {
     "__init__": ["def", "config=None"],
     "close": ["def"],

@@ -163,6 +163,11 @@ class SourceOpsMixin(HelpersMixin):
         Raises:
             SourceNotFoundError: If no source is attached to this channel_id.
         """
+        await self._detach_source(channel_id)
+
+    async def _detach_source(self, channel_id: str) -> None:
+        """:meth:`detach_source`, also run by the kit's close, which refuses
+        the call itself."""
         source = self._sources.pop(channel_id, None)
         task = self._source_tasks.pop(channel_id, None)
         if source is None:

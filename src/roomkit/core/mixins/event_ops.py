@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._authors import with_committed_record
@@ -16,6 +17,7 @@ from roomkit.models.event import EventContent, EventSource, RoomEvent, refuse_to
 logger = logging.getLogger("roomkit.framework")
 
 if TYPE_CHECKING:
+    from roomkit.core._closing import DoorRuns
     from roomkit.core._reentrance import RoomWork
     from roomkit.core.hooks import HookEngine
     from roomkit.core.locks import RoomLockManager
@@ -59,6 +61,7 @@ class EventOpsMixin(HelpersMixin):
     _hook_engine: HookEngine
     _lock_manager: RoomLockManager
     _room_work: RoomWork
+    _door_runs: DoorRuns
     get_room: Any  # see EventOpsHost / RoomLifecycleMixin
 
     async def commit_event(
@@ -105,14 +108,17 @@ class EventOpsMixin(HelpersMixin):
         refuse_reserved(event.idempotency_key)
         # No event holding a sixth composite level is committed (RFC §5.3).
         refuse_too_deep(event.content)
-        async with self._lock_manager.locked(room_id):
-            room = await self.get_room(room_id, organization_id=organization_id)
-            room = await self._room_timers.apply_due(room)
-            if _refuses_writes(room):
-                raise RoomClosedError(f"Room {room_id} does not accept new events")
-            return await self._commit_indexed(
-                room_id, await self._with_thread_root(room_id, event)
-            )
+        # The kit's close cuts it before its commit (RFC §12.10.4).
+        with self._door_runs.run("record"):
+            async with AsyncExitStack() as stack:
+                await self._door_runs.enter_lock(stack, self._lock_manager.locked(room_id))
+                room = await self.get_room(room_id, organization_id=organization_id)
+                room = await self._room_timers.apply_due(room)
+                if _refuses_writes(room):
+                    raise RoomClosedError(f"Room {room_id} does not accept new events")
+                return await self._commit_indexed(
+                    room_id, await self._with_thread_root(room_id, event)
+                )
 
     async def update_event(
         self,

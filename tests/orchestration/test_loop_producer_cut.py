@@ -130,7 +130,7 @@ async def test_a_producer_cut_after_an_output_keeps_it_not_approved() -> None:
     assert _producer_turn(result)["loop_end_reason"] == "max_rounds"
     await kit.close()  # an ON_ERROR observer still running ends first
     assert errors == []
-    state = get_conversation_state(await kit.get_room("r"))
+    state = get_conversation_state(await kit.store.get_room("r"))
     assert state.context["_loop_stopped"] == "producer_failed"
 
 

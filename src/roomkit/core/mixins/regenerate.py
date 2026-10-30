@@ -9,10 +9,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._changes import withdrawn
+from roomkit.core._closing import Cascades, DoorRuns, cut_by_close
 from roomkit.core._reentrance import ReentryBudget, chain_floor, charge_direct_change
 from roomkit.core._room_timers import due_transitions
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
-from roomkit.core.exceptions import RoomClosedError
+from roomkit.core.exceptions import KitClosedError, RoomClosedError
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan, anchor_index
 from roomkit.core.locks import collecting_release_failures, failed_release
 from roomkit.core.mixins.helpers import _REFUSING_STATUSES, HelpersMixin
@@ -68,6 +69,8 @@ class RegenerateMixin(HelpersMixin):
     _max_chain_depth: int
     _room_work: RoomWork
     _discussions: dict[str, Any]  # rooms a discussion holds (RFC §19.7.5)
+    _door_runs: DoorRuns
+    _cascades: Cascades
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     get_room: Any  # RoomLifecycleMixin
@@ -261,11 +264,16 @@ class RegenerateMixin(HelpersMixin):
             await self.get_room(room_id, organization_id=organization_id)
         change = self._room_work.direct_change(room_id)
         charge_direct_change(change, room_id, "regenerate_response")
-        discussion = self._discussions.get(room_id)
-        if discussion is not None:
-            return await self._regenerate_in_discussion(discussion, room_id, trigger_id)
-        with collecting_release_failures() as failed_releases:
-            result = await self._regenerate_alone(room_id, trigger_id, change.budget)
+        # The kit's close cuts it before its turn is queued (RFC §12.10.4).
+        try:
+            with self._door_runs.run("regeneration"):
+                discussion = self._discussions.get(room_id)
+                if discussion is not None:
+                    return await self._regenerate_in_discussion(discussion, room_id, trigger_id)
+                with collecting_release_failures() as failed_releases:
+                    result = await self._regenerate_alone(room_id, trigger_id, change.budget)
+        except KitClosedError:
+            return cut_by_close()
         if result is not None and result.error is None and failed_releases:
             # A failed release of the room lock, as on the inbound path (RFC §13.5).
             result.error = failed_releases[0]
@@ -275,9 +283,12 @@ class RegenerateMixin(HelpersMixin):
         self, room_id: str, trigger_id: str | None, budget: ReentryBudget
     ) -> InboundResult | None:
         """A regenerate in a room no discussion holds, its cascade on *budget*."""
-        cascade = DeliveryCascade(room_id, reentry_budget=budget)
+        cascade = self._cascades.new(room_id, reentry_budget=budget)
         try:
             planned = await self._plan_regeneration(room_id, trigger_id, cascade)
+            # Past its queueing: the kit's close no longer cuts the call, but
+            # its delivery (RFC §12.10.4).
+            self._door_runs.committed()
             if not isinstance(planned, tuple):
                 return planned
             trigger, plan = planned
@@ -303,7 +314,7 @@ class RegenerateMixin(HelpersMixin):
         result as a regenerate. *named* is the delivery whose key names the
         run, until it is over (RFC §10.1).
         """
-        cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
+        cascade = self._cascades.new(room_id, reentry_budget=self._max_chain_depth * 10)
         if named is not None:
             named.attach(cascade)
         try:
@@ -353,7 +364,7 @@ class RegenerateMixin(HelpersMixin):
         async with AsyncExitStack() as stack:
             try:
                 async with asyncio.timeout(self._process_timeout):
-                    await stack.enter_async_context(self._lock_manager.locked(room_id))
+                    await self._door_runs.enter_lock(stack, self._lock_manager.locked(room_id))
                     context, found = await self._regenerate_target(room_id)
             except TimeoutError:
                 return await self._refuse_on_timeout(room_id, operation="regenerate")
@@ -373,7 +384,7 @@ class RegenerateMixin(HelpersMixin):
         async with AsyncExitStack() as stack:
             try:
                 async with asyncio.timeout(self._process_timeout):
-                    await stack.enter_async_context(self._lock_manager.locked(room_id))
+                    await self._door_runs.enter_lock(stack, self._lock_manager.locked(room_id))
                     context, found = await self._regenerate_target(room_id)
             except TimeoutError:
                 return await self._refuse_on_timeout(room_id, operation="regenerate")
@@ -381,6 +392,7 @@ class RegenerateMixin(HelpersMixin):
             refusal = await self._refuse_regeneration(room_id, context, found, trigger_id)
             if refusal is not None or found is None:
                 return refusal
+        self._door_runs.committed()
         if discussion.state.over:
             return InboundResult(blocked=True, reason="discussion_over")
         trigger, _ = found

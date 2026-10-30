@@ -22,6 +22,7 @@ from roomkit import (
     ChannelType,
     HookExecution,
     HookTrigger,
+    KitClosedError,
     RealtimeVoiceChannel,
     RoomKit,
     RoomStatus,
@@ -31,7 +32,6 @@ from roomkit import (
     VoiceChannel,
 )
 from roomkit.channels.agent import Agent
-from roomkit.core import framework
 from roomkit.core.task_utils import hold_task, run_to_its_end
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -631,36 +631,30 @@ async def test_a_task_announced_as_the_kit_closes_ends_cancelled(
 # -- what the kit holds as it closes --------------------------------------------
 
 
-async def test_a_task_started_while_the_kit_drains_ends_with_its_close(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_call_an_observer_makes_as_the_kit_closes_is_refused(close_grace: float) -> None:
     """An observer still running as the kit closes commits into a room whose
-    timer fell due: the timer's hooks start while close() drains the
-    observers, and close() returns with them ended, never left running
-    against a closed kit."""
+    timer fell due: the call is refused (RMK-1030), no timer hook starts,
+    and close() returns with nothing of the kit left running."""
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms"))
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "sms")
     await kit.create_room(room_id="r2", timers=RoomTimers(inactive_after_seconds=0))
-    draining = asyncio.Event()
-    drain = kit.hook_engine.drain_observers
-
-    async def draining_observers() -> None:
-        draining.set()
-        await drain()
-
-    monkeypatch.setattr(kit.hook_engine, "drain_observers", draining_observers)
+    closing = asyncio.Event()
+    refused: list[str] = []
 
     @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: RoomEvent, ctx: RoomContext) -> None:
-        await draining.wait()
+        await closing.wait()
         record = RoomEvent(
             room_id="r2",
             source=EventSource(channel_id="sms", channel_type="sms"),
             content=TextContent(body="audit record"),
         )
-        await kit.commit_event("r2", record)
+        try:
+            await kit.commit_event("r2", record)
+        except KitClosedError:
+            refused.append("commit_event")
 
     @kit.hook(HookTrigger.ON_ROOM_PAUSED, name="paused")
     async def paused(event: RoomEvent, ctx: RoomContext) -> None:
@@ -670,31 +664,24 @@ async def test_a_task_started_while_the_kit_drains_ends_with_its_close(
         InboundMessage(channel_id="sms", sender_id="u1", content=TextContent(body="hi")),
         room_id="r1",
     )
-    await kit.close()
+    closed = asyncio.ensure_future(kit.close())
+    closing.set()
+    await closed
 
+    assert refused == ["commit_event"]
     running = [t.get_name() for t in asyncio.all_tasks() if not t.done()]
     assert [name for name in running if name.startswith("roomkit-")] == []
 
 
-async def test_a_background_run_started_while_the_kit_drains_ends_with_its_close(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_background_run_started_in_the_close_s_grace_ends_with_its_close() -> None:
     """An observer still running as the kit closes starts work the kit holds
-    (a hand-off greeting's turn): started while close() drains the
-    observers, it is cut with the kit's other background work, never left
-    running past close()."""
+    (a hand-off greeting's turn) in the close's grace: it is cut with the
+    kit's other background work, never left running past close()."""
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms"))
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "sms")
-    draining = asyncio.Event()
-    drain = kit.hook_engine.drain_observers
-
-    async def draining_observers() -> None:
-        draining.set()
-        await drain()
-
-    monkeypatch.setattr(kit.hook_engine, "drain_observers", draining_observers)
+    closing = asyncio.Event()
     runs: list[asyncio.Task[None]] = []
 
     async def greeting() -> None:
@@ -702,14 +689,16 @@ async def test_a_background_run_started_while_the_kit_drains_ends_with_its_close
 
     @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="greet")
     async def greet(event: RoomEvent, ctx: RoomContext) -> None:
-        await draining.wait()
+        await closing.wait()
         runs.append(hold_task(kit, greeting()))
 
     await kit.process_inbound(
         InboundMessage(channel_id="sms", sender_id="u1", content=TextContent(body="hi")),
         room_id="r1",
     )
-    await kit.close()
+    closed = asyncio.ensure_future(kit.close())
+    closing.set()
+    await closed
 
     assert [run.done() for run in runs] == [True]
 
@@ -865,90 +854,39 @@ class _SaysByeAsItCloses(SimpleChannel):
     """A channel whose close sends a last message into its room."""
 
     kit: RoomKit | None = None
+    refused: BaseException | None = None
 
     async def close(self) -> None:
         assert self.kit is not None
-        await self.kit.send_event("r1", self.channel_id, TextContent(body="bye"))
+        try:
+            await self.kit.send_event("r1", self.channel_id, TextContent(body="bye"))
+        except KitClosedError as refusal:
+            self.refused = refusal
         await super().close()
 
 
-async def test_an_observer_started_as_a_channel_closes_ends_before_the_close_returns() -> None:
-    """A channel's close sends into its room, and the ASYNC observers of that
-    event's BEFORE_BROADCAST chain start then: close() waits for them, as it
-    waits for the observers already running, before it releases the store."""
+async def test_a_call_a_channel_s_close_makes_is_refused() -> None:
+    """A channel's close sends a last message into its room: the call is
+    refused, as every call once close() started (RMK-1030), and nothing is
+    stored."""
     kit = RoomKit()
     channel = _SaysByeAsItCloses("sms")
     channel.kit = kit
     kit.register_channel(channel)
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "sms")
-    observed: list[str] = []
-
-    @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="audit")
-    async def audit(event: RoomEvent, ctx: RoomContext) -> None:
-        for _ in range(5):
-            await asyncio.sleep(0)  # an observer that takes a few steps
-        observed.append(getattr(event.content, "body", ""))
 
     await kit.close()
 
-    assert observed == ["bye"]
+    assert isinstance(channel.refused, KitClosedError)
+    assert "bye" not in [
+        getattr(e.content, "body", None) for e in await kit.store.list_events("r1")
+    ]
 
 
-class _WritesSlowlyAsItCloses(SimpleChannel):
-    """A channel whose close starts a record and takes longer than the kit's
-    closing budget; the record's commit ends just after."""
-
-    kit: RoomKit | None = None
-    store: _GatedRecords | None = None
-
-    async def close(self) -> None:
-        assert self.kit is not None and self.store is not None
-        asyncio.get_running_loop().create_task(self.kit.commit_event("r1", _record()))
-        await asyncio.sleep(0.06)  # past the 0.05 s budget
-        asyncio.get_running_loop().call_later(0.01, self.store.answer.set)
-        await super().close()
-
-
-class _GatedRecords(_SlowRecords):
-    """A ``record``'s commit that waits for *answer*."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.answer = asyncio.Event()
-
-    async def commit_event(self, room_id: str, event: RoomEvent, **kw: Any) -> RoomEvent:
-        if getattr(event.content, "body", None) == "record":
-            self.in_flight += 1
-            try:
-                await self.answer.wait()
-            finally:
-                self.in_flight -= 1
-        return await InMemoryStore.commit_event(self, room_id, event, **kw)
-
-
-@pytest.mark.wallclock  # the channels' closes spend the kit's closing budget
-async def test_what_a_slow_channel_close_starts_has_a_budget_of_its_own(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_a_caller_waiting_for_its_injected_events_returns_when_the_close_cuts_them(
+    close_grace: float,
 ) -> None:
-    """The channels' closes outlast the kit's closing budget, and one of
-    them started a decided write: close() waits for it on a budget of its
-    own, counted from the channels' end, before it releases the store."""
-    monkeypatch.setattr(framework, "CLOSE_WAIT_S", 0.05)
-    store = _GatedRecords()
-    kit = RoomKit(store=store)
-    channel = _WritesSlowlyAsItCloses("sip")
-    channel.kit, channel.store = kit, store
-    kit.register_channel(channel)
-    await kit.create_room(room_id="r1")
-    await kit.attach_channel("r1", "sip")
-
-    await kit.close()
-
-    assert store.in_flight_at_close == [0]
-
-
-async def test_a_caller_waiting_for_its_injected_events_returns_when_the_close_cuts_them() -> None:
     """process_inbound committed its event and waits for the pass of what
     its hook injected when the kit closes and cuts that pass: the caller
     returns its committed event, never a CancelledError it did not ask for."""
@@ -987,7 +925,9 @@ async def test_a_caller_waiting_for_its_injected_events_returns_when_the_close_c
     assert result.event is not None and result.event.content == TextContent(body="hello")
 
 
-async def test_a_timer_check_waiting_for_its_hooks_returns_when_the_close_cuts_them() -> None:
+async def test_a_timer_check_waiting_for_its_hooks_returns_when_the_close_cuts_them(
+    close_grace: float,
+) -> None:
     """check_room_timers() paused the room and waits for its ON_ROOM_PAUSED
     hook when the kit closes and cuts it: the check returns the room as
     stored, never a CancelledError its caller did not ask for."""

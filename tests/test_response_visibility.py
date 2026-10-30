@@ -194,12 +194,13 @@ async def _build_kit(
 
 
 async def _send_and_wait(kit: RoomKit) -> None:
-    """Send a message through the source channel, then close the kit: its
-    close drains the delivery lanes, so a delivery nobody should get, were one
-    queued, has landed by then."""
+    """Send a message through the source channel, then let every delivery
+    lane run what it queued: a delivery nobody should get, were one queued,
+    has landed by then. A close no longer drains them (RMK-1030)."""
     msg = InboundMessage(channel_id="src", sender_id="u1", content=TextContent(body="Hi"))
     await kit.process_inbound(msg)
-    await kit.close()
+    for lane in list(kit._lanes._lanes.values()):  # noqa: SLF001
+        await lane.drain()
 
 
 # ---------------------------------------------------------------------------

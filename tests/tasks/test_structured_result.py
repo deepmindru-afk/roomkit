@@ -54,6 +54,7 @@ def _make_kit(
     kit.get_room = AsyncMock(
         return_value=Room(id="parent::task-1", metadata={"task_agent_id": agent_id})
     )
+    kit._read_room = kit.get_room
     kit.store.list_bindings = AsyncMock(return_value=[])
     # The child room's trace: the worker's served call lands there, as the
     # loop stores it.
@@ -139,6 +140,7 @@ def _make_cc_kit(events: list[RoomEvent]):
     kit.get_room = AsyncMock(
         return_value=Room(id="parent::task-1", metadata={"task_agent_id": "agent:w1"})
     )
+    kit._read_room = kit.get_room
     kit.store.list_bindings = AsyncMock(return_value=[])
     kit.store.list_events = AsyncMock(return_value=events)
     kit.store.get_private_state = AsyncMock(return_value=None)

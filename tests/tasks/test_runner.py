@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+from roomkit.core._closing import Cascades
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.enums import ChannelCategory, ChannelType, TaskStatus
 from roomkit.models.event import EventSource, RoomEvent, TextContent
@@ -58,7 +59,10 @@ def _make_mock_kit(
     ]
 
     kit = MagicMock()
+    kit._cascades = Cascades()
     kit.get_room = AsyncMock(return_value=room)
+    kit._read_room = kit.get_room
+    kit.store.get_room = AsyncMock(return_value=room)
     kit.store.list_bindings = AsyncMock(return_value=bindings)
     kit.store.list_events = AsyncMock(return_value=[])
     kit.store.get_private_state = AsyncMock(return_value=None)
