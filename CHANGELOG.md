@@ -292,8 +292,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   taken depended on how long the store took to read the cursor. A
   delivery placed while its lane is idle now runs from its
   placement: the close gives it its grace, and its call reads `kit_closed`
-  with what it delivered. One queued behind another is still dropped.
-  0.110.0 is not affected.
+  with what it delivered. The lane is idle once the sends ahead have
+  answered: an answer placed while their `AFTER_BROADCAST` hooks and
+  responses run (a channel's response, a `send_event` from an
+  `AFTER_BROADCAST` hook) is sent too, where it was stored and never
+  delivered. One queued behind another is still dropped, and so is the one
+  a lane kept when the close comes from that lane's own work (an
+  `AFTER_BROADCAST` hook), which it could only run once the store is
+  released. 0.110.0 is not affected.
+
+- **An ASYNC hook's `close()` waits for the work that fired it**
+  (RFC 12.10.4, RMK-1039). An observer started from a delivery lane's round
+  or a turn counted as that work, so the close spared it: neither waited
+  for nor cut. That work does not wait for its observer, so the close now
+  waits for it and cuts it as any other, as roomkit-rs does. Before, the
+  close could release the store under a lane still holding a delivery,
+  whose rounds then failed over the closed store and whose call never
+  returned.
 
 - **`kit.close()` returns while calls keep arriving** (RMK-1016). The close
   waited for the work started after it began, and calls were taken until
