@@ -45,6 +45,10 @@ class InMemoryTaskRunner(TaskRunner):
         # task, so it ends once: the task itself once its work ran, or
         # ``cancel`` (RFC §23.3).
         self._cancelled_ends: dict[str, Callable[[], Coroutine[Any, Any, None]]] = {}
+        # The end ``cancel`` took of each task, on a run of its own until it
+        # is over: it outlives the task's work, so a cancel asking meanwhile,
+        # the runner's close's among them, waits for it.
+        self._ends: dict[str, asyncio.Task[None]] = {}
 
     async def submit(
         self,
@@ -73,16 +77,21 @@ class InMemoryTaskRunner(TaskRunner):
             return False
         end = self._cancelled_ends.pop(task_id, None)
         if end is None:
-            # Its work ran to its end, and it is ending as it stands; not
-            # waited for once its end closes the kit (an on_complete joining
-            # the close), which would wait for itself.
-            await wait_for_unspared(lambda: {bg} - spared_by_close())
+            # It is ending as it stands: by itself once its work ran, or by
+            # the cancel that took its end, once that work ended. Waited for,
+            # that end included, but not once it closes the kit (an
+            # on_complete joining the close), which would wait for itself.
+            await wait_for_unspared(lambda: self._runs(task_id) - spared_by_close())
             return False
+        # Its end is held from now on, and runs once its work has ended.
+        work_ended = asyncio.Event()
+        ending = self._hold_end(task_id, _once_set(work_ended, end))
         try:
             await cancel_and_wait(bg)
         finally:
             # It ends cancelled, to its end even if this call is cancelled.
-            await shielded(end())
+            work_ended.set()
+            await asyncio.shield(ending)
         return True
 
     async def close(self) -> None:
@@ -94,9 +103,27 @@ class InMemoryTaskRunner(TaskRunner):
                 await self.cancel(task_id)
 
     def _unspared(self) -> list[str]:
-        """The tasks running but the ones the current close runs under."""
+        """The tasks running but the ones the current close runs under: their
+        work, or the end a cancel took (an on_complete closing the kit)."""
         spared = spared_by_close()
-        return [task_id for task_id, bg in self._tasks.items() if bg not in spared]
+        return [task_id for task_id in self._tasks if not self._runs(task_id) & spared]
+
+    def _runs(self, task_id: str) -> set[asyncio.Task[None]]:
+        """The runs of *task_id*: its work and, once a cancel took it, its
+        end, which outlives that work."""
+        runs = (self._tasks.get(task_id), self._ends.get(task_id))
+        return {run for run in runs if run is not None}
+
+    def _hold_end(self, task_id: str, end: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        """Run *end*, the end of *task_id* a cancel took, as a run of its own
+        held until it is over (:meth:`_runs`). Named in
+        :func:`~roomkit.core.task_utils.held_runs`, so a ``close()`` from
+        under it (an on_complete closing the kit) spares it rather than wait
+        for itself."""
+        ending = start_named(end, name=f"delegate-end:{task_id}")
+        self._ends[task_id] = ending
+        ending.add_done_callback(lambda _: self._ends.pop(task_id, None))
+        return ending
 
     async def _execute(
         self,
@@ -218,6 +245,13 @@ class InMemoryTaskRunner(TaskRunner):
 
         self._tasks.pop(task.id, None)
         self._handles.pop(task.id, None)
+
+
+async def _once_set(ready: asyncio.Event, end: Callable[[], Coroutine[Any, Any, None]]) -> None:
+    """Run *end* once *ready* is set: a cancelled task's end, once its work
+    has ended (its worker's turn recorded)."""
+    await ready.wait()
+    await end()
 
 
 async def _complete(

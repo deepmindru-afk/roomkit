@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+import signal
+import traceback
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from types import FrameType
 from typing import Any
 
 import pytest
@@ -67,6 +70,7 @@ from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransp
 from roomkit.voice.stt.mock import MockSTTProvider
 from tests.orchestration.test_strategy_discussion import _provider, _say
 from tests.orchestration.test_strategy_discussion import _room as _discussion
+from tests.tasks.test_cancel_task import _Endless
 from tests.test_framework import SimpleChannel
 
 
@@ -93,6 +97,35 @@ class _SlowWords(MockAIProvider):
             await asyncio.sleep(0.01)
             yield StreamTextDelta(text=f"w{i} ")
         yield StreamDone(finish_reason="stop", usage={"input_tokens": 5, "output_tokens": 50})
+
+
+# Longer than any test here takes, its own deadlines included.
+_LOOP_DEADLINE_S = 10.0
+
+
+class _LoopNeverYieldedError(Exception):
+    """A test ran past :data:`_LOOP_DEADLINE_S`: interrupted where it was."""
+
+
+@pytest.fixture
+def loop_keeps_turning() -> Iterator[None]:
+    """Fail, not hang, when the close loops without ever yielding to the
+    event loop (RMK-1038): no ``asyncio`` deadline fires then, so an alarm
+    interrupts the code where it is, and the test fails."""
+    interrupted: list[str] = []
+
+    def interrupt(signum: int, frame: FrameType | None) -> None:
+        interrupted.append("".join(traceback.format_stack(frame, limit=4)))
+        raise _LoopNeverYieldedError(interrupted[0])
+
+    previous = signal.signal(signal.SIGALRM, interrupt)
+    signal.setitimer(signal.ITIMER_REAL, _LOOP_DEADLINE_S)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+    assert not interrupted, f"interrupted after {_LOOP_DEADLINE_S} s at:\n{interrupted[0]}"
 
 
 def _ended_tasks(kit: RoomKit) -> list[tuple[str, Any]]:
@@ -140,6 +173,38 @@ async def test_a_delegation_ends_cancelled_with_its_hook(
     )
     assert ended == [("cancelled", "cancelled")]
     assert [r.message for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+async def test_the_close_waits_for_the_end_of_a_task_being_cancelled(
+    loop_keeps_turning: None,
+) -> None:
+    """``cancel_task`` ends its task once the task's work has ended, its
+    on_complete included: a close meanwhile waits for that end, within its
+    grace, and returns once it is over (RMK-1038)."""
+    kit = RoomKit()
+    worker = _Endless()
+    kit.register_channel(Agent("worker", provider=worker))
+    await kit.create_room(room_id="r")
+    completing, release = asyncio.Event(), asyncio.Event()
+    completed: list[str] = []
+
+    async def on_complete(result: Any) -> None:
+        completing.set()
+        await release.wait()
+        completed.append(str(result.status))
+
+    task = await kit.delegate("r", "worker", "Go.", on_complete=on_complete)
+    await asyncio.wait_for(worker.started.wait(), 1)
+    cancel = asyncio.ensure_future(kit.cancel_task(task.id))
+    await asyncio.wait_for(completing.wait(), 1)
+    closing = asyncio.ensure_future(kit.close())
+    for _ in range(5):  # the close reaches the delegated tasks
+        await asyncio.sleep(0)
+    release.set()
+
+    await asyncio.wait_for(closing, 1)
+    assert await cancel is True
+    assert completed == ["cancelled"]
 
 
 async def test_a_close_from_a_held_run_does_not_wait_for_it() -> None:
@@ -581,6 +646,28 @@ async def _delegation_end_door(witness: _Witness, work: _Closer) -> RoomKit:
     return kit
 
 
+async def _cancelled_delegation_end_door(witness: _Witness, work: _Closer) -> RoomKit:
+    """A background delegation is cancelled; its ``on_complete``, run in the
+    end the cancel took, closes the kit (RMK-1038)."""
+    kit = RoomKit()
+    kit.register_channel(witness)
+    worker = _Endless()
+    kit.register_channel(Agent("worker", provider=worker))
+    await kit.create_room(room_id="r")
+
+    async def on_complete(result: Any) -> None:
+        await work(kit)
+
+    task = await kit.delegate("r", "worker", "Go.", on_complete=on_complete)
+    await worker.started.wait()
+    # The cancel waits for the task's end, which may be held.
+    work.door = asyncio.ensure_future(kit.cancel_task(task.id))
+    entered = asyncio.ensure_future(work.entered.wait())
+    await asyncio.wait({work.door, entered}, return_when=asyncio.FIRST_COMPLETED)
+    entered.cancel()
+    return kit
+
+
 async def _held_write_door(witness: _Witness, work: _Closer) -> RoomKit:
     """A decided write a background run waits for (a strategy's or a
     delegation's, which its caller never cuts) closes the kit, from a hook
@@ -621,6 +708,7 @@ async def _speak_queue_door(witness: _Witness, work: _Closer) -> RoomKit:
         _speak_queue_door,
         _conference_started_door,
         _delegation_end_door,
+        _cancelled_delegation_end_door,
         _held_write_door,
     ],
     ids=[
@@ -631,11 +719,12 @@ async def _speak_queue_door(witness: _Witness, work: _Closer) -> RoomKit:
         "speak-queue-hook",
         "conference-started",
         "delegation-end",
+        "cancelled-delegation-end",
         "held-write",
     ],
 )
 async def test_a_close_from_the_kit_s_own_work_returns_and_closes_the_kit(
-    door: Callable[[_Witness, _Closer], Awaitable[RoomKit]],
+    door: Callable[[_Witness, _Closer], Awaitable[RoomKit]], loop_keeps_turning: None
 ) -> None:
     """The kit's own work closes the kit: its close neither waits for nor
     cuts the work it runs in, and returns once every channel is closed
@@ -662,6 +751,7 @@ async def test_a_close_from_the_kit_s_own_work_returns_and_closes_the_kit(
         _speak_queue_door,
         _conference_started_door,
         _delegation_end_door,
+        _cancelled_delegation_end_door,
         _held_write_door,
     ],
     ids=[
@@ -670,11 +760,12 @@ async def test_a_close_from_the_kit_s_own_work_returns_and_closes_the_kit(
         "speak-queue-hook",
         "conference-started",
         "delegation-end",
+        "cancelled-delegation-end",
         "held-write",
     ],
 )
 async def test_a_close_from_the_kit_s_own_work_joining_another_spares_that_work(
-    door: Callable[[_Witness, _Closer], Awaitable[RoomKit]],
+    door: Callable[[_Witness, _Closer], Awaitable[RoomKit]], loop_keeps_turning: None
 ) -> None:
     """Another close() already runs, and waits for the work (the lane's
     drain, the session's teardown) when that work closes the kit too: from
