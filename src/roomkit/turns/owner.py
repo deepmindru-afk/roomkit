@@ -8,7 +8,6 @@ kit's own executor is served on first use.
 from __future__ import annotations
 
 import asyncio
-import logging
 import weakref
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
@@ -18,7 +17,6 @@ from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
 from roomkit.channels.declared import DeclaredChannel
-from roomkit.core import task_utils
 from roomkit.core.task_utils import acting_tasks, close_callers
 from roomkit.core.visibility import answers_reach
 from roomkit.models.enums import Visibility
@@ -59,8 +57,6 @@ if TYPE_CHECKING:
         RoomCall,
         RoomPublication,
     )
-
-logger = logging.getLogger("roomkit.turns")
 
 
 def turn_request(
@@ -430,24 +426,30 @@ class TurnClient(RoomOwner):
 
     async def close(self) -> None:
         """Close the own executor, which cuts its turns, stop holding every
-        turn still open (a stream nobody read), cut the calls its turns made
-        (but the one running this close) and wait for them to end, at most
-        the kit's unwind, then close the backend. A turn or a call still
-        running then, ignoring its cut, is named in the log and abandoned
-        (RFC §12.10.4). Work of a turn that reaches it after this is
-        refused."""
-        left = await self._close(asyncio.get_running_loop().time() + task_utils.CUT_UNWIND_S)
-        if left:
-            logger.warning(
-                "Closing the turn backend with %d task(s) still running after their cut: %s",
-                len(left),
-                ", ".join(sorted(task.get_name() for task in left)),
-            )
+        turn still open (a stream nobody read), wait for the calls its turns
+        made to end (but the one running this close), then close the backend.
+        Work of a turn that reaches it after this is refused."""
+        self._closed = True
+        if self.executor is not None:
+            await self.executor.close()
+        for turn in list(self._open):
+            turn.abandon()
+        acting = acting_tasks()
+        calls = [task for task in self._calls if task not in acting]
+        for task in calls:
+            if not task.cancelling():
+                # One already cancelled is let finish its cleanup.
+                task.cancel()
+        await asyncio.gather(*calls, return_exceptions=True)
+        self._started.clear()
+        await self.backend.close()
 
     async def _close(self, until: float) -> set[asyncio.Task[Any]]:
-        """:meth:`close`, its turns and calls waited for until *until*: the
-        ones still running then, which it leaves (the kit's close names
-        them)."""
+        """:meth:`close` as the kit's close runs it (RFC §12.10.4): its own
+        executor's turns and the calls they made waited for until *until*,
+        then the backend closed on its own budget (its cancel bound, when
+        it offers a bounded close); what is still running then, which it
+        leaves, for the kit to name."""
         self._closed = True
         left: set[asyncio.Task[Any]] = set()
         if self.executor is not None:
@@ -460,12 +462,16 @@ class TurnClient(RoomOwner):
             if not task.cancelling():
                 # One already cancelled is let finish its cleanup.
                 task.cancel()
+        loop = asyncio.get_running_loop()
         if calls:
-            remaining = max(0.0, until - asyncio.get_running_loop().time())
-            _, pending = await asyncio.wait(calls, timeout=remaining)
+            _, pending = await asyncio.wait(calls, timeout=max(0.0, until - loop.time()))
             left |= pending
         self._started.clear()
-        await self.backend.close()
+        bounded = getattr(self.backend, "_close_within", None)
+        if bounded is None:
+            await self.backend.close()
+        else:
+            left |= await bounded(loop.time() + self._timeouts.cancel)
         return left
 
 

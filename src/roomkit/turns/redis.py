@@ -282,28 +282,51 @@ class RedisTurnBackend(TurnBackend):
             refused.add(placed.member)
 
     async def close(self) -> None:
+        await self._shut(None)
+
+    async def _close_within(self, until: float) -> set[asyncio.Task[Any]]:
+        """:meth:`close` as the kit's close runs it (RFC §12.10.4): every
+        wait within one deadline, *until*, and the tasks still running then
+        (a channel verb that ignores its cut) left, for the kit to name."""
+        return await self._shut(until)
+
+    async def _shut(self, until: float | None) -> set[asyncio.Task[Any]]:
+        """Close the backend, each wait on its own bound, and on *until* at
+        the latest when given: what is still running then."""
         if self._closed:
-            return
+            return set()
         self._closed = True
+        loop = asyncio.get_running_loop()
+
+        def bound(own: float) -> float:
+            return own if until is None else max(0.0, min(own, until - loop.time()))
+
         # From now what reaches the process is refused at once (a request is
         # placed again) and nothing is asked.
         self._routes.close()
         # Nothing is placed here any more; the process beats on while what
         # it was doing is answered and written (a turn's end among it).
-        await self._undeclare()
-        await self._answer_what_is_under_way()
+        await self._undeclare(bound)
+        await self._answer_what_is_under_way(bound)
         await self._inbox.close()
         self._routing = False
-        await self._outbox.close(drain=self._timeouts.cancel)
+        await self._outbox.close(drain=bound(self._timeouts.cancel))
         # The beat stops first, so none declares again what is withdrawn.
         await asyncio.to_thread(self._beat.stop)
-        await self._withdraw()
+        await self._withdraw(bound)
         await self._live.close()
         await self._here.close()
-        if self._tasks:
+        left: set[asyncio.Task[Any]] = set()
+        if self._tasks and until is None:
             await cancel_and_wait(*self._tasks, log_errors_to=logger)
+        elif self._tasks:
+            tasks = set(self._tasks)
+            for task in tasks:
+                task.cancel()
+            _, left = await asyncio.wait(tasks, timeout=bound(self._timeouts.cancel))
         if self._owns_client:
             await self._client.aclose()
+        return left
 
     async def _apply(self, placed: TurnExecutor | Elsewhere, raw: str) -> ChannelResult | None:
         """Apply a channel control on *placed*, here or across Redis: its
@@ -335,36 +358,36 @@ class RedisTurnBackend(TurnBackend):
             self._inbox.start()
             self._live.start()
 
-    async def _answer_what_is_under_way(self) -> None:
+    async def _answer_what_is_under_way(self, bound: Callable[[float], float]) -> None:
         """Let what this process was doing answer, within the cancel bound
         (the turns it runs for other processes cut, their ends written), and
         a turn still on its way to an executor it declared reach it and be
         refused: an owner that placed it from an older view writes it within
-        an interval."""
+        an interval. Each wait on *bound* of its own."""
         wait = self._timeouts.heartbeat_interval if self._payload.executors else 0.0
-        grace = asyncio.ensure_future(asyncio.sleep(wait))
-        turns = asyncio.ensure_future(self._routes.turns_written(self._timeouts.cancel))
+        grace = asyncio.ensure_future(asyncio.sleep(bound(wait)))
+        turns = asyncio.ensure_future(self._routes.turns_written(bound(self._timeouts.cancel)))
         if self._tasks:
-            await asyncio.wait(set(self._tasks), timeout=self._timeouts.cancel)
+            await asyncio.wait(set(self._tasks), timeout=bound(self._timeouts.cancel))
         await turns
         await grace
 
-    async def _undeclare(self) -> None:
+    async def _undeclare(self, bound: Callable[[float], float]) -> None:
         """Beat from now without declaring this process's executors."""
         self._payload.close()
         if not self._payload.executors and self._routes.owner is None:
             return  # it never beat
         try:
-            async with asyncio.timeout(self._timeouts.cancel):
+            async with asyncio.timeout(bound(self._timeouts.cancel)):
                 await self._registry.beat(self.node_id, self._payload(), self._ttl_ms)
         except Exception:
             logger.debug("Withdrawing this process's declarations failed", exc_info=True)
 
-    async def _withdraw(self) -> None:
+    async def _withdraw(self, bound: Callable[[float], float]) -> None:
         """Withdraw this process's executors, and it as a room owner."""
         try:
             owner = self.node_id if self._routes.owner is not None else None
-            async with asyncio.timeout(self._timeouts.cancel):
+            async with asyncio.timeout(bound(self._timeouts.cancel)):
                 await self._registry.withdraw(self._payload.members, owner=owner)
         except Exception:
             logger.debug("Withdrawing this process from Redis failed", exc_info=True)
@@ -403,12 +426,15 @@ class RedisTurnBackend(TurnBackend):
         envelope = Envelope(kind, self.node_id, body, target=target, ref=ref)
         self._outbox.post(node, envelope, failed, writes=writes, within=within, written=written)
 
-    def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
-        """Run *work* on a task the backend holds until it closes."""
+    def _spawn(self, work: Coroutine[Any, Any, None], name: str) -> None:
+        """Run *work* on a task the backend holds until it closes, named
+        *name* for what it serves."""
         if not self._routing:
             work.close()
             return
-        task = asyncio.get_running_loop().create_task(work, context=contextvars.Context())
+        task = asyncio.get_running_loop().create_task(
+            work, context=contextvars.Context(), name=name
+        )
         self._tasks.add(task)
         task.add_done_callback(self._settled)
 

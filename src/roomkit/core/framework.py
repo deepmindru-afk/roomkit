@@ -69,6 +69,7 @@ from roomkit.core.locks import (
     InMemoryLockManager,
     ReleaseTolerantLockManager,
     RoomLockManager,
+    close_bounded,
 )
 from roomkit.core.mixins import (
     BackgroundMixin,
@@ -1006,7 +1007,8 @@ class RoomKit(
         framework waits for the operations the store and the lock manager
         already have (each runs under a resource lease); then it seals and
         releases them, a pool the store or the lock manager opened closed
-        within a second, its connections still in use terminated. Nothing is
+        within a second, its connections still in use terminated (their
+        own ``close()``, called by their owner, waits for them). Nothing is
         written or delivered after close() returns by work that honours its
         cut: it takes the grace, plus the turn backend's budget, plus the
         channels' and the kit's own backends' closes, each on its own
@@ -1167,14 +1169,15 @@ class RoomKit(
         # own close() stay bounded (RFC 12.10.4).
         await self._await_resource_leases(until)
         # Close the conversation store (e.g. release a PostgreSQL pool). The
-        # store's close() is idempotent and a no-op for a caller-owned pool.
-        await self._store.close()
+        # store's close() is idempotent and a no-op for a caller-owned pool;
+        # a pool it opened is closed within its bound (RFC 12.10.4).
+        await close_bounded(self._store)
         self._store_released = True
         # Close the lock manager (e.g. release an advisory-lock pool), and
         # the delivery-claim manager when the host supplied a dedicated one.
-        await self._lock_manager.close()
+        await close_bounded(self._lock_manager)
         if self._claim_locks is not self._lock_manager:
-            await self._claim_locks.close()
+            await close_bounded(self._claim_locks)
         # Close status bus
         await self._status_bus.close()
         # Flush telemetry (ends active spans, flushes exporter)

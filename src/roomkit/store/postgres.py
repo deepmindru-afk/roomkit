@@ -802,9 +802,16 @@ class PostgresStore(ConversationStore):
             return {"action": "dropped"}
 
     async def close(self) -> None:
-        """Release the connection pool if we own it: the connections still
-        in use get ``_close_timeout`` seconds to come back, then are
-        terminated. A pool handed in stays its owner's."""
+        """Release the connection pool if we own it, once its connections
+        are back."""
+        if self._pool is not None and self._owns_pool:
+            await self._pool.close()
+            self._pool = None
+
+    async def _close_bounded(self) -> None:
+        """:meth:`close` as the kit's close runs it (RFC §12.10.4): the
+        connections still in use get ``_close_timeout`` seconds to come
+        back, then are terminated. A pool handed in stays its owner's."""
         if self._pool is not None and self._owns_pool:
             pool, self._pool = self._pool, None
             await close_own_pool(pool, self._close_timeout, "PostgresStore")

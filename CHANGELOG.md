@@ -155,11 +155,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the store, the lock managers, the status bus), each on its own budget,
     plus at most 1 s more, twice: after the grace and after the channels,
     for cut work that ignores its cancellation. The operations the store or
-    the lock manager still runs are waited for within the second one. A
-    `PostgresStore` or a `PostgresAdvisoryLockManager` closing the pool it
-    opened gives the connections still in use 1 s to come back, then
-    terminates them; a pool handed in stays its owner's. With a send, a write, an observer and a hook that never end, it
-    took 19.8 s; it takes 5 s.
+    the lock manager still runs are waited for within the second one. The
+    kit's close gives the connections still in use of a pool a
+    `PostgresStore` or a `PostgresAdvisoryLockManager` opened 1 s to come
+    back, then terminates them; their own `close()`, called by their owner,
+    waits for them as before, and a pool handed in stays its owner's. With
+    a send, a write, an observer and a hook that never end, it took 19.8 s;
+    it takes 5 s.
   - Nothing is written or delivered after `close()` returns by work that
     honours its cut. Work that ignores it past the unwind is abandoned and
     named in one line of the log, each task by the work it runs (a source's
@@ -182,13 +184,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that awaits a close it started on a task of its own is cut with its turn,
   and the close runs on. Migration: let a turn whose answer you need end
   before `close()`.
-
-- **`TurnClient.close()` waits for the turns of its own executor, and for
-  the calls they made, 1 s at most** (RFC 12.10.4, RMK-1030). It waited for
-  them with no deadline, so a tool handler that ignored its cut held the
-  kit's close for good. What still runs then is left running, named in the
-  log, and watches its owner no more. `TurnExecutor.close()` called alone
-  waits as before.
 
 - **BREAKING — a call `kit.close()` cuts reads `kit_closed`, never
   `lane_cancelled`, with what it delivered** (RFC 12.10.4, RMK-1030). A

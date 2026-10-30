@@ -284,7 +284,7 @@ def _routes() -> tuple[Routes, _Posted, list[asyncio.Task[None]]]:
     routes = Routes(
         "node-b",
         posted,
-        lambda work: tasks.append(asyncio.ensure_future(work)),
+        lambda work, name: tasks.append(asyncio.ensure_future(work)),
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
         end_bound=1.0,

@@ -1247,6 +1247,100 @@ async def test_a_turn_left_running_logs_nothing_once_the_close_returned(
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
+async def test_a_tool_awaiting_the_close_runs_on_and_logs_nothing_after_it(
+    close_grace: float, cut_unwind: float, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A tool awaits ``kit.close()`` in its own turn, then runs on: its turn,
+    spared and let go by its owner, watches its owner no more, so nothing is
+    logged after ``close()`` returned (RFC §12.10.4)."""
+    backend = InMemoryTurnBackend()
+    # An owner's silence noticed while the tool still runs after the close.
+    backend.timeouts = TurnTimeouts(heartbeat_interval=0.01, heartbeat_timeout=0.05)
+    closed, release = asyncio.Event(), asyncio.Event()
+    tool = {"name": "quit", "description": "Quit.", "parameters": {"type": "object"}}
+    provider = MockAIProvider(
+        ai_responses=[
+            AIResponse(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[AIToolCall(id="c1", name="quit", arguments={})],
+            ),
+            AIResponse(content="after", finish_reason="stop"),
+        ]
+    )
+
+    async def quit_and_run_on(name: str, arguments: dict[str, Any]) -> str:
+        await kit.close()
+        closed.set()
+        await release.wait()
+        return "closed"
+
+    kit = await _kit(_Transport("ws"), turn_backend=backend)
+    kit.register_channel(
+        Agent("agent", provider=provider, tools=[tool], tool_handler=quit_and_run_on)
+    )
+    await kit.attach_channel("r", "agent", category=ChannelCategory.INTELLIGENCE)
+    call = asyncio.ensure_future(kit.process_inbound(_message("Go."), room_id="r"))
+    try:
+        await asyncio.wait_for(closed.wait(), 2)
+        with caplog.at_level(logging.DEBUG, logger="roomkit"):
+            caplog.clear()
+            for _ in range(20):  # past the owner's heartbeat timeout
+                await asyncio.sleep(0.01)
+    finally:
+        release.set()
+        await asyncio.gather(call, return_exceptions=True)
+
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+class _StuckVerb(Agent):
+    """An agent whose ``stuck`` channel verb ignores its cut."""
+
+    def __init__(self, channel_id: str, work: _Stubborn) -> None:
+        super().__init__(channel_id, provider=MockAIProvider(responses=["hi"]))
+        self.work = work
+
+    async def channel_call(self, room_id: str, verb: str, arguments: dict[str, Any]) -> Any:
+        if verb != "stuck":
+            return await super().channel_call(room_id, verb, arguments)
+        await self.work.run()
+        return "late"
+
+
+async def test_a_channel_verb_ignoring_its_cut_does_not_hold_the_close(
+    close_grace: float,
+    cut_unwind: float,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A channel verb (``kit.channel_call``) that ignores its cut: the close
+    returns within its bound, the turn backend's close on its cancel bound
+    across Redis, and a verb its backend still runs then is named once in
+    the kit's line (RFC §12.10.4)."""
+    if redis_turn_mode.ENABLED:
+        short = TurnTimeouts(cancel=cut_unwind)
+        monkeypatch.setattr(
+            turns_owner, "InMemoryTurnBackend", lambda: redis_turn_mode.backend(short)
+        )
+    work = _Stubborn()
+    kit = await _kit(_Transport("ws"))
+    kit.register_channel(_StuckVerb("agent", work))
+    await kit.attach_channel("r", "agent", category=ChannelCategory.INTELLIGENCE)
+    call = asyncio.ensure_future(kit.channel_call("agent", "r", "stuck"))
+    await work.started.wait()
+    try:
+        with caplog.at_level(logging.WARNING, logger="roomkit"):
+            await asyncio.wait_for(kit.close(), 1)
+    finally:
+        work.release.set()
+        await asyncio.gather(call, return_exceptions=True)
+
+    named = [r.getMessage() for r in caplog.records if "still running after" in r.getMessage()]
+    if redis_turn_mode.ENABLED:
+        assert len(named) == 1 and "channel-call-agent-stuck" in named[0]
+
+
 class _Source(SourceProvider):
     """A source reading an open connection until cut; its ``stop()`` runs
     until *stop_release* is set, when given; with *emits*, it sends a
@@ -1509,6 +1603,68 @@ async def test_a_room_lock_held_past_the_unwind_does_not_hold_the_close_of_its_p
     finally:
         work.release.set()
         await asyncio.gather(call, return_exceptions=True)
+
+
+async def test_a_store_closed_by_its_owner_waits_for_its_query_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the kit's close bounds a store's pool: ``PostgresStore.close()``
+    called by its owner waits for the query in flight, as it always did."""
+    from roomkit.store.postgres import PostgresStore
+
+    monkeypatch.setattr(PostgresStore, "_close_timeout", 0.01)
+    store = PostgresStore(dsn=_postgres_dsn())
+    await store.init(min_size=1, max_size=2)
+    started = asyncio.Event()
+
+    async def query() -> Any:
+        async with store._ensure_pool().acquire() as conn:
+            started.set()
+            return await conn.fetchval("SELECT 'done' FROM pg_sleep(0.2)")
+
+    running = asyncio.ensure_future(query())
+    await started.wait()
+    await asyncio.wait_for(store.close(), 2)
+
+    assert await running == "done"
+
+
+async def test_a_lock_manager_closed_by_its_owner_keeps_its_room_locked_until_released(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the kit's close bounds a lock manager's pool:
+    ``PostgresAdvisoryLockManager.close()`` called by its owner waits for
+    the holder of a room's lock, so no other process takes the room
+    meanwhile."""
+    from roomkit.store.postgres_lock import PostgresAdvisoryLockManager
+
+    monkeypatch.setattr(PostgresAdvisoryLockManager, "_close_timeout", 0.01)
+    first, second = (PostgresAdvisoryLockManager(_postgres_dsn()) for _ in range(2))
+    await first.init()
+    await second.init()
+    room = f"held-{uuid4().hex[:8]}"
+    holding, release = asyncio.Event(), asyncio.Event()
+
+    async def hold() -> None:
+        async with first.locked(room):
+            holding.set()
+            await release.wait()
+
+    async def take() -> None:
+        async with second.locked(room):
+            pass
+
+    holder = asyncio.ensure_future(hold())
+    await holding.wait()
+    closing = asyncio.ensure_future(first.close())
+    taking = asyncio.ensure_future(take())
+    try:
+        done, _ = await asyncio.wait({closing, taking}, timeout=0.2)
+        assert done == set()
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(holder, closing, taking), 2)
+        await second.close()
 
 
 # -- 5. One result per cut call, kit_closed, with what it delivered ---------------

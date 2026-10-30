@@ -32,6 +32,7 @@ from roomkit.turns._error_codec import error_record
 from roomkit.turns._redis_links import RedisExecutorLink, RedisTurnLink
 from roomkit.turns.base import RoomOwner
 from roomkit.turns.wire import (
+    ChannelCall,
     ChannelControlEnvelope,
     ChannelResult,
     HostResult,
@@ -89,7 +90,7 @@ class Routes:
         self,
         node: str,
         post: Post,
-        spawn: Callable[[Coroutine[Any, Any, None]], None],
+        spawn: Callable[[Coroutine[Any, Any, None], str], None],
         live: LiveExecutors,
         local_owner: RoomOwner,
         *,
@@ -125,9 +126,15 @@ class Routes:
             "control": self._control,
             "released": self._released,
             "request": self._request,
-            "channel": lambda envelope: self._spawn(self._channel(envelope)),
-            "owner": lambda envelope: self._spawn(self._owner_message(envelope)),
-            "work": lambda envelope: self._spawn(self._owner_message(envelope)),
+            "channel": lambda envelope: self._spawn(
+                self._channel(envelope), f"roomkit-turns-channel-control-{envelope.target}"
+            ),
+            "owner": lambda envelope: self._spawn(
+                self._owner_message(envelope), f"roomkit-turns-owner-call-{envelope.sender}"
+            ),
+            "work": lambda envelope: self._spawn(
+                self._owner_message(envelope), f"roomkit-turns-owner-work-{envelope.sender}"
+            ),
             "answer": self._answer,
         }
         self.port: RoomOwner = _OwnerPort(self)
@@ -349,7 +356,14 @@ class Routes:
             result = ChannelResult(error=error_record(gone))
         else:
             try:
-                result = await executor.control(_crossed(envelope.body))
+                control = _crossed(envelope.body)
+                if isinstance(control, ChannelCall) and (task := asyncio.current_task()):
+                    # Named for the verb it serves, as the kit's close names
+                    # one still running past its cut.
+                    task.set_name(
+                        f"roomkit-turns-channel-call-{control.channel_id}-{control.verb}"
+                    )
+                result = await executor.control(control)
             except Exception as exc:
                 logger.exception("A channel control for executor %s failed", envelope.target)
                 result = ChannelResult(error=error_record(exc), executor_id=envelope.target)

@@ -10,6 +10,7 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import AbstractContextManager, asynccontextmanager, contextmanager, nullcontext
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger("roomkit.locks")
 
@@ -308,6 +309,20 @@ class ReleaseTolerantLockManager(RoomLockManager):
 
     async def close(self) -> None:
         await self.inner.close()
+
+    async def _close_bounded(self) -> None:
+        """The inner manager's close as the kit's close runs it: bounded when
+        it offers that (RFC §12.10.4), else its own."""
+        await close_bounded(self.inner)
+
+
+async def close_bounded(resource: Any) -> None:
+    """Close *resource* (a store, a lock manager) as the kit's close does:
+    through its bounded close when it offers one, which gives its
+    connections still in use a moment, then terminates them; else through
+    its own ``close()``, on its own budget (RFC §12.10.4)."""
+    bounded = getattr(resource, "_close_bounded", None)
+    await (bounded() if bounded is not None else resource.close())
 
 
 def _log_failed_release(room_id: str, error: BaseException) -> None:
