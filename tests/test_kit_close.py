@@ -602,6 +602,50 @@ async def test_a_call_waiting_for_its_room_lock_is_cut_at_once(
     assert transport.sent == []  # stored within the grace, delivered to no one
 
 
+class _SlowToParse(SimpleChannel):
+    """A channel whose parse of ``late`` waits for :attr:`go`: its call
+    reaches the room's lock only once the test lets it."""
+
+    def __init__(self, channel_id: str) -> None:
+        super().__init__(channel_id)
+        self.parsing, self.go = asyncio.Event(), asyncio.Event()
+
+    async def handle_inbound(self, message: InboundMessage, context: Any) -> RoomEvent:
+        if getattr(message.content, "body", "") == "late":
+            self.parsing.set()
+            await self.go.wait()
+        return await super().handle_inbound(message, context)
+
+
+async def test_a_call_reaching_its_room_lock_once_the_close_started_is_cut(
+    long_grace: None,
+) -> None:
+    """A call taken before the close that reaches its room's lock once the
+    close started is cut there, as a call already waiting is: nothing of it
+    is stored."""
+    kit = RoomKit()
+    slow = _SlowToParse("sms")
+    kit.register_channel(slow)
+    kit.register_channel(_Transport("ws"))
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "sms")
+    await kit.attach_channel("r", "ws")
+    call = asyncio.ensure_future(kit.process_inbound(_message("late"), room_id="r"))
+    await slow.parsing.wait()
+    closing = await _closing(kit)
+
+    slow.go.set()
+    result = await asyncio.wait_for(call, 1)
+    await asyncio.wait_for(closing, 1)
+
+    assert (result.blocked, result.reason, result.cancellation_reason) == (
+        True,
+        "kit_closed",
+        "kit_closed",
+    )
+    assert "late" not in await _bodies(kit)
+
+
 # -- 3. A model turn is cut at once ----------------------------------------------
 
 
