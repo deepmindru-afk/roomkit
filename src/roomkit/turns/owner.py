@@ -432,12 +432,26 @@ class TurnClient(RoomOwner):
         """Close the own executor, which cuts its turns, stop holding every
         turn still open (a stream nobody read), cut the calls its turns made
         (but the one running this close) and wait for them to end, at most
-        the kit's unwind, then close the backend. A call still running then,
-        ignoring its cut, is named in the log and abandoned (RFC §12.10.4).
-        Work of a turn that reaches it after this is refused."""
+        the kit's unwind, then close the backend. A turn or a call still
+        running then, ignoring its cut, is named in the log and abandoned
+        (RFC §12.10.4). Work of a turn that reaches it after this is
+        refused."""
+        left = await self._close(asyncio.get_running_loop().time() + task_utils.CUT_UNWIND_S)
+        if left:
+            logger.warning(
+                "Closing the turn backend with %d task(s) still running after their cut: %s",
+                len(left),
+                ", ".join(sorted(task.get_name() for task in left)),
+            )
+
+    async def _close(self, until: float) -> set[asyncio.Task[Any]]:
+        """:meth:`close`, its turns and calls waited for until *until*: the
+        ones still running then, which it leaves (the kit's close names
+        them)."""
         self._closed = True
+        left: set[asyncio.Task[Any]] = set()
         if self.executor is not None:
-            await self.executor.close()
+            left |= await self.executor._close(until)
         for turn in list(self._open):
             turn.abandon()
         acting = acting_tasks() | close_callers()
@@ -447,15 +461,12 @@ class TurnClient(RoomOwner):
                 # One already cancelled is let finish its cleanup.
                 task.cancel()
         if calls:
-            _, left = await asyncio.wait(calls, timeout=task_utils.CUT_UNWIND_S)
-            if left:
-                logger.warning(
-                    "Closing the turn backend with %d call(s) still running after their cut: %s",
-                    len(left),
-                    ", ".join(sorted(task.get_name() for task in left)),
-                )
+            remaining = max(0.0, until - asyncio.get_running_loop().time())
+            _, pending = await asyncio.wait(calls, timeout=remaining)
+            left |= pending
         self._started.clear()
         await self.backend.close()
+        return left
 
 
 @runtime_checkable

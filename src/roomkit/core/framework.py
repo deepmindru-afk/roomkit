@@ -212,6 +212,14 @@ __all__ = [
 ]
 
 
+async def _stop_step(step: str, work: Coroutine[Any, Any, None]) -> None:
+    """One step of the kit's stop as it closes, its failure logged as it ends."""
+    try:
+        await work
+    except Exception:
+        logger.exception("Stopping the %s failed as the kit closed", step)
+
+
 async def _await_shutdown(shutdown: asyncio.Task[None]) -> None:
     """Wait for the kit's *shutdown*, its failure raised. One cut itself is
     no cancellation of a caller nobody cancelled: it is told so."""
@@ -440,8 +448,8 @@ class RoomKit(
         self._store_released = False
         self._shutdown: asyncio.Task[None] | None = None
         self._shutdown_callers = Callers()
-        # The shutdown's stop of the kit's own work, within its grace.
-        self._stopping: asyncio.Task[None] | None = None
+        # The shutdown's steps stopping the kit's own work, within its grace.
+        self._stop_steps: set[asyncio.Task[None]] = set()
         # The work the close abandoned, ignoring its cut: named once.
         self._abandoned: weakref.WeakSet[asyncio.Task[Any]] = weakref.WeakSet()
         self._hook_engine = HookEngine()
@@ -879,7 +887,7 @@ class RoomKit(
             *self._background_runs,
             *self._hook_engine.running_observers(),
             *self._cascades.running(),
-            *(() if self._stopping is None else (self._stopping,)),
+            *self._stop_steps,
         }
         # A turn the close cut ends without waiting for the close, the one a
         # close's own call runs in included: its end is waited for.
@@ -945,15 +953,22 @@ class RoomKit(
         turn. What still runs then, ignoring its cancellation, is named in
         the log and abandoned (RFC §12.10.4)."""
         timeout = until - asyncio.get_running_loop().time()
-        left = await wait_for_unspared(self._cut_running_work, timeout=timeout)
-        # Each named once, at the first unwind it outlasts.
-        named = {task for task in left if isinstance(task, asyncio.Task)} - set(self._abandoned)
-        if named:
-            self._abandoned.update(named)
+        self._name_abandoned(await wait_for_unspared(self._cut_running_work, timeout=timeout))
+
+    def _name_abandoned(self, left: Iterable[asyncio.Future[Any]]) -> None:
+        """Note the work *left* running after its cut, as a wait of the close
+        ran out: the close abandons it (:meth:`_log_abandoned`)."""
+        self._abandoned.update(task for task in left if isinstance(task, asyncio.Task))
+
+    def _log_abandoned(self) -> None:
+        """Name in one line of the log, once the close's last unwind ran out,
+        each task its waits left still running, ignoring its cut."""
+        left = sorted(task.get_name() for task in self._abandoned if not task.done())
+        if left:
             logger.warning(
                 "Closing with %d task(s) still running after their cut: %s",
-                len(named),
-                ", ".join(sorted(task.get_name() for task in named)),
+                len(left),
+                ", ".join(left),
             )
 
     async def close(self) -> None:
@@ -1015,7 +1030,10 @@ class RoomKit(
         background run, a delivery, a session's end) waits for the shutdown
         without the shutdown waiting for that work or cutting it, whether it
         started the shutdown or joined one under way; a call from the
-        shutdown's own work (a hook it fires) returns at once.
+        shutdown's own work (a hook it fires) returns at once. The model turn
+        such a call runs in is the exception: it is cut as every turn is, the
+        call awaiting ``close()`` itself left to run, its open tool call's
+        end row stored before the store is released.
         """
         with calling_close():
             await self._close_kit()
@@ -1048,12 +1066,12 @@ class RoomKit(
         grace_until = loop.time() + CLOSE_GRACE_S
         # The kit's own work stops within the grace too, its steps waiting
         # on integrator code (a source's stop, a delegation's on_complete).
-        self._stopping = start_named(self._stop_kit_work(), name="roomkit-close-stop-work")
+        self._stop_kit_work()
         await wait_for_unspared(self._running_work, timeout=grace_until - loop.time())
         await self._cut_and_unwind(loop.time() + CUT_UNWIND_S)
         # A turn still open (a stream nobody reads) is given up before its
-        # channel closes.
-        await self._turns.close()
+        # channel closes, within an unwind of its own.
+        self._name_abandoned(await self._turns._close(loop.time() + CUT_UNWIND_S))
         channel_failures = await self._close_channels()
         # Close voice backend
         if self._voice:
@@ -1064,6 +1082,7 @@ class RoomKit(
         # lock manager already have end within the same unwind.
         unwind_until = loop.time() + CUT_UNWIND_S
         await self._cut_and_unwind(unwind_until)
+        self._log_abandoned()
         await self._release_shared_resources(unwind_until)
         # Last, the failures the channel loop collected. After everything, so
         # the caller learns of them without any other part of the shutdown
@@ -1077,13 +1096,14 @@ class RoomKit(
                 channel_failures,
             )
 
-    async def _stop_kit_work(self) -> None:
+    def _stop_kit_work(self) -> None:
         """Stop the kit's own work while the channels it uses are still open:
         recordings, greeting gates, the delivery backend, discussions,
-        delegations, sources. The steps run side by side within the close's
-        one grace (RFC §12.10.4): one that waits on integrator code (a
-        source's ``stop()``, a delegation's ``on_complete``) holds no other
-        back, and the close's cut cuts every one still running."""
+        delegations, sources. Each step runs as a task of its own, named for
+        what it stops, within the close's one grace (RFC §12.10.4): one that
+        waits on integrator code (a source's ``stop()``, a delegation's
+        ``on_complete``) holds no other back, a failure is logged as its step
+        ends, and the close's cut cuts every one still running."""
         # Clear stale greeting gates
         for room_id in list(self._greeting_gates):
             self._force_clear_greeting_gate(room_id)
@@ -1098,10 +1118,12 @@ class RoomKit(
             steps["delivery backend"] = self._delivery_backend.close()
         for channel_id in list(self._sources):
             steps[f"source {channel_id}"] = self._detach_source(channel_id)
-        outcomes = await asyncio.gather(*steps.values(), return_exceptions=True)
-        for step, outcome in zip(steps, outcomes, strict=True):
-            if isinstance(outcome, Exception):
-                logger.error("Stopping the %s failed as the kit closed", step, exc_info=outcome)
+        for step, work in steps.items():
+            task = start_named(
+                _stop_step(step, work), name=f"roomkit-close-stop-{step.replace(' ', '-')}"
+            )
+            self._stop_steps.add(task)
+            task.add_done_callback(self._stop_steps.discard)
 
     async def _close_channels(self) -> list[Exception]:
         """Close every channel, one at a time and shielded from one another;

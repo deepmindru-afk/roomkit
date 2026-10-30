@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from roomkit.core.exceptions import SourceAlreadyAttachedError, SourceNotFoundError
 from roomkit.core.mixins.helpers import HelpersMixin
-from roomkit.core.task_utils import cancel_and_wait
+from roomkit.core.task_utils import cancel_and_wait, start_named
 
 if TYPE_CHECKING:
     from roomkit.models.delivery import InboundMessage, InboundResult
@@ -175,12 +175,21 @@ class SourceOpsMixin(HelpersMixin):
         if source is None:
             raise SourceNotFoundError(f"No source attached to channel {channel_id}")
 
+        # The source stops first, then its runner task. A cut (the kit's
+        # close once its grace ran out, RFC §12.10.4) stops waiting for
+        # stop() and cuts it, and the runner task ends all the same: it is
+        # the kit's own, and honours its cancellation.
+        stopping = start_named(source.stop(), name=f"roomkit-source-stop-{channel_id}")
         try:
-            await source.stop()
+            await asyncio.wait({stopping})
+        except asyncio.CancelledError:
+            stopping.cancel()
+            self._pending_hook_tasks.add(stopping)
+            stopping.add_done_callback(self._pending_hook_tasks.discard)
+            raise
         finally:
-            # The runner task ends whatever the source's stop() does: one the
-            # kit's close cut once its grace ran out included (RFC §12.10.4).
             await cancel_and_wait(task, log_errors_to=logging.getLogger("roomkit.sources"))
+        stopping.result()
 
         # Both names, as in ``attach_source``.
         await self._emit_framework_event(

@@ -54,6 +54,7 @@ from roomkit import (
     VideoChannel,
     VoiceChannel,
 )
+from roomkit.channels import _ai_steering
 from roomkit.channels.agent import Agent
 from roomkit.core import framework, task_utils
 from roomkit.models.channel import ChannelOutput
@@ -1019,6 +1020,7 @@ class _Stubborn:
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
+        self.steps: list[str] = []
 
     async def run(self) -> None:
         self.started.set()
@@ -1064,7 +1066,11 @@ class _StubbornSource(SourceProvider):
     async def start(self, emit: Any) -> None:
         if not self.in_stop:
             await self.work.run()
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.work.steps.append("receive task cut")
+            raise
 
     async def stop(self) -> None:
         if self.in_stop:
@@ -1088,6 +1094,26 @@ async def _stubborn_kit(case: str, work: _Stubborn) -> tuple[RoomKit, Any]:
     if case in ("source-start", "source-stop"):
         await kit.attach_source("sms", _StubbornSource(work, in_stop=case == "source-stop"))
         return kit, None
+    if case == "tool":
+        tool = {"name": "lookup", "description": "Look up.", "parameters": {"type": "object"}}
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    finish_reason="tool_calls",
+                    tool_calls=[AIToolCall(id="c1", name="lookup", arguments={})],
+                ),
+                AIResponse(content="Found it.", finish_reason="stop"),
+            ]
+        )
+
+        async def lookup(name: str, arguments: dict[str, Any]) -> str:
+            await work.run()
+            return "late"
+
+        kit.register_channel(Agent("agent", provider=provider, tools=[tool], tool_handler=lookup))
+        await kit.attach_channel("r", "agent", category=ChannelCategory.INTELLIGENCE)
+        return kit, asyncio.ensure_future(kit.process_inbound(_message("Go."), room_id="r"))
     if case == "on-complete":
         kit.register_channel(Agent("worker", provider=_SlowWords(asyncio.Event())))
 
@@ -1109,15 +1135,33 @@ async def _stubborn_kit(case: str, work: _Stubborn) -> tuple[RoomKit, Any]:
 
 @pytest.mark.parametrize(
     "case",
-    ["send", "observer", "hook", "store-read", "source-start", "source-stop", "on-complete"],
+    [
+        "send",
+        "observer",
+        "hook",
+        "tool",
+        "store-read",
+        "source-start",
+        "source-stop",
+        "on-complete",
+    ],
 )
 async def test_work_ignoring_its_cut_is_abandoned_once_the_unwind_ran_out(
-    case: str, close_grace: float, cut_unwind: float, caplog: pytest.LogCaptureFixture
+    case: str,
+    close_grace: float,
+    cut_unwind: float,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Integrator code that ignores its cancellation (a send, a hook, a
-    source, a delegation's on_complete) or a store operation stuck under the
-    kit's resource lease does not hold the close: it is abandoned once the
-    grace and the unwinds ran out, and named in the log (RFC §12.10.4)."""
+    model turn's tool, a source, a delegation's on_complete) or a store
+    operation stuck under the kit's resource lease does not hold the close:
+    it is abandoned once the grace and the unwinds ran out, and named in the
+    log once. A source whose ``stop()`` ignores its cut has its receive task
+    cut all the same (RFC §12.10.4)."""
+    # A channel's own close waits on a budget of its own (an agent's, for
+    # its turns), under test as short as the kit's unwind.
+    monkeypatch.setattr(_ai_steering, "CLOSE_WAIT_S", cut_unwind)
     work = _Stubborn()
     kit, call = await _stubborn_kit(case, work)
     if case in ("source-stop", "on-complete"):
@@ -1134,6 +1178,8 @@ async def test_work_ignoring_its_cut_is_abandoned_once_the_unwind_ran_out(
         # Abandoned, not waited for, and named once in the log.
         logged = [r for r in caplog.records if "still running after their cut" in r.getMessage()]
         assert (len(logged), work.release.is_set()) == (1, False)
+        if case == "source-stop":
+            assert work.steps == ["receive task cut"]
     finally:
         work.release.set()
     if case == "send":
@@ -1197,6 +1243,37 @@ async def test_a_stuck_source_stop_keeps_no_other_source_running(
         stuck.stop_release.set()
 
     assert (stuck.steps, ordinary.steps) == (["stop", "task cut"], ["stop", "task cut"])
+
+
+class _FailingStop(_Source):
+    async def stop(self) -> None:
+        raise ValueError("cannot stop")
+
+
+async def test_a_stop_step_s_failure_is_logged_and_a_stuck_one_named(
+    close_grace: float, cut_unwind: float, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Each of the kit's own stop steps is told apart: one that fails is
+    logged as it ends, though another outlasts the grace, and one that
+    outlasts its unwind is named after what it stops."""
+    kit = await _kit(_Transport("ws"))
+    failing, stubborn = _FailingStop("a"), _StubbornSource(_Stubborn(), in_stop=True)
+    await kit.attach_source("sms", failing)
+    await kit.attach_source("ws", stubborn)
+    await failing.reading.wait()
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="roomkit"):
+            await asyncio.wait_for(kit.close(), 1)
+    finally:
+        stubborn.work.release.set()
+
+    failures = [r for r in caplog.records if r.exc_info and isinstance(r.exc_info[1], ValueError)]
+    named = [r.getMessage() for r in caplog.records if "still running" in r.getMessage()]
+    assert [r.getMessage() for r in failures] == [
+        "Stopping the source sms failed as the kit closed"
+    ]
+    assert len(named) == 1 and "source-stop-ws" in named[0]
 
 
 async def test_a_source_restarting_on_failure_stops_restarting_once_the_close_started(

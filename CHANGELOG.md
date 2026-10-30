@@ -143,22 +143,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     fresh 5 s after the channels closed, and left running past that. The
     kit's own steps that wait on integrator code (a source's `stop()`, a
     delegation's `on_complete`) run side by side within the same grace, so
-    a slow one holds no other back, and every source's task is cut,
-    whatever its `stop()` does; a source restarting on failure is not
-    restarted once the close started. The handlers a voice or video
+    a slow one holds no other back, each logging its own failure as it
+    ends, and every source's task is cut, whatever its `stop()` does; a
+    source restarting on failure is not restarted once the close started. The handlers a voice or video
     channel runs for a session's start or end get the grace too. What a
     channel's close starts is cut at once.
-  - The close takes the grace, plus the channels' closes and the kit's own
-    backends' closes (the turn backend, voice, realtime, the store, the
-    lock managers, the status bus), plus at most 1 s more, twice: after the
-    grace and after the channels, for cut work that ignores its
-    cancellation. The operations the store or the lock manager still runs,
-    and the calls the turn backend's turns made, are waited for within an
-    unwind. With a send, a write, an observer and a hook that never end, it
+  - The close takes the grace, plus the turn backend's close (its turns and
+    the calls they made, cut and waited for 1 s at most), plus the channels'
+    closes and the kit's own backends' closes (voice, realtime, the store,
+    the lock managers, the status bus), each on its own budget, plus at
+    most 1 s more, twice: after the grace and after the channels, for cut
+    work that ignores its cancellation. The operations the store or the
+    lock manager still runs are waited for within the second one. With a send, a write, an observer and a hook that never end, it
     took 19.8 s; it takes 5 s.
   - Nothing is written or delivered after `close()` returns by work that
     honours its cut. Work that ignores it past the unwind is abandoned and
-    named in the log, once: a store the kit closed then refuses its
+    named in one line of the log, each task by the work it runs (a source's
+    stop, a turn): a store the kit closed then refuses its
     writes, a store that stays open (an `InMemoryStore`, a pool handed in)
     takes them, and a send it still makes is its channel's own.
 
@@ -171,10 +172,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   be cut only once every lane had drained, up to 6 s later. What it
   streamed is stored marked `cancelled`, and an open tool call gets its end
   row, `failed`, error `kit_closed`. The turn a tool closing the kit runs
-  in is cut the same way, the tool's own call left to run: its end row is
-  stored before the kit releases its store, and what the turn does after
-  the close is refused quietly, no error logged. Migration: let a turn
-  whose answer you need end before `close()`.
+  in is cut the same way, but the call that awaits `close()` itself runs
+  on: its end row is stored before the kit releases its store, and what the
+  turn does after the close is refused quietly, no error logged. A call
+  that awaits a close it started on a task of its own is cut with its turn,
+  and the close runs on. Migration: let a turn whose answer you need end
+  before `close()`.
 
 - **BREAKING — a call `kit.close()` cuts reads `kit_closed`, never
   `lane_cancelled`, with what it delivered** (RFC 12.10.4, RMK-1030). A

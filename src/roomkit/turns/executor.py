@@ -19,7 +19,7 @@ from roomkit.channels._tool_registry import ChannelRegistry
 from roomkit.core._turn_scope import turns_run_under
 from roomkit.core.exceptions import ToolNameCollisionError, TurnLinkError
 from roomkit.core.hooks import HookEngine, HookRegistration, hook_decorator
-from roomkit.core.task_utils import cancel_and_wait
+from roomkit.core.task_utils import acting_tasks, cancel_and_wait
 from roomkit.models.enums import HookExecution
 from roomkit.turns._error_codec import ErrorClasses, error_record
 from roomkit.turns._executor_channels import ChannelFactory, ExecutorChannels
@@ -297,13 +297,36 @@ class TurnExecutor:
     async def close(self) -> None:
         """Take no more turns, and cut the ones running, but the turns this
         close runs under: waiting for them would wait for itself."""
+        await self._close(None)
+
+    async def _close(self, until: float | None) -> set[asyncio.Task[Any]]:
+        """:meth:`close`, waiting for the turns it cut until *until* at most
+        (the kit's close, RFC §12.10.4): the ones still running then,
+        ignoring their cut, which it leaves."""
         self._closed = True
         self._spare_turns_run_under()
         spared = set(turns_run_under())
-        running = [task for task, turn in self._turns.items() if turn.turn_id not in spared]
-        if running:
-            await cancel_and_wait(*running, log_errors_to=logger)
+        acting = acting_tasks()
+        running = [
+            task
+            for task, turn in self._turns.items()
+            if turn.turn_id not in spared and task not in acting
+        ]
+        left: set[asyncio.Task[Any]] = set()
+        if until is None:
+            if running:
+                await cancel_and_wait(*running, log_errors_to=logger)
+        elif running:
+            for task in running:
+                if not task.done() and not task.cancelling():
+                    task.cancel()
+            remaining = max(0.0, until - asyncio.get_running_loop().time())
+            done, left = await asyncio.wait(running, timeout=remaining)
+            for task in done:
+                if not task.cancelled() and (error := task.exception()) is not None:
+                    logger.debug("Turn %s ended with %r as it closed", task.get_name(), error)
         await self._channels.close()
+        return left
 
     async def control(self, message: ChannelControl) -> ChannelResult | None:
         """Apply a channel control message of the owner's (RFC §10.6.3): a
