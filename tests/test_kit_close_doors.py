@@ -385,6 +385,14 @@ class _SlowCursor(InMemoryStore):
         return await super().get_delivered_index(room_id)
 
 
+_STORES: dict[str, Callable[[Any], ConversationStore]] = {
+    # A kit's store by name, given the test's tmp_path.
+    "memory": lambda tmp_path: InMemoryStore(),
+    "slow-cursor": lambda tmp_path: _SlowCursor(),
+    "sqlite": lambda tmp_path: SQLiteStore(tmp_path / "r.db"),
+}
+
+
 def _recording(store: type[ConversationStore]) -> type[ConversationStore]:
     """*store*, recording each row it commits, and whether the kit had
     released it then (its ``close()`` called: nothing is written after)."""
@@ -503,6 +511,47 @@ async def test_a_tool_closing_the_kit_gets_its_end_row_before_the_close_returns(
     assert ends == [(EventType.TOOL_CALL_END, False, "kit_closed")]
     assert [kind for kind, after, _ in recording.commits if after] == []
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+
+@pytest.mark.parametrize("lane", ["idle", "busy"])
+# On SQLite the commit's write suspends, and the observer closes the kit
+# before its message's set is placed: no lane holds it then.
+@pytest.mark.parametrize("store", ["memory", "slow-cursor"])
+async def test_an_observer_closing_the_kit_finds_a_set_placed_in_an_idle_lane_running(
+    store: str, lane: str, tmp_path: Any, close_grace: float
+) -> None:
+    """An ASYNC BEFORE_BROADCAST observer closes the kit as its message's set
+    waits in the room's lane, the lane reading its cursor before it takes
+    it: placed in the idle lane, the set runs from its placement and is
+    delivered (RMK-1039); queued behind a send still under way, it is
+    dropped, never sent. The call reads ``kit_closed`` either way."""
+    kit = RoomKit(store=_STORES[store](tmp_path))
+    holds = _HoldsForEver("ws")
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(holds)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "sms")
+    await kit.attach_channel("r", "ws")
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="quit")
+    async def quit(event: RoomEvent, ctx: RoomContext) -> None:
+        if getattr(event.content, "body", "") == "Bye.":
+            await kit.close()
+
+    held: list[asyncio.Future[Any]] = []
+    if lane == "busy":
+        message = InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="hold"))
+        held.append(asyncio.ensure_future(kit.process_inbound(message, room_id="r")))
+        await holds.holding.wait()
+    message = InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Bye."))
+    result = await asyncio.wait_for(kit.process_inbound(message, room_id="r"), 1)
+    await asyncio.wait_for(asyncio.gather(*held), 1)
+
+    sent = {"ws": "sent"} if lane == "idle" else {}
+    assert result.cancellation_reason == "kit_closed"
+    assert {channel: r.status for channel, r in result.delivery_results.items()} == sent
+    delivered = [event.content.body for event in holds.delivered]
+    assert delivered == (["Bye."] if lane == "idle" else [])
 
 
 # -- a close from a delivery, a session's end, an announcement -----------------

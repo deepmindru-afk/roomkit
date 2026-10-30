@@ -562,6 +562,26 @@ class CursorEntry:
     index: int
 
 
+def _turn(entry: ExecEntry | CursorEntry) -> tuple[int, int]:
+    """When a lane runs *entry*: once the cursor reached the index before
+    its own, or its anchor when it has none, an index-less entry ahead of
+    the indexed one waiting for the same cursor."""
+    if isinstance(entry, CursorEntry):
+        return (entry.index - 1, 1)
+    if entry.index is None:
+        return (entry.after_index, 0)
+    return (entry.index - 1, 1)
+
+
+def _runs_before(entry: ExecEntry | CursorEntry, other: ExecEntry) -> bool:
+    """Whether a lane runs *entry*, placed after *other*, before it (see
+    :func:`_turn`); index-less entries run in their order of arrival."""
+    turn, other_turn = _turn(entry), _turn(other)
+    if turn[1] == other_turn[1] == 0:
+        return False
+    return turn < other_turn
+
+
 @dataclass(slots=True)
 class _Executed:
     """A dequeued entry and, once it returns, its execution outcome.
@@ -656,6 +676,10 @@ class RoomDeliveryLane:
         self._retire = retire or (lambda _lane: True)
         self._indexed: dict[int, ExecEntry | CursorEntry] = {}
         self._unindexed: deque[ExecEntry] = deque()
+        # The entry placed while the lane was idle, until a round takes it or
+        # a drop ends it: its set runs from its placement, which the kit's
+        # close does not drop (RFC §12.10.4).
+        self._placed_idle: ExecEntry | None = None
         self._wakeup = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._busy = False
@@ -687,12 +711,21 @@ class RoomDeliveryLane:
                 name=f"roomkit-delivery-lane-{self.room_id}",
                 context=contextvars.Context(),
             )
+            self._task.add_done_callback(self._ended)
+
+    def _ended(self, _task: asyncio.Task[None]) -> None:
+        """The executor ended: once sealed, the entry placed while it was
+        idle and never taken (its round cut first) ends as the queued ones
+        did (RFC §12.10.4)."""
+        if self._closed:
+            self._abort_pending(self._reason)
 
     def enqueue(self, entry: ExecEntry | CursorEntry) -> None:
         """Accept an entry. Synchronous — runs under the room lock."""
         if self._closed:
             self._drop_entry(entry, "lane_closed")
             return
+        self._note_placement(entry)
         if isinstance(entry, CursorEntry):
             self._indexed[entry.index] = entry
         elif entry.index is None:
@@ -700,6 +733,22 @@ class RoomDeliveryLane:
         else:
             self._indexed[entry.index] = entry
         self._wakeup.set()
+
+    def _note_placement(self, entry: ExecEntry | CursorEntry) -> None:
+        """Note *entry* as running from its placement when the lane is idle,
+        no round under way and nothing queued (RFC §12.10.4); a set placed
+        behind another is queued. One placed later that the room's order
+        runs first takes the lead: the entry noted is queued behind it."""
+        if not self._busy and not self._indexed and not self._unindexed:
+            self._placed_idle = entry if isinstance(entry, ExecEntry) else None
+        elif self._placed_idle is not None and _runs_before(entry, self._placed_idle):
+            self._placed_idle = None
+
+    @property
+    def _runs_on(self) -> bool:
+        """Whether the lane takes its entries: unsealed, or sealed with the
+        entry placed while it was idle still to run (RFC §12.10.4)."""
+        return not self._closed or self._placed_idle is not None
 
     async def drain(self) -> None:
         """Wait until every queued entry has been processed."""
@@ -713,14 +762,16 @@ class RoomDeliveryLane:
 
     def seal(self, reason: str) -> None:
         """Take no more work (RFC §12.10.4): the queued entries are dropped
-        with *reason*, their cascades cancelled, and the round under way
-        ends after the entry it runs; what it ran is then finished as usual.
-        The kit's close cuts the cascades under way first, sparing what it
-        is called from: a drop cancels nothing of them again."""
+        with *reason*, their cascades cancelled, but the one placed while the
+        lane was idle, which runs from its placement; the round under way
+        ends after the entry it runs, or after that one; what it ran is then
+        finished as usual. The kit's close cuts the cascades under way
+        first, sparing what it is called from: a drop cancels nothing of
+        them again."""
         self._closed = True
         self._reason = reason
         self._wakeup.set()
-        self._abort_pending(reason)
+        self._abort_pending(reason, keep=self._placed_idle)
 
     def cut(self) -> None:
         """Cut the round under way, once sealed: its task is cancelled, and
@@ -734,6 +785,8 @@ class RoomDeliveryLane:
         task.cancel()
 
     def _drop_entry(self, entry: ExecEntry | CursorEntry, reason: str) -> None:
+        if entry is self._placed_idle:
+            self._placed_idle = None
         if isinstance(entry, ExecEntry):
             # The kit's close drops what it did not start (RFC §12.10.4): an
             # expected end, not a warning.
@@ -747,12 +800,18 @@ class RoomDeliveryLane:
             entry.cascade.cancel(reason)
             entry.cascade.release()
 
-    def _abort_pending(self, reason: str) -> None:
-        for entry in list(self._indexed.values()):
-            self._drop_entry(entry, reason)
-        self._indexed.clear()
-        while self._unindexed:
-            self._drop_entry(self._unindexed.popleft(), reason)
+    def _abort_pending(self, reason: str, *, keep: ExecEntry | None = None) -> None:
+        """Drop every queued entry with *reason*, but *keep*."""
+        for index, entry in list(self._indexed.items()):
+            if entry is not keep:
+                del self._indexed[index]
+                self._drop_entry(entry, reason)
+        unindexed, self._unindexed = self._unindexed, deque()
+        for entry in unindexed:
+            if entry is keep:
+                self._unindexed.append(entry)
+            else:
+                self._drop_entry(entry, reason)
 
     async def _run(self) -> None:
         # Belt and braces with start(): this task must hold no inherited lock
@@ -763,7 +822,7 @@ class RoomDeliveryLane:
         loop = asyncio.get_running_loop()
         gap_since: float | None = None
         backoff = self._config.gap_backoff_initial
-        while not self._closed:
+        while self._runs_on:
             self._wakeup.clear()
             if not self._indexed and not self._unindexed:
                 gap_since = None
@@ -877,7 +936,7 @@ class RoomDeliveryLane:
         progressed = False
         async with self._claims.locked(delivery_claim_key(self.room_id)):
             delivered = await self._read_cursor()
-            while not self._closed:
+            while self._runs_on:
                 progressed |= self._drop_stale(delivered)
 
                 while self._unindexed and self._unindexed[0].after_index <= delivered:
@@ -948,6 +1007,8 @@ class RoomDeliveryLane:
         entry in no queue and in no record, its cascade unit forever
         unreleased and every waiter on that cascade hung.
         """
+        if entry is self._placed_idle:
+            self._placed_idle = None
         run = _Executed(entry)
         executed.append(run)
         try:
@@ -1082,8 +1143,10 @@ class RoomLaneRegistry:
 
     def seal(self, reason: str = "kit_closed") -> None:
         """Take no more work (RFC §12.10.4): every entry queued or enqueued
-        from now on is dropped with *reason*, its cascade cancelled; the
-        rounds under way end after the entry each runs. Idempotent."""
+        from now on is dropped with *reason*, its cascade cancelled, but the
+        one each lane holds placed while it was idle, which runs from its
+        placement; the rounds under way end after the entry each runs.
+        Idempotent."""
         self._sealed = True
         for lane in self._lanes.values():
             lane.seal(reason)

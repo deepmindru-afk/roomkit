@@ -981,7 +981,8 @@ class RoomKit(
         hook, a tool, a channel's close), but the reads, which answer while
         the store is open, and the teardown calls, which return doing
         nothing. What has not started is cut at once: a delivery queued in
-        a room's lane, a call waiting for its room's lock, the background
+        a room's lane behind another (one placed in the idle lane runs from
+        its placement), a call waiting for its room's lock, the background
         runs, the verification timers, every model turn (its stream and its
         tool calls; what it streamed is stored marked cancelled, an open
         tool call gets its end row). The work still running (a hook, a

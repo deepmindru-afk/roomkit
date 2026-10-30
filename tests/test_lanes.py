@@ -528,14 +528,26 @@ async def test_claim_blocks_gap_clock_while_owner_is_executing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_drops_the_queued_work_it_did_not_start() -> None:
-    """A close starts nothing queued: each entry is dropped at once, its
-    cascade cancelled ``kit_closed`` and its waiter woken (RMK-1030)."""
-    store, host, registry, _ = await make_rig()
-    cascade = DeliveryCascade(ROOM, reentry_budget=10)
-    for i in range(5):
-        enqueue_exec(registry, cascade, f"e{i}", i)
-    await registry.aclose()
-    assert host.executed == []
-    assert cascade.cancelled == "kit_closed"
-    await asyncio.wait_for(cascade.wait(), timeout=0.5)
+@pytest.mark.parametrize(
+    ("placed", "runs"),
+    [([0, 1, 2, 3, 4], ["e0"]), ([1, 0, 2], [])],
+    ids=["in-order", "overtaken"],
+)
+async def test_close_drops_the_queued_work_it_did_not_start(
+    placed: list[int], runs: list[str]
+) -> None:
+    """A close starts nothing queued: each entry placed behind another is
+    dropped at once, its cascade cancelled ``kit_closed`` and its waiter
+    woken (RMK-1030). The entry placed in the idle lane runs from its
+    placement, even untaken as the close seals the lane (RMK-1039); placed
+    later, an entry the room's order runs first leaves it queued behind,
+    dropped too, never waiting for an index the close dropped."""
+    store, host, registry, _ = await make_rig(close_grace=5.0)
+    cascades = {i: DeliveryCascade(ROOM, reentry_budget=10) for i in placed}
+    for i in placed:
+        enqueue_exec(registry, cascades[i], f"e{i}", i)
+    await asyncio.wait_for(registry.aclose(), timeout=1.0)
+    assert host.executed == runs
+    for i, cascade in cascades.items():
+        await asyncio.wait_for(cascade.wait(), timeout=0.5)
+        assert cascade.cancelled == (None if f"e{i}" in runs else "kit_closed")

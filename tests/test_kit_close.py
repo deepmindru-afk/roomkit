@@ -3,7 +3,8 @@
 1. Admission stops at once: once ``close()`` started, every call raises
    ``KitClosedError``, whoever makes it, but the reads, which answer while
    the store is open, and the teardown calls, which return doing nothing.
-2. Work not started is cut at once: a queued delivery, a call waiting for its
+2. Work not started is cut at once: a delivery queued behind another (one
+   placed in an idle lane runs from its placement), a call waiting for its
    room's lock.
 3. A model turn is cut at once, its stream and its tool calls: what it
    streamed is stored marked cancelled, an open tool call gets its end row.
@@ -84,6 +85,7 @@ from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransp
 from roomkit.voice.stt.mock import MockSTTProvider
 from tests import redis_turn_mode
 from tests.test_framework import AILikeChannel, SimpleChannel
+from tests.test_kit_close_doors import _STORES
 
 
 class _Transport(SimpleChannel):
@@ -608,19 +610,30 @@ async def test_the_close_returns_while_calls_keep_coming(close_grace: float) -> 
 # -- 2. Work not started is cut at once -----------------------------------------
 
 
-async def test_a_delivery_queued_as_the_kit_closes_is_never_sent(close_grace: float) -> None:
+@pytest.mark.parametrize("store", list(_STORES))
+@pytest.mark.parametrize("lane", ["idle", "busy"])
+async def test_a_delivery_placed_in_an_idle_lane_runs_one_queued_behind_is_never_sent(
+    lane: str, store: str, tmp_path: Path, close_grace: float
+) -> None:
+    """A delivery queued behind another is dropped, never sent. One placed
+    in its room's idle lane runs from its placement, taken by the lane or
+    not as the close starts, whatever the store: it gets the grace, and is
+    sent (RMK-1039)."""
     transport = _Transport("ws", holds={"held": close_grace / 5})
-    kit = await _kit(transport)
-    held = await kit.process_inbound(_message("held"), room_id="r", defer_delivery=True)
-    await transport.entered("held").wait()
-    queued = await kit.process_inbound(_message("queued"), room_id="r", defer_delivery=True)
-    assert held.delivery is not None and queued.delivery is not None
+    kit = await _kit(transport, store=_STORES[store](tmp_path))
+    if lane == "busy":
+        await kit.process_inbound(_message("held"), room_id="r", defer_delivery=True)
+        await transport.entered("held").wait()
+    placed = await kit.process_inbound(_message("placed"), room_id="r", defer_delivery=True)
+    assert placed.delivery is not None
 
     await kit.close()
 
-    dropped = await queued.delivery.wait()
-    assert (dropped.cancellation_reason, dropped.delivery_results) == ("kit_closed", {})
-    assert transport.sent == ["held"]
+    result = await placed.delivery.wait()
+    sent = {"ws": "sent"} if lane == "idle" else {}
+    assert result.cancellation_reason == "kit_closed"
+    assert {channel: r.status for channel, r in result.delivery_results.items()} == sent
+    assert transport.sent == (["placed"] if lane == "idle" else ["held"])
 
 
 @pytest.fixture

@@ -133,9 +133,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING — `kit.close()` no longer drains: what has not started is cut
   at once, the running work gets one grace of 5 s** (RFC 12.10.4,
   RMK-1030).
-  - A delivery queued in a room's lane is dropped at once, never sent; it
-    used to be delivered if the lane's 5 s drain reached it. The kit's
-    background runs and its verification timers are cut at once too.
+  - A delivery queued in a room's lane behind another is dropped at once,
+    never sent; it used to be delivered if the lane's 5 s drain reached it.
+    One placed in an idle lane runs from its placement (RMK-1039). The
+    kit's background runs and its verification timers are cut at once too.
   - A call waiting for its room's lock is cut at once, nothing of it
     stored: `process_inbound` and `regenerate_response` return
     `InboundResult(blocked=True, reason="kit_closed")`, `send_event`,
@@ -264,6 +265,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The model turn such a close runs in is cut all the same (RMK-1030), the
     call awaiting `close()` itself left to run; a call awaiting a close it
     started on a task of its own is cut with its turn.
+
+- **A delivery placed in its room's idle lane is sent when the kit closes,
+  whatever the store** (RFC 12.10.4, RMK-1039). A delivery waited in its
+  lane from its placement until the lane, having read the room's delivery
+  cursor, took it, and a close in that window dropped it as queued: a
+  deferred `process_inbound` followed at once by `close()` lost its
+  delivery on every store, and whether a close from elsewhere found it
+  taken depended on how long the store took to read the cursor. A
+  delivery placed while its lane is idle now runs from its
+  placement: the close gives it its grace, and its call reads `kit_closed`
+  with what it delivered. One queued behind another is still dropped.
+  0.110.0 is not affected.
 
 - **`kit.close()` returns while calls keep arriving** (RMK-1016). The close
   waited for the work started after it began, and calls were taken until
