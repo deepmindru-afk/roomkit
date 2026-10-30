@@ -27,6 +27,7 @@ from roomkit.models.streaming import (
     ToolCallStartMarker,
 )
 from roomkit.providers.ai.base import AIImagePart, AITextPart
+from roomkit.providers.ai.tool_intent import with_intent_field
 from roomkit.turns._error_codec import ErrorClasses, error_record
 from roomkit.turns.wire import ChannelCall, ChannelControlEnvelope, TurnRequest, WireOutput
 
@@ -57,7 +58,7 @@ def _encode_start(item: ToolCallStartMarker, start: int | None) -> dict[str, Any
         "arguments": item.arguments,
         "ran_with": item.ran_with,
     }
-    return _with_intent(fields, item.intent)
+    return with_intent_field(fields, item.intent)
 
 
 def _decode_start(data: dict[str, Any]) -> ToolCallStartMarker:
@@ -68,12 +69,6 @@ def _decode_start(data: dict[str, Any]) -> ToolCallStartMarker:
         ran_with=data["ran_with"],
         intent=data.get("intent"),
     )
-
-
-def _with_intent(fields: dict[str, Any], intent: str | None) -> dict[str, Any]:
-    """A call's wire fields with its intent, carried only when it has one: a
-    frame without it reads as before (RFC §6.4)."""
-    return fields if intent is None else {**fields, "intent": intent}
 
 
 def _decode_loop_end(data: dict[str, Any]) -> LoopEndMarker:
@@ -159,7 +154,7 @@ def encode_end(end: ToolCallEndMarker) -> dict[str, Any]:
         "outcome": end.outcome,
         "refused_but_ran": end.refused_but_ran,
     }
-    return _with_intent(fields, end.intent)
+    return with_intent_field(fields, end.intent)
 
 
 def decode_end(data: dict[str, Any]) -> ToolCallEndMarker:

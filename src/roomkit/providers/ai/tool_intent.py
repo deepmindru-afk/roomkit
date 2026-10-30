@@ -124,6 +124,12 @@ def take_intent(call: StreamToolCall, owners: Container[str]) -> StreamToolCall:
     return call.model_copy(update={"arguments": arguments, "intent": intent})
 
 
+def with_intent_field(fields: dict[str, Any], intent: str | None) -> dict[str, Any]:
+    """A call's payload *fields* with its ``intent``, only when it has one: a
+    payload, a row or a frame of a call without one is the same as before."""
+    return fields if intent is None else {**fields, "intent": intent}
+
+
 def with_intent(arguments: dict[str, Any], intent: str | None) -> dict[str, Any]:
     """*arguments* as a replay shows the model its call: with its intent in
     the reserved property, when it has one."""

@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from roomkit.providers.ai.base import AIToolResultPart
+from roomkit.providers.ai.tool_intent import with_intent_field
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
 
 if TYPE_CHECKING:
@@ -153,18 +154,12 @@ def _started_calls(calls: list[Any]) -> list[dict[str, Any]]:
     """A TOOL_CALL_START's calls: each one's id, name and arguments, and its
     intent when it has one (RFC §6.4)."""
     return [
-        _with_intent(
+        with_intent_field(
             {"id": tc.id, "name": tc.name, "arguments": tc.arguments},
             getattr(tc, "intent", None),
         )
         for tc in calls
     ]
-
-
-def _with_intent(call: dict[str, Any], intent: str | None) -> dict[str, Any]:
-    """A call's payload with its intent, only when it has one: a payload of an
-    agent without intents is the same as before."""
-    return call if intent is None else {**call, "intent": intent}
 
 
 def _composing_calls(calls: list[Any]) -> list[dict[str, Any]]:
@@ -195,7 +190,7 @@ def _ended_calls(parts: list[Any], calls: Sequence[Any]) -> list[dict[str, Any]]
     intents = [getattr(call, "intent", None) for call in calls]
     intents += [None] * (len(parts) - len(intents))
     return [
-        _with_intent(
+        with_intent_field(
             {
                 "id": part.tool_call_id,
                 "name": part.name,
