@@ -77,16 +77,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the tools already used, and the latest images their results returned
     still ride the input.
 
-- **BREAKING — once `kit.close()` starts, every call raises
-  `KitClosedError`** (RFC 12.10.4, RMK-1030). A closing kit took calls until
-  its store was sealed, so traffic kept the close open and a call made in the
-  close's last moments was stored and never delivered. Now admission stops
-  as `close()` starts, whoever calls: an outside caller, a hook or a tool
-  still running, a channel's own `close()`. Reads are refused too
-  (`get_room`, `get_timeline`, `list_*`), and `commit_event` after the
-  close no longer writes. Migration: read what a closed kit left through
-  `kit.store`, and let a hook or a channel's close that may run during a
-  close catch `KitClosedError`.
+- **BREAKING — once `kit.close()` starts, every call that writes or
+  delivers raises `KitClosedError`** (RFC 12.10.4, RMK-1030). A closing kit
+  took calls until its store was sealed, so traffic kept the close open and
+  a call made in the close's last moments was stored and never delivered.
+  Now admission stops as `close()` starts, whoever calls: an outside caller,
+  a hook or a tool still running, a channel's own `close()`. `commit_event`
+  after the close no longer writes. Reads (`get_room`, `get_timeline`,
+  `list_*`) stay open, during the close and after it. Migration: let a hook
+  or a channel's close that may run during a close catch `KitClosedError`.
 
 - **BREAKING — `kit.close()` no longer drains: what has not started is cut
   at once, the running work gets one grace of 5 s** (RFC 12.10.4,
@@ -98,14 +97,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `InboundResult(blocked=True, reason="kit_closed")`, `send_event` and
     `commit_event` raise `KitClosedError`. It used to wait for the lock,
     then fail on the sealed store after `close()` had returned.
+  - A call whose hooks or commit outlast the grace is cut the same way. One
+    cut just after its write committed reads `blocked` too, though its
+    event is stored: give a message you may retry an `idempotency_key`, and
+    the retry returns the stored event instead of storing it again.
   - A hook, a store write or a transport send still running gets one grace
     of 5 s from the close's start, then is cut. A write is no longer waited
     for on 5 s, again on the same deadline, then on a fresh 5 s after the
     channels closed, and left running past that. What a channel's close
     starts is cut at once.
-  - The close takes the grace plus the channels' closes. With a send, a
-    write, an observer and a hook that never end, it took 19.8 s; it takes
-    5 s.
+  - The close takes the grace plus the channels' closes, and at most 1 s
+    more, after the grace and after the channels, for cut work that ignores
+    its cancellation. With a send, a write, an observer and a hook that
+    never end, it took 19.8 s; it takes 5 s.
 
 - **BREAKING — `kit.close()` cuts a model turn at once** (RFC 12.10.4,
   RMK-1030). A turn in progress, its stream and its tool calls, is cut as

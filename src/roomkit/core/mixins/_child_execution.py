@@ -288,7 +288,7 @@ async def _broadcast_and_collect(
     is its last turn's)."""
     if turns is not None:
         turns.clear()
-    room = await kit._read_room(child_room_id)
+    room = await kit.get_room(child_room_id)
     bindings = await kit.store.list_bindings(child_room_id)
 
     # The task description, and a result tool's re-prompt, are the delegating
@@ -698,7 +698,7 @@ async def _run_with_structured_result(
     from roomkit.orchestration.result import SUBMIT_RESULT
 
     tool = result_tool or SUBMIT_RESULT
-    room = await kit._read_room(child_room_id)
+    room = await kit.get_room(child_room_id)
     agent_id = _task_agent(room)
     channel = kit.channels.get(agent_id) if agent_id else None
     if not _takes_owner_tools(channel):

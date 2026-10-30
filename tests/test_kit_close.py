@@ -1,7 +1,8 @@
 """The kit's ``close()``, rule by rule (RMK-1030, RFC §12.10.4).
 
-1. Admission stops at once: every call made once ``close()`` started raises
-   ``KitClosedError``, whoever makes it.
+1. Admission stops at once: every call that writes or delivers made once
+   ``close()`` started raises ``KitClosedError``, whoever makes it; reads
+   stay open.
 2. Work not started is cut at once: a queued delivery, a call waiting for its
    room's lock.
 3. A model turn is cut at once, its stream and its tool calls: what it
@@ -136,7 +137,6 @@ _DOORS: dict[str, Callable[[RoomKit], Awaitable[Any]]] = {
     "send_event": lambda kit: kit.send_event("r", "sms", TextContent(body="late")),
     "commit_event": lambda kit: kit.commit_event("r", _record("late")),
     "create_room": lambda kit: kit.create_room(room_id="late"),
-    "get_timeline": lambda kit: kit.get_timeline("r"),
 }
 
 
@@ -158,6 +158,26 @@ async def test_a_call_once_the_close_started_is_refused(
 
     await closing
     assert "late" not in await _bodies(kit)
+
+
+@pytest.mark.parametrize("when", ["during", "after"])
+async def test_reads_stay_open_once_the_close_started(when: str, close_grace: float) -> None:
+    held = _Transport("ws", holds={"held": None})
+    kit = await _kit(held)
+    await _a_send_held_for_ever(kit, held, "r")
+    closing = asyncio.ensure_future(kit.close())
+    await asyncio.sleep(0)  # the close starts
+    if when == "after":
+        await closing
+
+    room = await kit.get_room("r")
+    timeline = await kit.get_timeline("r")
+    bindings = await kit.list_bindings("r")
+
+    await closing
+    assert room.id == "r"
+    assert "held" in [getattr(e.content, "body", "") for e in timeline]
+    assert {b.channel_id for b in bindings} == {"sms", "ws"}
 
 
 async def test_a_call_from_a_hook_in_the_close_s_grace_is_refused(close_grace: float) -> None:

@@ -393,7 +393,7 @@ class TestAWriteMadeMeanwhileDoesNotUndoIt:
     """A room read, then a commit, then a write: the write keeps the register."""
 
     async def _commit_while_reading(self, kit: Any) -> None:
-        read = kit._read_room
+        read = kit.get_room
 
         async def get_room(room_id: str, **kwargs: Any) -> Any:
             room = await read(room_id, **kwargs)
@@ -401,7 +401,6 @@ class TestAWriteMadeMeanwhileDoesNotUndoIt:
             return room
 
         kit.get_room = get_room
-        kit._read_room = get_room  # the framework's own read (RMK-1030)
 
     async def _register_size(self, kit: Any) -> int:
         return len(

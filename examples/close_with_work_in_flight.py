@@ -1,6 +1,6 @@
 """Close a kit while work is in flight, and read what each call got back.
 
-``kit.close()`` refuses every new call at once, cuts what has not started
+``kit.close()`` refuses every new call that writes or delivers at once, cuts what has not started
 and every model turn at once, gives the rest of the running work one grace
 of five seconds, then cuts what is left. Each call it cut returns one result,
 ``cancellation_reason == "kit_closed"``, with what it delivered.
@@ -15,7 +15,8 @@ This example closes a kit that holds, all at once:
 - a message whose BEFORE_BROADCAST hook runs one second (it ends in the
   grace: stored, its delivery dropped), and one waiting for that room's lock
   (cut at once, nothing stored);
-- a call made once the close started (refused with ``KitClosedError``).
+- a call made once the close started (refused with ``KitClosedError``),
+  while reads stay open: the timelines are read through the kit after it.
 
 It takes about five seconds: the grace. Run with:
     uv run python examples/close_with_work_in_flight.py
@@ -151,7 +152,7 @@ async def main() -> None:
     for room_id in ("sends", "agent-room", "hooked"):
         stored = [
             f"{getattr(e.content, 'body', '')!r}{' (cancelled)' if e.metadata.get('cancelled') else ''}"
-            for e in await kit.store.list_events(room_id)
+            for e in await kit.get_timeline(room_id)
             if e.type == "message"
         ]
         logger.info("Stored in %s: %s", room_id, ", ".join(stored))

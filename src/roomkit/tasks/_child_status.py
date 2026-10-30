@@ -18,9 +18,7 @@ async def record_task_end(kit: RoomKit, result: DelegatedTaskResult) -> None:
     """Stamp the child room with how its task ended, and the worker's answer
     when it completed; a failure to write it is logged, never raised."""
     try:
-        # The framework's read, not the kit's call: a task cut by the kit's
-        # close records its end too, once the kit refuses calls (RFC §12.10.4).
-        room = await kit._read_room(result.child_room_id)
+        room = await kit.get_room(result.child_room_id)
         if room is None:
             return
         completed = result.status == TaskStatus.COMPLETED

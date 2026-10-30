@@ -911,10 +911,10 @@ class RoomKit(
         """Close the kit: refuse every new call, cut its work, close every
         channel, then release what they share (RFC §12.10.4).
 
-        As it starts, every call made from then on raises
-        :class:`KitClosedError`, whoever makes it (an outside caller, a
-        hook, a tool, a channel's close), and what has not started is cut at
-        once: a delivery queued in a room's lane, a call waiting for its
+        As it starts, every call that writes or delivers made from then on
+        raises :class:`KitClosedError`, whoever makes it (an outside caller,
+        a hook, a tool, a channel's close); reads stay open. What has not
+        started is cut at once: a delivery queued in a room's lane, a call waiting for its
         room's lock, every model turn (its stream and its tool calls; what it
         streamed is stored marked cancelled, an open tool call gets its end
         row). The work still running (a hook, a store write, a transport
@@ -925,7 +925,9 @@ class RoomKit(
         code ``kit_closed``, retryable); a call cut before its commit
         returns ``InboundResult(blocked=True, reason="kit_closed")`` or, for
         a call that returns the committed event, raises
-        :class:`KitClosedError`.
+        :class:`KitClosedError`. A call cut just after its write committed
+        reads so too, its event stored: a caller that retries gives its
+        message an ``idempotency_key``, so the retry returns the stored event.
 
         Then the channels close, one at a time and shielded from one another,
         each on its own bounded budgets — a conference channel's bot is out
@@ -934,7 +936,9 @@ class RoomKit(
         with no deadline, for the operations the store and the lock manager
         already have (each runs under a resource lease), seals both, and
         releases them. Nothing is written or delivered after close()
-        returns: it takes the grace plus the channels' closes.
+        returns: it takes the grace plus the channels' closes, and at most
+        :data:`CUT_UNWIND_S` more, twice, for cut work that ignores its
+        cancellation.
 
         Raises:
             ExceptionGroup: one or more channels failed to close. Raised only
@@ -1961,14 +1965,36 @@ class RoomKit(
 
 # -- Admission (RFC §12.10.4) --
 #
-# Once close() starts, every call the kit offers is refused, whoever makes it:
-# an outside caller, or the kit's own work still running (a hook, a tool, a
-# channel's close). The refusal is put on each public call here, in one place,
-# rather than repeated at the top of each; the framework's own steps call the
-# private bodies, never the refused calls.
+# Once close() starts, every call that writes or delivers is refused, whoever
+# makes it: an outside caller, or the kit's own work still running (a hook, a
+# tool, a channel's close). Reads stay open, during the close and after it.
+# The refusal is put on each such call here, in one place, rather than
+# repeated at the top of each; the framework's own steps call the private
+# bodies, never the refused calls.
 
-_TAKEN_WHILE_CLOSING = frozenset({"close"})
-"""The calls a closing kit still takes: a close joins the shutdown."""
+_TAKEN_WHILE_CLOSING = frozenset(
+    {
+        # A close joins the shutdown.
+        "close",
+        # The reads: they write and deliver nothing.
+        "get_room",
+        "get_timeline",
+        "get_binding",
+        "list_bindings",
+        "list_members",
+        "is_member",
+        "list_observations",
+        "list_read_markers",
+        "list_tasks",
+        "regenerate_target",
+        "room_recordings",
+        "room_strategy_is_current",
+        "sender_verification",
+        "source_health",
+        "verification_of",
+    }
+)
+"""The calls a closing kit still takes."""
 
 
 def _refused_once_closed(
