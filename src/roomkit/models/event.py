@@ -244,8 +244,10 @@ class ToolCallContent(BaseModel):
     # key, on a row as on the wire.
     intent: str | None = None
 
+    # No return annotation: one would replace the model's own fields in its
+    # serialization JSON Schema (an integrator's OpenAPI reads them).
     @model_serializer(mode="wrap")
-    def _intent_only_when_set(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+    def _intent_only_when_set(self, handler: SerializerFunctionWrapHandler):
         fields: dict[str, Any] = handler(self)
         if self.intent is None:
             fields.pop("intent", None)

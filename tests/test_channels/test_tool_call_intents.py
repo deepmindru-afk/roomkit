@@ -452,12 +452,16 @@ async def test_a_call_cut_while_it_runs_ends_with_its_intent(streaming: bool) ->
     ]
 
 
-def test_a_row_written_before_intents_reads_without_one() -> None:
-    old = {"type": "tool_call", "tool_name": "shell", "tool_id": "c1", "arguments": COMMAND}
-
-    row = ToolCallContent.model_validate(old)
+def test_a_row_without_an_intent_has_no_intent_key() -> None:
+    """Read from a row that has none, written without one, and its fields
+    still in the serialization schema an integrator's OpenAPI reads."""
+    row = ToolCallContent.model_validate(
+        {"type": "tool_call", "tool_name": "shell", "tool_id": "c1", "arguments": COMMAND}
+    )
 
     assert row.intent is None
     assert "intent" not in row.model_dump()
     with_one = row.model_copy(update={"intent": INTENT})
     assert ToolCallContent.model_validate_json(with_one.model_dump_json()).intent == INTENT
+    schema = ToolCallContent.model_json_schema(mode="serialization")
+    assert {"tool_name", "arguments", "intent"} <= set(schema["properties"])
